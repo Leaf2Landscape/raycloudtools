@@ -23,13 +23,10 @@
 #include <cstring>
 #include <iostream>
 
-static std::string extract_type;
-
 void usage(int exit_code = 1)
 {
-  const bool none = extract_type != "terrain" && extract_type != "trunks" && extract_type != "forest" && extract_type != "trees" && extract_type != "leaves";
   // clang-format off
-  std::cout << "Extract natural features into a text file or mesh file" << std::endl;
+  std::cout << "Extract natural features into a text file structure" << std::endl;
   std::cout << "usage:" << std::endl;
   std::cout << "rayextract terrain cloud.ply                - extract terrain undersurface to mesh. Slow, so consider decimating first." << std::endl;
   std::cout << "                            --gradient 1    - maximum gradient counted as terrain" << std::endl;
@@ -80,7 +77,7 @@ int rayExtract(int argc, char *argv[])
   ray::OptionalKeyValueArgument trunks_option("trunks", 't', &trunks_file);
   ray::DoubleArgument gradient(0.001, 1000.0, 1.0), global_taper(0.0, 1.0), global_taper_factor(0.0, 1.0);
   ray::OptionalKeyValueArgument gradient_option("gradient", 'g', &gradient);
-  ray::OptionalFlagArgument exclude_rays("exclude_rays", 'e'), segment_branches("branch_segmentation", 'b'), stalks("stalks", 's'), use_rays("use_rays", 'u');
+  ray::OptionalFlagArgument exclude_rays("exclude_rays", 'e'), segment_branches("branch_segmentation", 'b'), stalks("stalks", 's');
   ray::DoubleArgument width(0.01, 10.0, 0.25), drop(0.001, 1.0), max_gradient(0.01, 5.0), min_gradient(0.01, 5.0);
 
   ray::DoubleArgument max_diameter(0.01, 100.0), distance_limit(0.01, 10.0), height_min(0.01, 1000.0),
@@ -143,11 +140,10 @@ int rayExtract(int argc, char *argv[])
     {
       usage(true);
     }
-    Eigen::Vector3d offset = cloud.removeStartPos();
 
     const double radius = 0.1;  // ~ /2 up to *2. So tree diameters 10 cm up to 40 cm
-    ray::Trunks trunks(cloud, offset, radius, verbose.isSet(), exclude_rays.isSet());
-    trunks.save(cloud_file.nameStub() + "_trunks.txt", offset);
+    ray::Trunks trunks(cloud, radius, verbose.isSet(), exclude_rays.isSet());
+    trunks.save(cloud_file.nameStub() + "_trunks.txt");
   }
   // finds full tree structures (piecewise cylindrical representation) and saves to file
   else if (extract_trees)
@@ -158,15 +154,12 @@ int rayExtract(int argc, char *argv[])
     {
       usage(true);
     }
-    Eigen::Vector3d offset = cloud.removeStartPos();
 
     ray::Mesh mesh;
     if (!ray::readPlyMesh(mesh_file.name(), mesh))
     {
       usage(true);
     }
-    mesh.translate(-offset);
-
     ray::TreesParams params;
     if (max_diameter_option.isSet())
     {
@@ -215,16 +208,14 @@ int rayExtract(int argc, char *argv[])
     if (global_taper_factor_option.isSet())
     {
       params.global_taper_factor = global_taper_factor.value();
-    }   
-    params.use_rays = use_rays.isSet(); 
+    }    
     params.segment_branches = segment_branches.isSet();
 
-    ray::Trees trees(cloud, offset, mesh, params, verbose.isSet());
+    ray::Trees trees(cloud, mesh, params, verbose.isSet());
 
     // output the picewise cylindrical description of the trees
-    trees.save(cloud_file.nameStub() + "_trees.txt", offset, verbose.isSet());
+    trees.save(cloud_file.nameStub() + "_trees.txt", verbose.isSet());
     // we also save a segmented (one colour per tree) file, as this is a useful output
-    cloud.translate(offset);
     cloud.save(cloud_file.nameStub() + "_segmented.ply");
     // let's also save the trees out as a mesh
     // it is a bit inefficient to load from file just to convert it into the forest structure, but
@@ -287,10 +278,9 @@ int rayExtract(int argc, char *argv[])
     {
       usage(true);
     }
-    Eigen::Vector3d offset = cloud.removeStartPos();
 
     ray::Terrain terrain;
-    terrain.extract(cloud, offset, cloud_file.nameStub(), gradient.value(), verbose.isSet());
+    terrain.extract(cloud, cloud_file.nameStub(), gradient.value(), verbose.isSet());
   }
   else if (extract_leaves)
   {
