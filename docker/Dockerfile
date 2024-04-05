@@ -3,9 +3,7 @@ FROM ubuntu:22.04
 # Avoid prompts from apt
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Set LC_ALL and unset LANGUAGE
-ENV LC_ALL=C
-ENV LANGUAGE=
+RUN apk add make cmake g++ git proj-dev eigen-dev boost-dev libgeotiff-dev gtest-dev
 
 # Update, install dependencies and cleanup
 RUN apt-get update && apt-get upgrade -y && \
@@ -69,7 +67,7 @@ RUN git clone https://github.com/ethz-asl/libnabo.git && \
 RUN git clone https://github.com/csiro-robotics/raycloudtools.git && \
     cd raycloudtools && \
     mkdir build && cd build && \
-    cmake .. -DWITH_QHULL=ON -DWITH_LAS=ON -DWITH_TIFF=ON -DRAYCLOUD_BUILD_TESTS=ON && \
+    cmake .. -DWITH_QHULL=ON -DWITH_LAS=ON -DRAYCLOUD_BUILD_TESTS=ON && \
     make && make install 
     
 RUN cd /home && \
