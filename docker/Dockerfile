@@ -76,7 +76,7 @@ RUN cd /home && \
     git clone https://github.com/csiro-robotics/treetools.git && \
     cd treetools && \
     mkdir build && cd build && \
-    cmake .. && \
+    cmake .. -DGEOTIFF_INCLUDE_DIR=/usr/include/geotiff -DGEOTIFF_LIBRARIES=/usr/lib/libgeotiff.so && \
     make && make install
 
 WORKDIR /data
