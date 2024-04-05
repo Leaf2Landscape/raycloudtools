@@ -68,54 +68,15 @@ RUN git clone https://github.com/ethz-asl/libnabo.git && \
 # Clone, build and install raycloudtools
 RUN git clone https://github.com/csiro-robotics/raycloudtools.git && \
     cd raycloudtools && \
-    mkdir build && \
-    cd build && \
-    cmake .. \
-        -DGeoTIFF_INCLUDE_DIR=/usr/include/geotiff \
-        -DGeoTIFF_LIBRARY=/usr/lib/x86_64-linux-gnu/libgeotiff.so \
-        -DPROJ_INCLUDE_DIR=/usr/include/proj \
-        -DPROJ_LIBRARY=/usr/lib/x86_64-linux-gnu/libproj.so \
-        -DWITH_QHULL=ON \
-        -DWITH_LAS=ON \
-        -DDOUBLE_RAYS=ON \
-        -DWITH_TIFF=ON \
-        -DCMAKE_BUILD_TYPE=Release && \
-    make -j$(nproc) && \
-    make install && \
-    cd ../.. && \
-    rm -rf raycloudtools
-
-# Clone and build TreeTools
-RUN git clone https://github.com/csiro-robotics/treetools.git && \
-    cd treetools && \
-    mkdir -p build && \
-    cd build && \
-    cmake .. \
-        -DPROJ_INCLUDE_DIR=/usr/include/proj \
-        -DPROJ_LIBRARY=/usr/lib/x86_64-linux-gnu/libproj.so \
-        -DWITH_TIFF=ON \
-        -DCMAKE_BUILD_TYPE=Release && \
-    make -j$(nproc) && \
-    make install && \
-    cd ../.. && \
-    rm -rf treetools
+    mkdir build && cd build && \
+    cmake .. -DGEOTIFF_INCLUDE_DIR=/usr/include/geotiff -DGEOTIFF_LIBRARIES=/usr/lib/libgeotiff.so -DWITH_QHULL=ON -DWITH_LAS=ON -DWITH_TIFF=ON -DRAYCLOUD_BUILD_TESTS=ON && \
+    make && make install
     
-# Update ldconfig
-RUN ldconfig /usr/local/lib
+RUN cd /home && \
+    git clone https://github.com/csiro-robotics/treetools.git && \
+    cd treetools && \
+    mkdir build && cd build && \
+    cmake .. && \
+    make && make install
 
-# Clean up build directory
-RUN rm -rf /build
-
-# Set the working directory
-WORKDIR /workspace
-
-# Handle entrypoint for interactive and non-interactive
-RUN echo '#!/bin/bash\n\
-if [ $# -eq 0 ]; then\n\
-    exec /bin/bash\n\
-else\n\
-    exec "$@"\n\
-fi' > /entrypoint.sh && chmod +x /entrypoint.sh
-
-# Set the entrypoint to script
-ENTRYPOINT ["/entrypoint.sh"]
+WORKDIR /data
