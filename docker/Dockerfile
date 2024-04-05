@@ -69,14 +69,14 @@ RUN git clone https://github.com/ethz-asl/libnabo.git && \
 RUN git clone https://github.com/csiro-robotics/raycloudtools.git && \
     cd raycloudtools && \
     mkdir build && cd build && \
-    cmake .. -DGEOTIFF_INCLUDE_DIR=/usr/include/geotiff -DGEOTIFF_LIBRARIES=/usr/lib/libgeotiff.so -DWITH_QHULL=ON -DWITH_LAS=ON -DWITH_TIFF=ON -DRAYCLOUD_BUILD_TESTS=ON && \
+    cmake .. -DWITH_QHULL=ON -DWITH_LAS=ON -DWITH_TIFF=ON -DRAYCLOUD_BUILD_TESTS=ON && \
     make && make install 
     
 RUN cd /home && \
     git clone https://github.com/csiro-robotics/treetools.git && \
     cd treetools && \
     mkdir build && cd build && \
-    cmake .. -DGEOTIFF_INCLUDE_DIR=/usr/include/geotiff -DGEOTIFF_LIBRARIES=/usr/lib/libgeotiff.so && \
+    cmake .. && \
     make && make install
 
 WORKDIR /data
