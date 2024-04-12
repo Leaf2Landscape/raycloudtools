@@ -67,7 +67,7 @@ RUN git clone https://github.com/ethz-asl/libnabo.git && \
 RUN git clone https://github.com/csiro-robotics/raycloudtools.git && \
     cd raycloudtools && \
     mkdir build && cd build && \
-    cmake .. -DWITH_QHULL=ON -DWITH_LAS=ON -DRAYCLOUD_BUILD_TESTS=ON && \
+    cmake .. -DWITH_QHULL=ON -DWITH_LAS=ON -DDOUBLE_RAYS=ON -DRAYCLOUD_BUILD_TESTS=ON && \
     make && make install 
     
 RUN cd /home && \
