@@ -31,6 +31,7 @@ option(RAYCLOUD_LEAK_TRACK "Enable memory leak tracking?" OFF)
 
 # WITH_ build options.
 option(WITH_LAS "With liblas for las file support?" OFF)
+option(WITH_RIEGL "With rdb and RiVLib support?" OFF)
 option(WITH_QHULL "With libqhull support?" OFF)
 option(WITH_TIFF "With libgeotiff support?" OFF)
 option(WITH_TBB "With Intel Threading Building Blocks support multi-threadding?" OFF)
@@ -38,6 +39,7 @@ option(WITH_NORMAL_FIELD "Stores rays in the PLY normal field nx,ny,nz. Else ray
 
 # Convert WITH_ options to 1/0 so we can use them in configuration headers.
 ras_bool_to_int(WITH_LAS)
+ras_bool_to_int(WITH_RIEGL)
 ras_bool_to_int(WITH_QHULL)
 ras_bool_to_int(WITH_TIFF)
 ras_bool_to_int(WITH_TBB)
@@ -62,6 +64,16 @@ if(WITH_LAS)
   list(APPEND RAYTOOLS_INCLUDE ${libLAS_INCLUDE_DIRS})
   list(APPEND RAYTOOLS_LINK ${libLAS_LIBRARIES})
 endif(WITH_LAS)
+if(WITH_RIEGL)
+    # RivLib (.rxp)
+    find_package(RiVLib COMPONENTS scanlib REQUIRED)
+    list(APPEND RAYTOOLS_INCLUDE ${RiVLib_INCLUDE_DIRS})
+    list(APPEND RAYTOOLS_LINK ${RiVLib_SCANLIB_LIBRARY})
+    # rdbLIB (.rdbx)
+    # find_package(rdb 2.4.1 REQUIRED)
+    # list(APPEND RAYTOOLS_INCLUDE ${RDB_INCLUDE_CPP_DIR} ${RDB_INCLUDE_C_DIR})
+    # list(APPEND RAYTOOLS_LINK PRIVATE rdbcpp)
+endif(WITH_RIEGL)
 if(WITH_QHULL)
   # Find the qhull that provides a config with targets first
   find_package(Qhull CONFIG QUIET)
