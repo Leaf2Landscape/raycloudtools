@@ -30,43 +30,63 @@ void usage(int exit_code = 1)
   // clang-format off
   std::cout << "Extract natural features into a text file or mesh file" << std::endl;
   std::cout << "usage:" << std::endl;
-  std::cout << "rayextract terrain cloud.ply                - extract terrain undersurface to mesh. Slow, so consider decimating first." << std::endl;
-  std::cout << "                            --gradient 1    - maximum gradient counted as terrain" << std::endl;
-  std::cout << "rayextract trunks cloud.ply                 - extract tree trunk base locations and radii to text file" << std::endl;
-  std::cout << "                            --exclude_rays  - does not use rays to exclude candidates with rays passing through" << std::endl;
-  std::cout << "rayextract forest cloud.ply                 - extracts tree locations, radii and heights to file" << std::endl;
-  std::cout << "                            --ground ground_mesh.ply - ground mesh file (otherwise assume flat)" << std::endl; 
-  std::cout << "                            --trunks cloud_trunks.txt - known tree trunks file" << std::endl;
-  std::cout << "                            --width 0.25    - grid cell width" << std::endl;
-  std::cout << "                            --smooth 15     - canopy smooth iterations, higher for rough canopies" << std::endl;
-  std::cout << "                            --drop_ratio 0.1- here a drop of 10% in canopy height is classed as separate trees" << std::endl;
-  std::cout << "rayextract trees cloud.ply ground_mesh.ply  - estimate trees, and save to text file, mesh file, and segmented (coloured per-tree) cloud" << std::endl;
-  std::cout << "                            --max_diameter 0.9   - (-m) maximum trunk diameter in segmenting trees" << std::endl;
-  std::cout << "                            --crop_length 1.0    - (-p) crops small branches to this distance from end" << std::endl;
-  std::cout << "                            --distance_limit 1   - (-d) maximum distance between neighbour points in a tree" << std::endl;
-  std::cout << "                            --height_min 2       - (-h) minimum height counted as a tree" << std::endl;
-  std::cout << "                            --girth_height_ratio 0.08 - (-l) the amount up tree's height to estimate trunk girth" << std::endl;
-  std::cout << "                            --global_taper 0.024 - (-a) force a taper value (diameter per length) for trees under global_taper_factor of max tree height. Use 0 to estimate global taper from the data" << std::endl;
-  std::cout << "                            --global_taper_factor 0.3- (-o) 1 estimates same taper for whole scan, 0 is per-tree tapering. Like a soft cutoff at this amount of max tree height" << std::endl;
-  std::cout << "                            --gravity_factor 0.3 - (-f) larger values preference vertical trees" << std::endl;
-  std::cout << "                            --branch_segmentation- (-b) _segmented.ply is per branch segment" << std::endl;
-  std::cout << "                            --grid_width         - (-w) crops results assuming cloud has been gridded with given width" << std::endl;
-  std::cout << "                            (for internal constants -c -g -s see source file rayextract)" << std::endl;
-// These are the internal parameters that I don't expose as they are 'advanced' only, you shouldn't need to adjust them
-//  std::cout << "                            --cylinder_length_to_width 4- (-c) how slender the cylinders are" << std::endl;
-//  std::cout << "                            --gap_ratio 0.016    - (-g) will split for lateral gaps at this multiple of branch length" << std::endl;
-//  std::cout << "                            --span_ratio 4.5     - (-s) will split when branch width spans this multiple of radius" << std::endl;
-  std::cout << "rayextract leaves cloud.ply trees.txt            - reconstruct the leaf locations coming from the specified tree structures, and save to text file" << std::endl;
-  std::cout << "                            --leaf_mesh mesh.ply - mesh for each leaf. Should have its centre at 0,0,0, be along the y axis, with first vertex at the stalk connection" << std::endl;
-  std::cout << "                            --leaf_area 0.002    - area for each leaf." << std::endl;
-  std::cout << "                            --leaf_droop 0.1     - drop per square horizontal distance." << std::endl;
-  std::cout << "                            --stalks             - include stalks to closest branch." << std::endl;
-  std::cout << "                                 --verbose  - extra debug output." << std::endl;
+  if (extract_type == "terrain" || none)
+  {
+    std::cout << "rayextract terrain cloud.ply                - extract terrain undersurface to mesh. Slow, so consider decimating first." << std::endl;
+    std::cout << "                            --gradient 1    - maximum gradient counted as terrain" << std::endl;
+  }
+  if (extract_type == "trunks" || none)
+  {
+    std::cout << "rayextract trunks cloud.ply                 - extract tree trunk base locations and radii to text file" << std::endl;
+    std::cout << "                            --exclude_rays  - does not use rays to exclude candidates with rays passing through" << std::endl;
+  }
+  if (extract_type == "forest" || none)
+  {
+    std::cout << "rayextract forest cloud.ply                 - extracts tree locations, radii and heights to file" << std::endl;
+    std::cout << "                            --ground ground_mesh.ply - ground mesh file (otherwise assume flat)" << std::endl;
+    std::cout << "                            --trunks cloud_trunks.txt - known tree trunks file" << std::endl;
+    std::cout << "                            --width 0.25    - grid cell width" << std::endl;
+    std::cout << "                            --smooth 15     - canopy smooth iterations, higher for rough canopies" << std::endl;
+    std::cout << "                            --drop_ratio 0.1- here a drop of 10% in canopy height is classed as separate trees" << std::endl;
+  }
+  if (extract_type == "trees" || none)
+  {
+    std::cout << "rayextract trees cloud.ply ground_mesh.ply  - estimate trees, and save to text file, mesh file, and segmented (coloured per-tree) cloud. Use TreeTools (github) to manipulate text file." << std::endl;
+    std::cout << "                            --max_diameter 0.9   - (-m) maximum trunk diameter in segmenting trees" << std::endl;
+    std::cout << "                            --crop_length 1.0    - (-p) crops small branches to this distance from end" << std::endl;
+    std::cout << "                            --distance_limit 1   - (-d) maximum distance between neighbour points in a tree" << std::endl;
+    std::cout << "                            --height_min 2       - (-h) minimum height counted as a tree" << std::endl;
+    std::cout << "                            --girth_height_ratio 0.12 - (-i) the amount up tree's height to estimate trunk girth" << std::endl;
+    std::cout << "                            --global_taper 0.024 - (-a) force a taper value (diameter per length) for trees under global_taper_factor of max tree height. Use 0 to estimate global taper from the data" << std::endl;
+    std::cout << "                            --global_taper_factor 0.3- (-o) 1 estimates same taper for whole scan, 0 is per-tree tapering. Like a soft cutoff at this amount of max tree height" << std::endl;
+    std::cout << "                            --gravity_factor 0.3 - (-f) larger values preference vertical trees" << std::endl;
+    std::cout << "                            --branch_segmentation- (-b) _segmented.ply is per branch segment" << std::endl;
+    std::cout << "                            --grid_width 10      - (-w) crops results assuming cloud has been gridded with given width" << std::endl;
+    std::cout << "                            --use_rays           - (-u) use rays to reduce trunk radius overestimation in noisy cloud data" << std::endl;
+    std::cout << "                            (for internal constants -c -g -s see source file rayextract)" << std::endl;
+  // These are the internal parameters that I don't expose as they are 'advanced' only, you shouldn't need to adjust them
+  //  std::cout << "                            --cylinder_length_to_width 4- (-c) how slender the cylinders are" << std::endl;
+  //  std::cout << "                            --gap_ratio 0.016    - (-g) will split for lateral gaps at this multiple of branch length" << std::endl;
+  //  std::cout << "                            --span_ratio 4.5     - (-s) will split when branch width spans this multiple of radius" << std::endl;
+  }
+  if (extract_type == "leaves" || none)
+  {
+    std::cout << "rayextract leaves cloud.ply trees.txt            - reconstruct the leaf locations coming from the specified tree structures, and save to text file" << std::endl;
+    std::cout << "                            --leaf mesh.ply      - mesh for each leaf. Should have its centre at 0,0,0, be along the y axis, with first vertex at the stalk connection" << std::endl;
+    std::cout << "                            --leaf image.png     - make leaf from the image, assuming it uses its alpha channel (loads in CloudCompare but not Meshlab)" << std::endl;
+    std::cout << "                            --leaf_area 0.002    - area for each leaf." << std::endl;
+    std::cout << "                            --leaf_droop 0.1     - drop per square horizontal distance." << std::endl;
+    std::cout << "                            --stalks             - include stalks to closest branch." << std::endl;
+  }
+  if (extract_type == "grid" || none)
+  {
   std::cout << "rayextract grid cloud.ply" << std::endl;
   std::cout << "                            --voxel_size " << std::endl;
-  std::cout << "                            --grid_bounds_min x,y,z - Set min/max bounds of voxel grid. Defaults to min/max bounds of raycloud if not set." << std::endl;
-  std::cout << "                            --grid_bounds_max x,y,z - Set min/max bounds of voxel grid. Defaults to min/max bounds of raycloud if not set." << std::endl;
-  std::cout << "                            --verbose  - extra debug output." << std::endl;
+  std::cout << "                            --grid_bounds_min x,y,z - Set min bounds of voxel grid. Defaults to min bounds of raycloud if not set." << std::endl;
+  std::cout << "                            --grid_bounds_max x,y,z - Set max bounds of voxel grid. Defaults to max bounds of raycloud if not set." << std::endl;
+  std::cout << "                                 --verbose  - extra debug output." << std::endl;
+
+  }
   // clang-format on
   exit(exit_code);
 }
