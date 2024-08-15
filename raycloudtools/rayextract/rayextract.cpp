@@ -82,8 +82,9 @@ void usage(int exit_code = 1)
   {
   std::cout << "rayextract grid cloud.ply" << std::endl;
   std::cout << "                            --voxel_size " << std::endl;
-  std::cout << "                            --grid_bounds_min x,y,z - Set min bounds of voxel grid. Defaults to min bounds of raycloud if not set." << std::endl;
-  std::cout << "                            --grid_bounds_max x,y,z - Set max bounds of voxel grid. Defaults to max bounds of raycloud if not set." << std::endl;
+  std::cout << "                            --grid_bounds_min x,y,z - set min bounds of voxel grid. Defaults to min bounds of raycloud if not set." << std::endl;
+  std::cout << "                            --grid_bounds_max x,y,z - set max bounds of voxel grid. Defaults to max bounds of raycloud if not set." << std::endl;
+  std::cout << "                            --write_empty             - write whole voxel grid incuding empty voxels." << std::endl;
   std::cout << "                                 --verbose  - extra debug output." << std::endl;
 
   }
@@ -95,13 +96,17 @@ void usage(int exit_code = 1)
 /// extracts natural features from a scene
 int rayExtract(int argc, char *argv[])
 {
-  ray::FileArgument cloud_file, mesh_file, trunks_file, trees_file, leaf_mesh;
+  if (argc > 1)
+  {
+    extract_type = std::string(argv[1]);
+  }
+  ray::FileArgument cloud_file, mesh_file, trunks_file, trees_file, leaf_file;
   ray::TextArgument forest("forest"), trees("trees"), trunks("trunks"), terrain("terrain"), leaves("leaves"), grid("grid");
   ray::OptionalKeyValueArgument groundmesh_option("ground", 'g', &mesh_file);
   ray::OptionalKeyValueArgument trunks_option("trunks", 't', &trunks_file);
   ray::DoubleArgument gradient(0.001, 1000.0, 1.0), global_taper(0.0, 1.0), global_taper_factor(0.0, 1.0);
   ray::OptionalKeyValueArgument gradient_option("gradient", 'g', &gradient);
-  ray::OptionalFlagArgument exclude_rays("exclude_rays", 'e'), segment_branches("branch_segmentation", 'b'), stalks("stalks", 's'), use_rays("use_rays", 'u');
+  ray::OptionalFlagArgument exclude_rays("exclude_rays", 'e'), segment_branches("branch_segmentation", 'b'), stalks("stalks", 's'), use_rays("use_rays", 'u'), write_empty("write_empty", 'w');
   ray::DoubleArgument width(0.01, 10.0, 0.25), drop(0.001, 1.0), max_gradient(0.01, 5.0), min_gradient(0.01, 5.0);
 
   ray::DoubleArgument max_diameter(0.01, 100.0), distance_limit(0.01, 10.0), height_min(0.01, 1000.0),
@@ -125,7 +130,7 @@ int rayExtract(int argc, char *argv[])
   ray::OptionalKeyValueArgument grid_width_option("grid_width", 'w', &grid_width);
   ray::OptionalKeyValueArgument global_taper_option("global_taper", 'a', &global_taper);
   ray::OptionalKeyValueArgument global_taper_factor_option("global_taper_factor", 'o', &global_taper_factor);
-  ray::OptionalKeyValueArgument leaf_mesh_option("leaf_mesh", 'm', &leaf_mesh);
+  ray::OptionalKeyValueArgument leaf_option("leaf", 'l', &leaf_file);
   ray::OptionalKeyValueArgument leaf_area_option("leaf_area", 'a', &leaf_area);
   ray::OptionalKeyValueArgument leaf_droop_option("leaf_droop", 'd', &leaf_droop);
   ray::OptionalKeyValueArgument voxel_size_option("voxel_size", 'vs', &voxel_size);
@@ -148,12 +153,13 @@ int rayExtract(int argc, char *argv[])
       &cylinder_length_to_width_option, &gap_ratio_option, &span_ratio_option, &gravity_factor_option,
       &segment_branches, &grid_width_option, &global_taper_option, &global_taper_factor_option, &use_rays, &verbose });
   bool extract_leaves = ray::parseCommandLine(argc, argv, { &leaves, &cloud_file, &trees_file }, { &leaf_option, &leaf_area_option, &leaf_droop_option, &stalks });
-  bool extract_grid = ray::parseCommandLine(argc, argv, { &grid, &cloud_file }, { &voxel_size_option, &grid_bounds_min_option, &grid_bounds_max_option, &verbose });
+  bool extract_grid = ray::parseCommandLine(argc, argv, { &grid, &cloud_file }, { &voxel_size_option, &grid_bounds_min_option, &grid_bounds_max_option, &write_empty, &verbose });
 
   if (!extract_trunks && !extract_forest && !extract_terrain && !extract_trees && !extract_leaves && !extract_grid)
   {
     usage();
   }
+
   // finds cylindrical trunks in the data and saves them to an _trunks.txt file
   if (extract_trunks)
   {
@@ -234,8 +240,8 @@ int rayExtract(int argc, char *argv[])
     if (global_taper_factor_option.isSet())
     {
       params.global_taper_factor = global_taper_factor.value();
-    }   
-    params.use_rays = use_rays.isSet(); 
+    }
+    params.use_rays = use_rays.isSet();
     params.segment_branches = segment_branches.isSet();
 
     ray::Trees trees(cloud, offset, mesh, params, verbose.isSet());
@@ -313,12 +319,12 @@ int rayExtract(int argc, char *argv[])
   }
   else if (extract_leaves)
   {
-    ray::generateLeaves(cloud_file.nameStub(), trees_file.name(), leaf_mesh.name(), 
+    ray::generateLeaves(cloud_file.nameStub(), trees_file.name(), leaf_file.name(), 
       leaf_area.value(), leaf_droop.value(), stalks.isSet());
   }
   else if (extract_grid)
   {
-    ray::generateDenseVoxels(cloud_file.nameStub(), voxel_size.value(), grid_bounds_min.value(), grid_bounds_max.value());
+    ray::generateDenseVoxels(cloud_file.nameStub(), voxel_size.value(), grid_bounds_min.value(), grid_bounds_max.value(), write_empty.isSet());
   }
   else
   {
