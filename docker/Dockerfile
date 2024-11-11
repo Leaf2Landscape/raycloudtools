@@ -64,11 +64,39 @@ RUN git clone https://github.com/ethz-asl/libnabo.git && \
     cd ../.. && rm -rf libnabo
 
 # Clone, build and install raycloudtools
-RUN git clone https://github.com/csiro-robotics/raycloudtools.git && \
+RUN git clone https://github.com/Leaf2Landscape/raycloudtools.git && \
     cd raycloudtools && \
-    mkdir build && cd build && \
-    cmake .. -DWITH_QHULL=ON -DWITH_LAS=ON -DDOUBLE_RAYS=ON -DRAYCLOUD_BUILD_TESTS=ON && \
-    make && make install 
+    mkdir build && \
+    cd build && \
+    cmake .. \
+        -DGeoTIFF_INCLUDE_DIR=/usr/include/geotiff \
+        -DGeoTIFF_LIBRARY=/usr/lib/x86_64-linux-gnu/libgeotiff.so \
+        -DPROJ_INCLUDE_DIR=/usr/include/proj \
+        -DPROJ_LIBRARY=/usr/lib/x86_64-linux-gnu/libproj.so \
+        -DWITH_QHULL=ON \
+        -DWITH_LAS=ON \
+        -DDOUBLE_RAYS=ON \
+        -DWITH_TIFF=ON \
+        -DCMAKE_BUILD_TYPE=Release && \
+    make -j$(nproc) && \
+    make install && \
+    cd ../.. && \
+    rm -rf raycloudtools
+
+# Clone and build TreeTools
+RUN git clone https://github.com/Leaf2Landscape/treetools.git && \
+    cd treetools && \
+    mkdir -p build && \
+    cd build && \
+    cmake .. \
+        -DPROJ_INCLUDE_DIR=/usr/include/proj \
+        -DPROJ_LIBRARY=/usr/lib/x86_64-linux-gnu/libproj.so \
+        -DWITH_TIFF=ON \
+        -DCMAKE_BUILD_TYPE=Release && \
+    make -j$(nproc) && \
+    make install && \
+    cd ../.. && \
+    rm -rf treetools
     
 RUN cd /home && \
     git clone https://github.com/csiro-robotics/treetools.git && \
