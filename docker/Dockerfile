@@ -1,4 +1,4 @@
-FROM ubuntu:22.04
+FROM ubuntu:latest
 
 # Avoid prompts from apt
 ENV DEBIAN_FRONTEND=noninteractive
@@ -18,7 +18,8 @@ RUN apt-get update && apt-get upgrade -y && \
     libproj-dev \
     libgeotiff-dev \
     libgtest-dev \
-    libboost-all-dev && \
+    libboost-all-dev \
+    libgtest-dev && \
     rm -rf /var/lib/apt/lists/*
     
 # Create a directory for building packages
@@ -66,7 +67,7 @@ RUN git clone https://github.com/ethz-asl/libnabo.git && \
     cd ../.. && rm -rf libnabo
 
 # Clone, build and install raycloudtools
-RUN git clone https://github.com/csiro-robotics/raycloudtools.git && \
+RUN git clone https://github.com/Leaf2Landscape/raycloudtools.git && \
     cd raycloudtools && \
     mkdir build && \
     cd build && \
@@ -87,7 +88,7 @@ RUN git clone https://github.com/csiro-robotics/raycloudtools.git && \
     rm -rf raycloudtools
 
 # Clone and build TreeTools
-RUN git clone https://github.com/csiro-robotics/treetools.git && \
+RUN git clone https://github.com/Leaf2Landscape/treetools.git && \
     cd treetools && \
     mkdir -p build && \
     cd build && \
