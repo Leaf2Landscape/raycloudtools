@@ -22,7 +22,7 @@ RUN apt-get update && apt-get upgrade -y && \
     libboost-all-dev \
     wget \
     libnetcdf-dev \
-    libnetcdf-c++4-dev && \
+    libnetcdf-c++4-dev \
     libgtest-dev && \
     rm -rf /var/lib/apt/lists/*
 
