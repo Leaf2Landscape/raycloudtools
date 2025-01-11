@@ -78,7 +78,7 @@ RUN git clone https://github.com/Leaf2Landscape/raycloudtools.git && \
         -DPROJ_LIBRARY=/usr/lib/x86_64-linux-gnu/libproj.so \
         -DWITH_QHULL=ON \
         -DWITH_LAS=ON \
-        -DDOUBLE_RAYS=ON \
+        # -DDOUBLE_RAYS=ON \ Turn on for global coords
         -DWITH_TIFF=ON \
         -DRAYCLOUD_BUILD_TESTS=ON \
         -DCMAKE_BUILD_TYPE=Release && \
