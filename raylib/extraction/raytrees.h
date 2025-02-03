@@ -33,6 +33,7 @@ struct RAYLIB_EXPORT TreesParams
   double global_taper_factor; // 0 estimates per-tree tapering, 1 uses per-scan tapering, 0.5 is mid-way on mid-weight trees
   bool use_rays; // use the full rays in order to estimate a smaller radius when points are not all on the real branch
   bool alpha_weighting;    // use point cloud alpha as weight for connecting points. Branches will follow high weight
+  bool largest_diameter;        // only keep the tree with the largest DBH
 };
 
 struct BranchSection;  // forwards declaration
@@ -100,6 +101,8 @@ private:
   double radius(const BranchSection &section) const;
   /// remove elements of nodes that are too distant to the set of end points
   bool removeDistantPoints(std::vector<int> &nodes);
+  /// filter out all but the largest diameter trees
+  void filterLargestDiameterTrees();
 
   // cached data that is used throughout the processing method
   int sec_;
@@ -184,5 +187,39 @@ inline int RAYLIB_EXPORT convertColourToInt(const RGBA &colour)
   }
   return result - 1;
 }
+
+// Filters out all but the largest diameter trees
+inline void Trees::filterLargestDiameterTrees()
+{
+  // Only consider root sections (i.e. sections with no parent) that have children.
+  double max_diam = 0.0;
+  // First pass: find the maximum diameter among all trees.
+  for (size_t i = 0; i < sections_.size(); i++)
+  {
+    if (sections_[i].parent == -1 && !sections_[i].children.empty())
+    {
+      double diam = 2.0 * radius(sections_[i]);  // diameter = 2 * radius
+      if (diam > max_diam)
+      {
+        max_diam = diam;
+      }
+    }
+  }
+  // Second pass: remove any tree whose diameter is less than the maximum.
+  // Here, "removal" is implemented by clearing the children vector,
+  // so that later processing (colouring, saving, etc.) will ignore these trees.
+  for (size_t i = 0; i < sections_.size(); i++)
+  {
+    if (sections_[i].parent == -1 && !sections_[i].children.empty())
+    {
+      double diam = 2.0 * radius(sections_[i]);
+      if (diam < max_diam)
+      {
+        sections_[i].children.clear();
+      }
+    }
+  }
+}
+
 }  // namespace ray
 #endif  // RAYLIB_RAYEXTRACT_TREES_H

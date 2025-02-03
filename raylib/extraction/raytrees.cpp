@@ -24,6 +24,7 @@ TreesParams::TreesParams()
   , global_taper(0.012)
   , global_taper_factor(0.3)
   , alpha_weighting(false)
+  , largest_diameter(false)
 {}
 
 /// The main reconstruction algorithm
@@ -275,6 +276,13 @@ Trees::Trees(Cloud &cloud, const Eigen::Vector3d &offset, const Mesh &mesh, cons
   std::vector<int> section_ids(points_.size(), -1);
   calculateSectionIds(section_ids, children);
 
+  // If the largest_diameter flag is set then filter the trees to keep only the one(s)
+  // with the largest diameter.
+  if (params_->largest_diameter)
+  {
+    filterLargestDiameterTrees();
+  }
+
   generateLocalSectionIds();
 
   Eigen::Vector3d min_bound(0, 0, 0), max_bound(0, 0, 0);
@@ -334,6 +342,7 @@ bool Trees::removeDistantPoints(std::vector<int> &nodes)
   }
   return found;
 }
+
 
 double Trees::meanTaper(const BranchSection &section) const
 {
