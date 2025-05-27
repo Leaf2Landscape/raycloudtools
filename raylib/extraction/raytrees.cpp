@@ -6,6 +6,7 @@
 #include "raytrees.h"
 #include <nabo/nabo.h>
 #include "rayclusters.h"
+#include <iomanip>
 
 namespace ray
 {
@@ -1255,6 +1256,83 @@ bool Trees::save(const std::string &filename, const Eigen::Vector3d &offset, boo
     }
     ofs << std::endl;
   }
+  return true;
+}
+
+// save the shortest paths to a PLY file for visualization
+bool Trees::saveShortestPaths(const std::string &filename, const Eigen::Vector3d &offset) const
+{
+  std::ofstream ofs(filename.c_str(), std::ios::out);
+  if (!ofs.is_open())
+  {
+    std::cerr << "Error: cannot open " << filename << " for writing." << std::endl;
+    return false;
+  }
+
+  // Count valid path segments (edges between connected points)
+  size_t edge_count = 0;
+  for (size_t i = 0; i < points_.size(); i++)
+  {
+    if (points_[i].parent != -1)
+    {
+      edge_count++;
+    }
+  }
+
+  // Write PLY header for line segments
+  ofs << "ply" << std::endl;
+  ofs << "format ascii 1.0" << std::endl;
+  ofs << "comment Shortest paths from raycloudtools tree extraction" << std::endl;
+  ofs << "element vertex " << points_.size() << std::endl;
+  ofs << "property float x" << std::endl;
+  ofs << "property float y" << std::endl;
+  ofs << "property float z" << std::endl;
+  ofs << "property uchar red" << std::endl;
+  ofs << "property uchar green" << std::endl;
+  ofs << "property uchar blue" << std::endl;
+  ofs << "element edge " << edge_count << std::endl;
+  ofs << "property int vertex1" << std::endl;
+  ofs << "property int vertex2" << std::endl;
+  ofs << "end_header" << std::endl;
+
+  // Write vertices (all points)
+  for (size_t i = 0; i < points_.size(); i++)
+  {
+    const Eigen::Vector3d pos = points_[i].pos + offset;
+    
+    // Color points based on their root - each tree gets a different color
+    uint8_t red = 0, green = 0, blue = 0;
+    if (points_[i].root != -1)
+    {
+      // Use a simple hash to generate colors based on root index
+      int root_id = points_[i].root;
+      red = (uint8_t)((root_id * 73) % 256);
+      green = (uint8_t)((root_id * 151) % 256);
+      blue = (uint8_t)((root_id * 211) % 256);
+      
+      // Ensure color is not black (reserved for unconnected points)
+      if (red == 0 && green == 0 && blue == 0)
+      {
+        red = 128;
+      }
+    }
+    
+    ofs << std::fixed << std::setprecision(6) 
+        << pos[0] << " " << pos[1] << " " << pos[2] << " "
+        << static_cast<int>(red) << " " << static_cast<int>(green) << " " << static_cast<int>(blue) << std::endl;
+  }
+
+  // Write edges (parent-child connections representing shortest paths)
+  for (size_t i = 0; i < points_.size(); i++)
+  {
+    if (points_[i].parent != -1)
+    {
+      ofs << points_[i].parent << " " << i << std::endl;
+    }
+  }
+
+  ofs.close();
+  std::cout << "Shortest paths saved to " << filename << " (" << edge_count << " path segments)" << std::endl;
   return true;
 }
 
