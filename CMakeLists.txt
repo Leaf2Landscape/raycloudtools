@@ -182,6 +182,7 @@ endif(WITH_NETCDF)
 add_subdirectory(3rd-party)
 add_subdirectory(raylib)
 add_subdirectory(raycloudtools)
+add_subdirectory(examples)
 
 # Create apps
 # add_subdirectory(apps)

@@ -11,7 +11,8 @@ project(useraylib)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 
-find_package(raycloudtools)
-
 add_executable(useraylib useraylib.cpp)
-target_link_libraries(useraylib raycloud::raylib)
+target_link_libraries(useraylib raylib)
+
+add_executable(cylinder_radius cylinder_radius.cpp)
+target_link_libraries(cylinder_radius raylib)
