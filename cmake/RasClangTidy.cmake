@@ -64,7 +64,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(CMakeParseArguments)
 
 # find_package(Python3 COMPONENTS Interpreter)
-find_package(PythonInterp REQUIRED)
+cmake_policy(SET CMP0148 NEW)
+find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
+
 
 # Set the path where clang tidy config files are found
 set(CLANG_TIDY_CONFIG_PATH "${CMAKE_CURRENT_LIST_DIR}/tidy")
