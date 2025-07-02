@@ -52,6 +52,9 @@ public:
   /// save the trees representation to a text file
   bool save(const std::string &filename, const Eigen::Vector3d &offset, bool verbose) const;
 
+  /// save the shortest paths to a PLY file for visualization
+  bool saveShortestPaths(const std::string &filename, const Eigen::Vector3d &offset) const;
+
 private:
   /// The piecewise cylindrical represenation of all of the trees
   std::vector<BranchSection> sections_;

@@ -66,6 +66,7 @@ void usage(int exit_code = 1)
     std::cout << "                            --use_rays           - (-u) use rays to reduce trunk radius overestimation in noisy cloud data" << std::endl;
     std::cout << "                            --alpha_weighting    - (-p) use point cloud alpha as weight for connecting points. Branches will follow high weights" << std::endl;
     std::cout << "                            --largest_diameter        - (-l) only keep the tree with the largest DBH" << std::endl;
+    std::cout << "                            --save_paths         - (-sp) save shortest paths to PLY file for visualization" << std::endl;
     std::cout << "                            (for internal constants -c -g -s see source file rayextract)" << std::endl;
   // These are the internal parameters that I don't expose as they are 'advanced' only, you shouldn't need to adjust them
   //  std::cout << "                            --cylinder_length_to_width 4- (-c) how slender the cylinders are" << std::endl;
@@ -116,7 +117,8 @@ int rayExtract(int argc, char *argv[])
   ray::OptionalKeyValueArgument gradient_option("gradient", 'g', &gradient);
   ray::OptionalFlagArgument exclude_rays("exclude_rays", 'e'), segment_branches("branch_segmentation", 'b'),
     stalks("stalks", 's'), use_rays("use_rays", 'u'), write_empty("write_empty", 'w'),
-    alpha_weighted("alpha_weighting", 'p'), write_netcdf("write_netcdf", 'wn'), largest_diameter("largest_diameter", 'l');
+    alpha_weighted("alpha_weighting", 'p'), write_netcdf("write_netcdf", 'wn'), largest_diameter("largest_diameter", 'l'),
+    save_paths("save_paths", 'sp');
   ray::DoubleArgument width(0.01, 10.0, 0.25), drop(0.001, 1.0), max_gradient(0.01, 5.0), min_gradient(0.01, 5.0);
   ray::IntArgument leaf_angle(1, 6);
   ray::DoubleArgument max_diameter(0.01, 100.0), distance_limit(0.01, 10.0), height_min(0.01, 1000.0),
@@ -164,7 +166,7 @@ int rayExtract(int argc, char *argv[])
                           { &max_diameter_option, &distance_limit_option, &height_min_option, &crop_length_option,
                             &girth_height_ratio_option, &cylinder_length_to_width_option, &gap_ratio_option,
                             &span_ratio_option, &gravity_factor_option, &segment_branches, &grid_width_option,
-                            &global_taper_option, &global_taper_factor_option, &use_rays, &alpha_weighted, &largest_diameter, &verbose });
+                            &global_taper_option, &global_taper_factor_option, &use_rays, &alpha_weighted, &largest_diameter, &save_paths, &verbose });
   bool extract_leaves = ray::parseCommandLine(
     argc, argv, { &leaves, &cloud_file, &trees_file },
     { &leaf_option, &leaf_area_option, &leaf_droop_option, &leaf_angle_option, &leaf_density_option, &stalks });
@@ -267,6 +269,12 @@ int rayExtract(int argc, char *argv[])
 
     // output the picewise cylindrical description of the trees
     trees.save(cloud_file.nameStub() + "_trees.txt", offset, verbose.isSet());
+    
+    // optionally save shortest paths for visualization
+    if (save_paths.isSet())
+    {
+      trees.saveShortestPaths(cloud_file.nameStub() + "_shortest_paths.ply", offset);
+    }
     // we also save a segmented (one colour per tree) file, as this is a useful output
     cloud.translate(offset);
     cloud.save(cloud_file.nameStub() + "_segmented.ply");
