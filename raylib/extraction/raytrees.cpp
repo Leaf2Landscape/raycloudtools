@@ -845,7 +845,10 @@ double Trees::estimateCylinderRadius(const std::vector<int> &nodes, const Eigen:
   // get the mean radius
   double power = 0.25; // when 1 this is usual radius, but lower powers reduce outliers due to foliage
   std::vector<double> norms;
+  std::vector<double> weights; // Add weight storage for alpha weighting
   norms.reserve(nodes.size());
+  weights.reserve(nodes.size());
+  
   if (params_->use_rays)
   {
     for (auto &node : nodes)
@@ -856,6 +859,11 @@ double Trees::estimateCylinderRadius(const std::vector<int> &nodes, const Eigen:
       ray -= dir * ray.dot(dir); // flatten
       offset += ray*std::max(0.0, std::min(-offset.dot(ray)/ray.dot(ray), 1.0)); // move to closest point
       norms.push_back(offset.norm());
+      
+      // Convert alpha (0-255) to weight (0-1), with higher alpha = higher weight
+      double alpha_weight = params_->alpha_weighting ? 
+          static_cast<double>(points_[node].weight) / 255.0 : 1.0;
+      weights.push_back(alpha_weight);
     }
   }
   else
@@ -865,22 +873,33 @@ double Trees::estimateCylinderRadius(const std::vector<int> &nodes, const Eigen:
       Eigen::Vector3d offset = points_[node].pos - sections_[sec_].tip;
       offset -= dir * offset.dot(dir); // flatten    
       norms.push_back(offset.norm());
+      
+      // Convert alpha (0-255) to weight (0-1)
+      double alpha_weight = params_->alpha_weighting ? 
+          static_cast<double>(points_[node].weight) / 255.0 : 1.0;
+      weights.push_back(alpha_weight);
     }
   }
 
-  for (auto &norm: norms)
+  // Weighted power-law averaging
+  double weight_sum = 0.0;
+  for (size_t i = 0; i < norms.size(); i++)
   {
-    rad += std::pow(norm, power);
+    rad += weights[i] * std::pow(norms[i], power);
+    weight_sum += weights[i];
   }
+  
   const double eps = 1e-5; // prevent division by 0
-  rad /= (double)nodes.size() + eps;
+  rad /= weight_sum + eps;
   rad = std::pow(rad, 1.0/power);
+  
+  // Weighted error calculation
   double e = 0.0;
-  for (auto &norm : norms)
+  for (size_t i = 0; i < norms.size(); i++)
   {
-    e += std::abs(norm - rad);
+    e += weights[i] * std::abs(norms[i] - rad);
   }
-  e /= (double)nodes.size() + eps;
+  e /= weight_sum + eps;
 #define NEW_ACCURACY
 #if defined NEW_ACCURACY
   const double sensor_noise = 0.02; // this prevents cylinders with a small number of very accurate points from totally dominating
