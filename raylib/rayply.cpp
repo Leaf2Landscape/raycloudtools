@@ -392,7 +392,9 @@ bool readPly(const std::string &file_name, bool is_ray_cloud,
         normal_is_float = line.find("float") != std::string::npos;
       }
     }
-    if (line == "property float nx" || line == "property double nx")
+    // Support both standard PLY format and CloudCompare format with scalar_ prefixes
+    if (line == "property float nx" || line == "property double nx" || 
+        line == "property float scalar_nx" || line == "property double scalar_nx")
     {
 #if !RAYLIB_WITH_NORMAL_FIELD
       if (normal_offset == -1)
@@ -402,13 +404,13 @@ bool readPly(const std::string &file_name, bool is_ray_cloud,
         normal_is_float = line.find("float") != std::string::npos;
       }
     }
-    if (line.find("time") != std::string::npos)
+    if (line.find("time") != std::string::npos || line.find("scalar_time") != std::string::npos)
     {
       time_offset = row_size;
       if (line.find("float") != std::string::npos)
         time_is_float = true;
     }
-    if (line.find("intensity") != std::string::npos)
+    if (line.find("intensity") != std::string::npos || line.find("scalar_alpha") != std::string::npos)
     {
       intensity_offset = row_size;
       intensity_type = data_type;
