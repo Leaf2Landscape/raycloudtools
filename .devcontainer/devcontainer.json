@@ -4,6 +4,7 @@
         "dockerfile": "Dockerfile",
         "context": ".."
     },
+    "mounts": ["source=/d,target=/mnt/d,type=bind"],
     "customizations": {
         "vscode": {
             "extensions": [

@@ -51,9 +51,10 @@ make install
 cd /workspaces/raycloudtools
 ldconfig /usr/local/lib
 
+echo "Build Raycloudtools completed successfully."
+
 # Clone and build TreeTools
-echo "Cloning and building TreeTools..."
-rm -rf treetools && git clone https://github.com/Leaf2Landscape/treetools.git
+echo "building TreeTools..."
 cd treetools
 mkdir -p build
 cd build
