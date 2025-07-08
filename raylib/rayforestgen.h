@@ -37,7 +37,7 @@ public:
   /// makes the forest geometry
   void make(const ForestParams &params = ForestParams());
   /// make a forest from a file of base locations and radii
-  bool makeFromFile(const std::string &filename, const TreeParams $params);
+  bool makeFromFile(const std::string &filename, const TreeParams &params);
   /// converts the forest geometry into a set of rays, for a chosen @c ray_density
   void generateRays(double ray_density);
 
