@@ -11,13 +11,16 @@ namespace ray
 {
 void ForestGen::make(const ForestParams &params)
 {
-  double rad = params.max_tree_radius;
+  double current_max_radius = params.max_tree_radius;
+  // Ensure min_radius is not greater than max_radius
+  double current_min_radius = std::min(params.min_tree_radius, params.max_tree_radius);
+
   double num_trees = sqr(params.field_width) * params.adult_tree_density;
   for (int level = 0; level < 2; level++)
   {
     for (int i = 0; i < (int)num_trees; i++)
     {
-      double radius = rad * (1.0 + random(-0.25, 0.5) * params.random_factor);
+      double radius = random(current_min_radius, current_max_radius);
       Eigen::Vector3d root;
       bool found = false;
       while (!found)
@@ -42,7 +45,9 @@ void ForestGen::make(const ForestParams &params)
       trees_.push_back(tree);
       trees_.back().make(params);
     }
-    rad /= 2.0;
+    // Scale down the radius range for the next level of smaller trees
+    current_max_radius /= 2.0;
+    current_min_radius /= 2.0;
     num_trees *= pow(2.0, params.dimension);
   }
 }

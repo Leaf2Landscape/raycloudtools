@@ -7,7 +7,7 @@
 #define RAYLIB_RAYFORESTGEN_H
 
 #include "rayforeststructure.h"
-#include "raylib/raylibconfig.h"
+#include "raylib/raylibconfig.h" // Corrected back to .h
 #include "raytreegen.h"
 #include "rayutils.h"
 
@@ -18,11 +18,13 @@ struct ForestParams : TreeParams
   ForestParams()
     : field_width(20.0)
     , max_tree_radius(0.2)
+    , min_tree_radius(0.01)
     , dimension(2.0)
     , adult_tree_density(0.01)
   {}
   double field_width;
   double max_tree_radius;
+  double min_tree_radius;     // minimum trunk radius
   double dimension;           // number of trees = radius^-d
   double adult_tree_density;  // number of trees per m^2
 };
@@ -35,7 +37,7 @@ public:
   /// makes the forest geometry
   void make(const ForestParams &params = ForestParams());
   /// make a forest from a file of base locations and radii
-  bool makeFromFile(const std::string &filename, const TreeParams &params);
+  bool makeFromFile(const std::string &filename, const TreeParams $params);
   /// converts the forest geometry into a set of rays, for a chosen @c ray_density
   void generateRays(double ray_density);
 

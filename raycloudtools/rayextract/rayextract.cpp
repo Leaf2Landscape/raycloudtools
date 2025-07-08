@@ -68,9 +68,9 @@ void usage(int exit_code = 1)
     std::cout << "                            --largest_diameter        - (-l) only keep the tree with the largest DBH" << std::endl;
     std::cout << "                            (for internal constants -c -g -s see source file rayextract)" << std::endl;
   // These are the internal parameters that I don't expose as they are 'advanced' only, you shouldn't need to adjust them
-  //  std::cout << "                            --cylinder_length_to_width 4- (-c) how slender the cylinders are" << std::endl;
-  //  std::cout << "                            --gap_ratio 0.016    - (-g) will split for lateral gaps at this multiple of branch length" << std::endl;
-  //  std::cout << "                            --span_ratio 4.5     - (-s) will split when branch width spans this multiple of radius" << std::endl;
+    std::cout << "                            --cylinder_length_to_width 4- (-c) how slender the cylinders are" << std::endl;
+    std::cout << "                            --gap_ratio 0.016    - (-g) will split for lateral gaps at this multiple of branch length" << std::endl;
+    std::cout << "                            --span_ratio 4.5     - (-s) will split when branch width spans this multiple of radius" << std::endl;
   }
   if (extract_type == "leaves" || none)
   {
