@@ -720,7 +720,7 @@ bool readPly(const std::string &file_name, std::vector<Eigen::Vector3d> &starts,
     times.insert(times.end(), time_points.begin(), time_points.end());
     colours.insert(colours.end(), colour_values.begin(), colour_values.end());
   };
-  return readPly(file_name, is_ray_cloud, apply, max_intensity, std::numeric_limits<size_t>::max());
+  return readPly(file_name, is_ray_cloud, apply, max_intensity, !hasTimeInformation(file_name), std::numeric_limits<size_t>::max());
 }
 
 bool writePlyMesh(const std::string &file_name, const Mesh &mesh, bool flip_normals)
@@ -1034,12 +1034,31 @@ bool convertCloud(const std::string &in_name, const std::string &out_name,
     }
     ray::writeRayCloudChunk(ofs, buffer, starts, ends, times, colours, has_warned);
   };
-  if (!ray::readPly(in_name, true, applyToChunk, 0))
+  if (!ray::readPly(in_name, true, applyToChunk, 0, !hasTimeInformation(in_name)))
   {
     return false;
   }
   ray::writeRayCloudChunkEnd(ofs);
   return true;
+}
+
+bool hasTimeInformation(const std::string &file_name)
+{
+  std::ifstream header_check(file_name.c_str(), std::ios::in | std::ios::binary);
+  if (header_check.good())
+  {
+    std::string line;
+    while (line != "end_header\r" && line != "end_header" && getline(header_check, line))
+    {
+      if (line.find("time") != std::string::npos || line.find("scalar_time") != std::string::npos)
+      {
+        header_check.close();
+        return true;
+      }
+    }
+  }
+  header_check.close();
+  return false;
 }
 
 }  // namespace ray

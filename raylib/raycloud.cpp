@@ -350,7 +350,7 @@ bool RAYLIB_EXPORT Cloud::getInfo(const std::string &file_name, Info &info)
     info.rays_bound.min_bound_ = minVector(info.rays_bound.min_bound_, info.starts_bound.min_bound_);
     info.rays_bound.max_bound_ = maxVector(info.rays_bound.max_bound_, info.starts_bound.max_bound_);
   };
-  bool success = readPly(file_name, true, find_bounds, 0);
+  bool success = readPly(file_name, true, find_bounds, 0, !hasTimeInformation(file_name));
   info.centroid /= static_cast<double>(info.num_bounded);
   return success;
 }
@@ -387,7 +387,7 @@ double Cloud::estimatePointSpacing(const std::string &file_name, const Cuboid &b
       }
     }
   };
-  if (!readPly(file_name, true, estimate_size, 0))
+  if (!readPly(file_name, true, estimate_size, 0, !hasTimeInformation(file_name)))
     return 0;
 
   double points_per_voxel = (double)num_points / num_voxels;
@@ -527,7 +527,7 @@ bool Cloud::read(const std::string &file_name,
                                     std::vector<double> &times, std::vector<RGBA> &colours)>
                    apply)
 {
-  return readPly(file_name, true, apply, 0);
+  return readPly(file_name, true, apply, 0, !hasTimeInformation(file_name));
 }
 
 }  // namespace ray

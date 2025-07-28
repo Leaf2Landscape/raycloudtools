@@ -25,6 +25,7 @@ TreesParams::TreesParams()
   , global_taper(0.012)
   , global_taper_factor(0.3)
   , alpha_weighting(false)
+  , segment_alpha_weighting(false)
   , largest_diameter(false)
 {}
 
@@ -861,7 +862,7 @@ double Trees::estimateCylinderRadius(const std::vector<int> &nodes, const Eigen:
       norms.push_back(offset.norm());
       
       // Convert alpha (0-255) to weight (0-1), with higher alpha = higher weight
-      double alpha_weight = params_->alpha_weighting ? 
+      double alpha_weight = params_->segment_alpha_weighting ? 
           static_cast<double>(points_[node].weight) / 255.0 : 1.0;
       weights.push_back(alpha_weight);
     }
@@ -875,7 +876,7 @@ double Trees::estimateCylinderRadius(const std::vector<int> &nodes, const Eigen:
       norms.push_back(offset.norm());
       
       // Convert alpha (0-255) to weight (0-1)
-      double alpha_weight = params_->alpha_weighting ? 
+      double alpha_weight = params_->segment_alpha_weighting ? 
           static_cast<double>(points_[node].weight) / 255.0 : 1.0;
       weights.push_back(alpha_weight);
     }

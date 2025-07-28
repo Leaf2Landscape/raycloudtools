@@ -72,6 +72,9 @@ void RAYLIB_EXPORT writePointCloudChunkEnd(std::ofstream &out);
 /// Simple function for converting a ray cloud according to the per-ray function @c apply
 bool convertCloud(const std::string &in_name, const std::string &out_name,
                   std::function<void(Eigen::Vector3d &start, Eigen::Vector3d &ends, double &time, RGBA &colour)> apply);
+
+/// Helper function to check if a PLY file has time information in its header
+bool RAYLIB_EXPORT hasTimeInformation(const std::string &file_name);
 }  // namespace ray
 
 #endif  // RAYLIB_RAYPLY_H

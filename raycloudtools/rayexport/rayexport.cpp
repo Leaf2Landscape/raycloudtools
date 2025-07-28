@@ -40,7 +40,7 @@ int rayExport(int argc, char *argv[])
     auto add_chunk = [&las_writer](std::vector<Eigen::Vector3d> &, std::vector<Eigen::Vector3d> &ends,
                                    std::vector<double> &times,
                                    std::vector<ray::RGBA> &colours) { las_writer.writeChunk(ends, times, colours); };
-    if (!ray::readPly(raycloud_file.name(), true, add_chunk, 0))
+    if (!ray::readPly(raycloud_file.name(), true, add_chunk, 0, !ray::hasTimeInformation(raycloud_file.name())))
       usage();
   }
   else if (pointcloud_file.nameExt() == "ply")
@@ -54,7 +54,7 @@ int rayExport(int argc, char *argv[])
                                      std::vector<double> &times, std::vector<ray::RGBA> &colours) {
       ray::writePointCloudChunk(ofs, buffer, ends, times, colours, has_warned);
     };
-    if (!ray::readPly(raycloud_file.name(), true, add_chunk, 0))
+    if (!ray::readPly(raycloud_file.name(), true, add_chunk, 0, !ray::hasTimeInformation(raycloud_file.name())))
       usage();
     ray::writePointCloudChunkEnd(ofs);
   }
@@ -88,7 +88,7 @@ int rayExport(int argc, char *argv[])
         }
       }    
     };
-    if (!ray::readPly(raycloud_file.name(), true, add_chunk, 0))
+    if (!ray::readPly(raycloud_file.name(), true, add_chunk, 0, !ray::hasTimeInformation(raycloud_file.name())))
     {
       usage();
     }
@@ -135,7 +135,7 @@ int rayExport(int argc, char *argv[])
       }
       ray::writePointCloudChunk(ofs, buffer, chunk.starts, chunk.times, chunk.colours, has_warned);
     };
-    if (!ray::readPly(raycloud_file.name(), true, decimate_time, 0))
+    if (!ray::readPly(raycloud_file.name(), true, decimate_time, 0, !ray::hasTimeInformation(raycloud_file.name())))
       usage();
     ray::writePointCloudChunkEnd(ofs);
   }
@@ -169,7 +169,7 @@ int rayExport(int argc, char *argv[])
         last_time_slot = time_slot;
       }
     };
-    if (!ray::readPly(raycloud_file.name(), true, decimate_time, 0))
+    if (!ray::readPly(raycloud_file.name(), true, decimate_time, 0, !ray::hasTimeInformation(raycloud_file.name())))
     {
       usage();
     }

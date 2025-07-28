@@ -141,7 +141,7 @@ int rayInfo(int argc, char *argv[])
       }
     }
   };
-  if (!ray::readPly(cloud.name(), true, get_info, 0))
+  if (!ray::readPly(cloud.name(), true, get_info, 0, !ray::hasTimeInformation(cloud.name())))
   {
     usage();
   }

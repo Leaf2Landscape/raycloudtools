@@ -65,6 +65,7 @@ void usage(int exit_code = 1)
     std::cout << "                            --grid_width 10      - (-w) crops results assuming cloud has been gridded with given width" << std::endl;
     std::cout << "                            --use_rays           - (-u) use rays to reduce trunk radius overestimation in noisy cloud data" << std::endl;
     std::cout << "                            --alpha_weighting    - (-p) use point cloud alpha as weight for connecting points. Branches will follow high weights" << std::endl;
+    std::cout << "                            --segment_alpha_weighting - (-saw) use point cloud alpha as weight for cylinder fitting" << std::endl;
     std::cout << "                            --largest_diameter        - (-l) only keep the tree with the largest DBH" << std::endl;
     std::cout << "                            --save_paths         - (-sp) save shortest paths to PLY file for visualization" << std::endl;
     std::cout << "                            (for internal constants -c -g -s see source file rayextract)" << std::endl;
@@ -117,7 +118,8 @@ int rayExtract(int argc, char *argv[])
   ray::OptionalKeyValueArgument gradient_option("gradient", 'g', &gradient);
   ray::OptionalFlagArgument exclude_rays("exclude_rays", 'e'), segment_branches("branch_segmentation", 'b'),
     stalks("stalks", 's'), use_rays("use_rays", 'u'), write_empty("write_empty", 'w'),
-    alpha_weighted("alpha_weighting", 'p'), write_netcdf("write_netcdf", 'wn'), largest_diameter("largest_diameter", 'l'),
+    alpha_weighted("alpha_weighting", 'p'), segment_alpha_weighted("segment_alpha_weighting", '\0'), 
+    write_netcdf("write_netcdf", 'wn'), largest_diameter("largest_diameter", 'l'),
     save_paths("save_paths", 'sp');
   ray::DoubleArgument width(0.01, 10.0, 0.25), drop(0.001, 1.0), max_gradient(0.01, 5.0), min_gradient(0.01, 5.0);
   ray::IntArgument leaf_angle(1, 6);
@@ -166,7 +168,7 @@ int rayExtract(int argc, char *argv[])
                           { &max_diameter_option, &distance_limit_option, &height_min_option, &crop_length_option,
                             &girth_height_ratio_option, &cylinder_length_to_width_option, &gap_ratio_option,
                             &span_ratio_option, &gravity_factor_option, &segment_branches, &grid_width_option,
-                            &global_taper_option, &global_taper_factor_option, &use_rays, &alpha_weighted, &largest_diameter, &save_paths, &verbose });
+                            &global_taper_option, &global_taper_factor_option, &use_rays, &alpha_weighted, &segment_alpha_weighted, &largest_diameter, &save_paths, &verbose });
   bool extract_leaves = ray::parseCommandLine(
     argc, argv, { &leaves, &cloud_file, &trees_file },
     { &leaf_option, &leaf_area_option, &leaf_droop_option, &leaf_angle_option, &leaf_density_option, &stalks });
@@ -263,6 +265,7 @@ int rayExtract(int argc, char *argv[])
     params.use_rays = use_rays.isSet();
     params.segment_branches = segment_branches.isSet();
     params.alpha_weighting = alpha_weighted.isSet();
+    params.segment_alpha_weighting = segment_alpha_weighted.isSet();
     params.largest_diameter = largest_diameter.isSet();
 
     ray::Trees trees(cloud, offset, mesh, params, verbose.isSet());

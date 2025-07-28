@@ -100,7 +100,7 @@ bool splitPlane(const std::string &file_name, const std::string &in_name, const 
     in_chunk.clear();
     out_chunk.clear();
   };
-  if (!readPly(file_name, true, per_chunk, 0))
+  if (!readPly(file_name, true, per_chunk, 0, !hasTimeInformation(file_name)))
     return false;
 
   inside_writer.end();
@@ -226,7 +226,7 @@ bool splitCapsule(const std::string &file_name, const std::string &in_name, cons
     in_chunk.clear();
     out_chunk.clear();
   };
-  if (!readPly(file_name, true, per_chunk, 0))
+  if (!readPly(file_name, true, per_chunk, 0, !hasTimeInformation(file_name)))
     return false;
 
   inside_writer.end();
@@ -283,7 +283,7 @@ bool splitBox(const std::string &file_name, const std::string &in_name, const st
     in_chunk.clear();
     out_chunk.clear();
   };
-  if (!readPly(file_name, true, per_chunk, 0))
+  if (!readPly(file_name, true, per_chunk, 0, !hasTimeInformation(file_name)))
     return false;
 
   inside_writer.end();

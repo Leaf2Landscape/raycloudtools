@@ -33,6 +33,7 @@ struct RAYLIB_EXPORT TreesParams
   double global_taper_factor; // 0 estimates per-tree tapering, 1 uses per-scan tapering, 0.5 is mid-way on mid-weight trees
   bool use_rays; // use the full rays in order to estimate a smaller radius when points are not all on the real branch
   bool alpha_weighting;    // use point cloud alpha as weight for connecting points. Branches will follow high weight
+  bool segment_alpha_weighting; // use point cloud alpha as weight for cylinder fitting
   bool largest_diameter;        // only keep the tree with the largest DBH
 };
 
