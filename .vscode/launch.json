@@ -2,11 +2,11 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "CMake Debug Current File",
+            "name": "Debug rayalign",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/bin/${fileBasenameNoExtension}d",
-            "args": [],
+            "program": "${workspaceFolder}/build/bin/rayalign",
+            "args": ["${input:inputFile}", "${input:outputFile}"],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [],
@@ -19,8 +19,97 @@
                     "ignoreFailures": true
                 }
             ],
-            "preLaunchTask": "CMake: build current file",
+            "preLaunchTask": "Build rayalign",
             "miDebuggerPath": "/usr/bin/gdb"
+        },
+        {
+            "name": "Debug raycolour",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/bin/raycolour",
+            "args": ["${input:inputFile}", "${input:outputFile}"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "preLaunchTask": "Build raycolour",
+            "miDebuggerPath": "/usr/bin/gdb"
+        },
+        {
+            "name": "Debug rayinfo",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/bin/rayinfo",
+            "args": ["${input:inputFile}"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "preLaunchTask": "Build rayinfo",
+            "miDebuggerPath": "/usr/bin/gdb"
+        },
+        {
+            "name": "Debug rayrender",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/bin/rayrender",
+            "args": ["${input:inputFile}", "${input:outputFile}"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "preLaunchTask": "Build rayrender",
+            "miDebuggerPath": "/usr/bin/gdb"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "forest_raycloud",
+            "description": "Input file path",
+            "default": "test_data/forest.ply",
+            "type": "promptString"
+        },
+        {
+            "id": "forest_terrain_mesh",
+            "description": "Input file path",
+            "default": "${workspaceFolder}/test_data/forest_mesh.ply",
+            "type": "promptString"
+        },
+        {
+            "id": "forest_treefile",
+            "description": "forest_treefile",
+            "default": "${workspaceFolder}/test_data/forest_trees.txt",
+            "type": "promptString"
+        },
+        {
+            "id": "forest_treefile_info",
+            "description": "forest_treefile_info",
+            "default": "${workspaceFolder}/test_data/forest_trees_info.txt",
+            "type": "promptString"
         }
     ]
 }

@@ -27,6 +27,7 @@ echo "Conditional copying of RiVLib completed."
 # Build RayCloudTools
 echo "Building RayCloudTools..."
 cd /workspaces/raycloudtools
+rm -rf build
 mkdir -p build
 cd build 
 
@@ -55,6 +56,7 @@ ldconfig /usr/local/lib
 echo "Cloning and building TreeTools..."
 rm -rf treetools && git clone https://github.com/Leaf2Landscape/treetools.git
 cd treetools
+rm -rf build
 mkdir -p build
 cd build
 cmake .. \

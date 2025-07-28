@@ -1,46 +1,83 @@
 {
-    "version": "2.0.0",
-    "tasks": [
-        {
-            "type": "shell",
-            "label": "CMake: configure",
-            "command": "cmake",
-            "args": [
-                "-B",
-                "build",
-                "-DCMAKE_BUILD_TYPE=Debug"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            }
-        },
-        {
-            "type": "shell",
-            "label": "CMake: build current file",
-            "command": "cmake",
-            "args": [
-                "--build",
-                "build",
-                "--config",
-                "Debug",
-                "--target",
-                "${fileBasenameNoExtension}",
-                "--parallel",
-                "$(nproc)"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "dependsOn": [
-                "CMake: configure"
-            ],
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
-            "problemMatcher": [
-                "$gcc"
-            ]
-        }
-    ]
+ "version": "2.0.0",
+ "tasks": [
+  {
+   "type": "shell",
+   "label": "CMake: configure",
+   "command": "cmake",
+   "args": [
+    "-B",
+    "build",
+    "-DGeoTIFF_INCLUDE_DIR=/usr/include/geotiff",
+    "-DGeoTIFF_LIBRARY=/usr/lib/x86_64-linux-gnu/libgeotiff.so",
+    "-DPROJ_INCLUDE_DIR=/usr/include/proj",
+    "-DPROJ_LIBRARY=/usr/lib/x86_64-linux-gnu/libproj.so",
+    "-DWITH_QHULL=ON",
+    "-DWITH_LAS=ON",
+    "-DDOUBLE_RAYS=ON",
+    "-DWITH_TIFF=ON",
+    "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+    "-DRAYCLOUD_BUILD_TESTS=ON",
+    "-DWITH_RIEGL=OFF",
+    "-DWITH_NETCDF=ON"
+   ],
+   "options": {
+    "cwd": "${workspaceFolder}"
+   }
+  },
+  {
+   "type": "shell",
+   "label": "CMake: build current file",
+   "command": "sh",
+   "args": [
+    "-c",
+    "cmake --build build --config Debug --target ${fileBasenameNoExtension} --parallel $(nproc) && cd build && make install"
+   ],
+   "options": {
+    "cwd": "${workspaceFolder}"
+   },
+   "dependsOn": [
+    "CMake: configure"
+   ],
+   "group": {
+    "kind": "build",
+    "isDefault": true
+   },
+   "problemMatcher": [
+    "$msCompile"
+   ]
+  },
+  {
+   "type": "shell",
+   "label": "Build All Tools",
+   "command": "make",
+   "args": [
+    "install",
+    "-j$(nproc)"
+   ],
+   "options": {
+    "cwd": "${workspaceFolder}/build"
+   },
+   "dependsOn": [
+    "CMake: configure"
+   ],
+   "group": "build",
+   "problemMatcher": [
+    "$msCompile"
+   ]
+  },
+  {
+   "type": "shell",
+   "label": "Clean Build",
+   "command": "rm",
+   "args": [
+    "-rf",
+    "build"
+   ],
+   "options": {
+    "cwd": "${workspaceFolder}"
+   },
+   "group": "build"
+  }
+ ]
 }
