@@ -7,6 +7,9 @@
 #include <nabo/nabo.h>
 #include "rayclusters.h"
 #include <iomanip>
+#include <numeric>   // For std::accumulate
+#include <algorithm> // For std::sort
+#include <cmath>     // For std::pow, std::sqrt
 
 namespace ray
 {
@@ -840,6 +843,83 @@ Eigen::Vector3d Trees::vectorToCylinderCentre(const std::vector<int> &nodes, con
   return Eigen::Vector3d(0, 0, 0);
 }
 
+// --- START: NEW HELPER FUNCTIONS FOR ADAPTIVE WEIGHTING ---
+
+// Calculates the sample skewness of a dataset.
+double calculateSkewness(const std::vector<double>& data) {
+    if (data.size() < 3) {
+        return 0.0; // Skewness is not well-defined for small samples
+    }
+
+    double sum = std::accumulate(data.begin(), data.end(), 0.0);
+    double mean = sum / data.size();
+
+    double m2 = 0.0; // Second moment (related to variance)
+    double m3 = 0.0; // Third moment (related to skewness)
+    for (const double& val : data) {
+        double dev = val - mean;
+        m2 += dev * dev;
+        m3 += dev * dev * dev;
+    }
+    m2 /= data.size();
+    m3 /= data.size();
+
+    if (m2 < 1e-9) {
+        return 0.0; // Avoid division by zero if variance is tiny
+    }
+
+    double skewness = m3 / std::pow(m2, 1.5);
+    return skewness;
+}
+
+// Calculates a specific percentile value from a dataset.
+double calculatePercentile(std::vector<double>& data, double percentile) {
+    if (data.empty()) {
+        return 0.0;
+    }
+    std::sort(data.begin(), data.end());
+    
+    // Simple percentile calculation (nearest rank)
+    int index = static_cast<int>(std::round((percentile / 100.0) * (data.size() - 1)));
+    index = std::max(0, std::min(static_cast<int>(data.size() - 1), index));
+    
+    return data[index];
+}
+
+// Determines the alpha threshold based on the skewness of the distribution.
+double Trees::getAdaptiveAlphaThreshold(const std::vector<int>& nodes)
+{
+    // 1. Collect the alpha values from the provided nodes.
+    std::vector<double> alpha_values;
+    alpha_values.reserve(nodes.size());
+    for (const auto& node : nodes) {
+        alpha_values.push_back(static_cast<double>(points_[node].weight));
+    }
+
+    if (alpha_values.empty()) {
+        return 0.0;
+    }
+
+    // 2. Calculate skewness to determine the best percentile.
+    double skewness = calculateSkewness(alpha_values);
+
+    // 3. Choose percentile based on skewness.
+    double percentile;
+    if (skewness < 1.0) {
+        percentile = 75.0;
+    } else if (skewness < 2.0) {
+        percentile = 85.0;
+    } else if (skewness < 3.0) {
+        percentile = 90.0;
+    } else {
+        percentile = 95.0;
+    }
+
+    // 4. Calculate and return the threshold value.
+    return calculatePercentile(alpha_values, percentile);
+}
+
+// --- END: NEW HELPER FUNCTIONS FOR ADAPTIVE WEIGHTING ---
 double Trees::estimateCylinderRadius(const std::vector<int> &nodes, const Eigen::Vector3d &dir, double &accuracy)
 {
   double rad = 0.0;
@@ -850,65 +930,67 @@ double Trees::estimateCylinderRadius(const std::vector<int> &nodes, const Eigen:
   norms.reserve(nodes.size());
   weights.reserve(nodes.size());
   
-  if (params_->use_rays)
+  // Define how aggressively to apply the weights. Higher values create stronger separation.
+  const double alpha_power = 1.0; 
+
+  // This loop calculates the distance (norm) and weight for each point
+  for (auto &node : nodes)
   {
-    for (auto &node : nodes)
+    Eigen::Vector3d offset = points_[node].pos - sections_[sec_].tip;
+    offset -= dir * offset.dot(dir); // flatten
+
+    if (params_->use_rays)
     {
-      Eigen::Vector3d offset = points_[node].pos - sections_[sec_].tip;
-      offset -= dir * offset.dot(dir); // flatten    
       Eigen::Vector3d ray = points_[node].start - points_[node].pos;
       ray -= dir * ray.dot(dir); // flatten
-      offset += ray*std::max(0.0, std::min(-offset.dot(ray)/ray.dot(ray), 1.0)); // move to closest point
-      norms.push_back(offset.norm());
-      
-      // Convert alpha (0-255) to weight (0-1), with higher alpha = higher weight
-      double alpha_weight = params_->segment_alpha_weighting ? 
-          static_cast<double>(points_[node].weight) / 255.0 : 1.0;
-      weights.push_back(alpha_weight);
+      offset += ray * std::max(0.0, std::min(-offset.dot(ray) / ray.dot(ray), 1.0)); // move to closest point
     }
-  }
-  else
-  {
-    for (auto &node : nodes)
-    {
-      Eigen::Vector3d offset = points_[node].pos - sections_[sec_].tip;
-      offset -= dir * offset.dot(dir); // flatten    
-      norms.push_back(offset.norm());
-      
-      // Convert alpha (0-255) to weight (0-1)
-      double alpha_weight = params_->segment_alpha_weighting ? 
-          static_cast<double>(points_[node].weight) / 255.0 : 1.0;
-      weights.push_back(alpha_weight);
+    norms.push_back(offset.norm());
+    
+    // This is the "existing weight" from the original version (all points equal)
+    double alpha_weight = 1.0;
+
+    // If the flag is on, we "add" the intensity method by overwriting the default weight
+    if (params_->segment_alpha_weighting) {
+        // Normalize the alpha value (0-255) to a weight (0.0-1.0)
+        double normalized_alpha = static_cast<double>(points_[node].weight) / 255.0;
+        printf("Normalized alpha for node %d: %f\n", node, normalized_alpha);
+
+        // Apply a power to make high-intensity points much more influential
+        alpha_weight = std::pow(normalized_alpha, alpha_power);
     }
+    weights.push_back(alpha_weight);
   }
 
-  // Weighted power-law averaging
+  // Weighted power-law averaging (now uses either 1.0 or the intensity weight)
+  double rad_numerator = 0.0;
   double weight_sum = 0.0;
   for (size_t i = 0; i < norms.size(); i++)
   {
-    rad += weights[i] * std::pow(norms[i], power);
+    rad_numerator += weights[i] * std::pow(norms[i], power);
     weight_sum += weights[i];
   }
   
   const double eps = 1e-5; // prevent division by 0
-  rad /= weight_sum + eps;
+  if (weight_sum < eps)
+  {
+      accuracy = 0.0;
+      rad = 0.0;
+      return rad;
+  }
+  rad = rad_numerator / weight_sum;
   rad = std::pow(rad, 1.0/power);
   
-  // Weighted error calculation
+  // Weighted error calculation for accuracy
   double e = 0.0;
   for (size_t i = 0; i < norms.size(); i++)
   {
     e += weights[i] * std::abs(norms[i] - rad);
   }
-  e /= weight_sum + eps;
-#define NEW_ACCURACY
-#if defined NEW_ACCURACY
-  const double sensor_noise = 0.02; // this prevents cylinders with a small number of very accurate points from totally dominating
+  e /= weight_sum;
+
+  const double sensor_noise = 0.02; 
   accuracy = rad / (e + sensor_noise);
-#else // this one goes down to 0, which could be bad if all cylinder points were low accuracy
-  accuracy = std::max(eps, rad - 2.0*e) / std::max(eps, rad); // so even distribution is accuracy 0, and cylinder shell is accuracy 1 
-  accuracy *= std::min((double)nodes.size() / 3.0, 1.0);
-#endif
   accuracy = std::max(accuracy, eps);
   rad = std::max(rad, eps);
 
