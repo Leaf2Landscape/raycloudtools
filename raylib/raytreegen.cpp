@@ -127,7 +127,10 @@ void TreeGen::make(const TreeParams &params)
   Pose base(segments_[0].tip, Eigen::Quaterniond(Eigen::AngleAxisd(params.random_factor * random(0.0, 2.0 * kPi),
                                                                    Eigen::Vector3d(0, 0, 1))));
 
-  addBranch(0, base, segments_[0].radius, params);
+  // Store the user-specified trunk radius before generating the tree
+  const double target_trunk_radius = segments_[0].radius;
+
+  addBranch(0, base, target_trunk_radius, params);
 
   com /= total_mass;
   // having made the tree, we now scale the whole thing in order that it matches the expected tapering gradient
@@ -141,6 +144,24 @@ void TreeGen::make(const TreeParams &params)
     branch.tip = root + (branch.tip - root) * scale;
     branch.radius *= scale;
   }
+
+  // --- NEWLY ADDED CORRECTION STEP ---
+  // The scaling above changed the trunk radius. Now, we apply a final
+  // correction to the entire tree to restore the trunk radius to the
+  // user-specified value, while preserving the tree's overall shape.
+  if (segments_[0].radius > 0)
+  {
+    double correction_scale = target_trunk_radius / segments_[0].radius;
+    for (auto &branch : segments_)
+    {
+      branch.tip = root + (branch.tip - root) * correction_scale;
+      branch.radius *= correction_scale;
+    }
+    for (auto &leaf : leaves_) leaf = root + (leaf - root) * correction_scale;
+    for (auto &start : ray_starts_) start = root + (start - root) * correction_scale;
+    for (auto &end : ray_ends_) end = root + (end - root) * correction_scale;
+  }
+  // --- END ADDED CORRECTION STEP ---
 }
 
 // create a set of rays covering the tree at a roughly uniform distribution

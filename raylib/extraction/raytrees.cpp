@@ -7,6 +7,8 @@
 #include <nabo/nabo.h>
 #include "rayclusters.h"
 
+#include <algorithm> // Required for std::max
+
 namespace ray
 {
 TreesParams::TreesParams()
@@ -18,6 +20,7 @@ TreesParams::TreesParams()
   , cylinder_length_to_width(4.0)
   , gap_ratio(0.016)
   , span_ratio(4.5)
+  , min_span_width(-1.0) // Set default to -1 to indicate "off"
   , gravity_factor(0.3)
   , grid_width(0.0)
   , segment_branches(false)
@@ -25,6 +28,7 @@ TreesParams::TreesParams()
   , global_taper_factor(0.3)
   , alpha_weighting(false)
   , largest_diameter(false)
+  , maintain_main_branch_thickness(false)
 {}
 
 /// The main reconstruction algorithm
@@ -152,7 +156,11 @@ Trees::Trees(Cloud &cloud, const Eigen::Vector3d &offset, const Mesh &mesh, cons
       double thickness = best_dist; 
       bool points_removed = false;
       double gap = params_->gap_ratio * sections_[sec_].max_distance_to_end; // gap threshold for splitting
-      double span = params_->span_ratio * estimated_radius; // span threshold for splitting
+      double span = params_->span_ratio * estimated_radius; // span threshold for splitting (original method)
+      if (params_->min_span_width > 0.0) // If a minimum has been set by the user...
+      {
+        span = std::max(span, params_->min_span_width); // ...then apply it.
+      }
       std::vector<std::vector<int>> clusters = findPointClusters(base, points_removed, thickness, span, gap);
 
       if (clusters.size() > 1 || (points_removed && clusters.size() > 0))  // a bifurcation (or an alteration)
@@ -234,7 +242,11 @@ Trees::Trees(Cloud &cloud, const Eigen::Vector3d &offset, const Mesh &mesh, cons
       
       bool points_removed = false;
       double gap = params_->gap_ratio * sections_[sec_].max_distance_to_end; // gap threshold for splitting
-      double span = params_->span_ratio * span_rad; // span thershold for splitting
+      double span = params_->span_ratio * span_rad; // span thershold for splitting (original method)
+      if (params_->min_span_width > 0.0) // If a minimum has been set by the user...
+      {
+        span = std::max(span, params_->min_span_width); // ...then apply it.
+      }
       std::vector<std::vector<int>> clusters = findPointClusters(base, points_removed, thickness, span, gap);
 
       if (clusters.size() > 1 || (points_removed && clusters.size() > 0))  // a bifurcation (or an alteration)
@@ -715,7 +727,11 @@ void Trees::bifurcate(const std::vector<std::vector<int>> &clusters, double thic
   }
   if (par > -1)
   {
-    sections_[sec_].radius_scale *= max_distances[maxi] / std::sqrt(total_area); // reduce branch radius due to the split
+    if (!params_->maintain_main_branch_thickness)
+    {
+      // Only execute the original, problematic line if the new feature is turned OFF.
+      sections_[sec_].radius_scale *= max_distances[maxi] / std::sqrt(total_area); // reduce branch radius due to the split
+    }
   }
 }
 

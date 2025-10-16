@@ -61,11 +61,13 @@ void usage(int exit_code = 1)
     std::cout << "                            --global_taper 0.024 - (-a) force a taper value (diameter per length) for trees under global_taper_factor of max tree height. Use 0 to estimate global taper from the data" << std::endl;
     std::cout << "                            --global_taper_factor 0.3- (-o) 1 estimates same taper for whole scan, 0 is per-tree tapering. Like a soft cutoff at this amount of max tree height" << std::endl;
     std::cout << "                            --gravity_factor 0.3 - (-f) larger values preference vertical trees" << std::endl;
+    std::cout << "                            --min_span_width 0.05 - (-k) Enables and sets a minimum absolute span to prevent splitting on thin branches. If not set, original logic is used." << std::endl;
+    std::cout << "                            --maintain_main_branch_thickness - (-j) Enables logic to prevent main branches from thinning when small offshoots are detected." << std::endl;
     std::cout << "                            --branch_segmentation- (-b) _segmented.ply is per branch segment" << std::endl;
     std::cout << "                            --grid_width 10      - (-w) crops results assuming cloud has been gridded with given width" << std::endl;
     std::cout << "                            --use_rays           - (-u) use rays to reduce trunk radius overestimation in noisy cloud data" << std::endl;
     std::cout << "                            --alpha_weighting    - (-p) use point cloud alpha as weight for connecting points. Branches will follow high weights" << std::endl;
-    std::cout << "                            --largest_diameter        - (-l) only keep the tree with the largest DBH" << std::endl;
+    std::cout << "                            --largest_diameter   - (-l) only keep the tree with the largest DBH" << std::endl;
     std::cout << "                            (for internal constants -c -g -s see source file rayextract)" << std::endl;
   // These are the internal parameters that I don't expose as they are 'advanced' only, you shouldn't need to adjust them
     std::cout << "                            --cylinder_length_to_width 4- (-c) how slender the cylinders are" << std::endl;
@@ -116,14 +118,15 @@ int rayExtract(int argc, char *argv[])
   ray::OptionalKeyValueArgument gradient_option("gradient", 'g', &gradient);
   ray::OptionalFlagArgument exclude_rays("exclude_rays", 'e'), segment_branches("branch_segmentation", 'b'),
     stalks("stalks", 's'), use_rays("use_rays", 'u'), write_empty("write_empty", 'w'),
-    alpha_weighted("alpha_weighting", 'p'), write_netcdf("write_netcdf", 'wn'), largest_diameter("largest_diameter", 'l');
+    alpha_weighted("alpha_weighting", 'p'), write_netcdf("write_netcdf", 'wn'), largest_diameter("largest_diameter", 'l'),
+    maintain_thickness("maintain_main_branch_thickness", 'j');
   ray::DoubleArgument width(0.01, 10.0, 0.25), drop(0.001, 1.0), max_gradient(0.01, 5.0), min_gradient(0.01, 5.0);
   ray::IntArgument leaf_angle(1, 6);
   ray::DoubleArgument max_diameter(0.01, 100.0), distance_limit(0.01, 10.0), height_min(0.01, 1000.0),
     min_diameter(0.01, 100.0), leaf_area(0.00001, 1.0, 0.002), leaf_droop(0.0, 10.0, 0.1), leaf_density(0.01, 5),
     crop_length(0.01, 100.0);
   ray::DoubleArgument girth_height_ratio(0.001, 0.5), length_to_radius(0.01, 10000.0),
-    cylinder_length_to_width(0.1, 20.0), gap_ratio(0.01, 10.0), span_ratio(0.01, 10.0);
+    cylinder_length_to_width(0.1, 20.0), gap_ratio(0.01, 10.0), span_ratio(0.01, 10.0), min_span_width(0.01, 1.0);
   ray::DoubleArgument gravity_factor(0.0, 100.0), grid_width(1.0, 100000.0), grid_overlap(0.0, 0.9);
   ray::DoubleArgument voxel_size(0.1, 10);
   ray::Vector3dArgument grid_bounds_min, grid_bounds_max;
@@ -136,6 +139,7 @@ int rayExtract(int argc, char *argv[])
                                                                 &cylinder_length_to_width);
   ray::OptionalKeyValueArgument gap_ratio_option("gap_ratio", 'g', &gap_ratio);
   ray::OptionalKeyValueArgument span_ratio_option("span_ratio", 's', &span_ratio);
+  ray::OptionalKeyValueArgument min_span_width_option("min_span_width", 'k', &min_span_width);
   ray::OptionalKeyValueArgument gravity_factor_option("gravity_factor", 'f', &gravity_factor);
   ray::OptionalKeyValueArgument grid_width_option("grid_width", 'w', &grid_width);
   ray::OptionalKeyValueArgument global_taper_option("global_taper", 'a', &global_taper);
@@ -163,8 +167,9 @@ int rayExtract(int argc, char *argv[])
     ray::parseCommandLine(argc, argv, { &trees, &cloud_file, &mesh_file },
                           { &max_diameter_option, &distance_limit_option, &height_min_option, &crop_length_option,
                             &girth_height_ratio_option, &cylinder_length_to_width_option, &gap_ratio_option,
-                            &span_ratio_option, &gravity_factor_option, &segment_branches, &grid_width_option,
-                            &global_taper_option, &global_taper_factor_option, &use_rays, &alpha_weighted, &largest_diameter, &verbose });
+                            &span_ratio_option, &min_span_width_option, &gravity_factor_option, &segment_branches, &grid_width_option,
+                            &global_taper_option, &global_taper_factor_option, &use_rays, &alpha_weighted, &largest_diameter, 
+                            &maintain_thickness, &verbose });
   bool extract_leaves = ray::parseCommandLine(
     argc, argv, { &leaves, &cloud_file, &trees_file },
     { &leaf_option, &leaf_area_option, &leaf_droop_option, &leaf_angle_option, &leaf_density_option, &stalks });
@@ -194,12 +199,33 @@ int rayExtract(int argc, char *argv[])
   // finds full tree structures (piecewise cylindrical representation) and saves to file
   else if (extract_trees)
   {
+    // --- START OF NEW REPLACEMENT CODE ---
     ray::Cloud cloud;
     const int min_num_rays = 40;
-    if (!cloud.load(cloud_file.name(), true, min_num_rays))
+
+    // Step 1: Attempt to load the file with a minimal point requirement (e.g., 1)
+    // to check for basic readability (file exists, is valid PLY format).
+    if (!cloud.load(cloud_file.name(), true, 1))
     {
-      usage(true);
+        // If this fails, the file is genuinely unreadable or completely empty.
+        // This should still be treated as a hard error.
+        std::cerr << "Error: Cannot load file '" << cloud_file.name() 
+                  << "'. It may be missing, empty, or corrupted." << std::endl;
+        usage(true);
     }
+
+    // Step 2: Now that the file is loaded, check if it meets the required point count.
+    if (cloud.ends.size() < min_num_rays)
+    {
+        // The file is valid but too sparse for processing.
+        // Print the custom message and exit cleanly with code 0 as requested.
+        std::cout << "Info: Cloud '" << cloud_file.name() << "' has " << cloud.ends.size() 
+                  << " points, which is less than the required minimum of " << min_num_rays 
+                  << ". Skipping file." << std::endl;
+        return 0; // Exit with success code 0.
+    }
+    // --- END OF NEW REPLACEMENT CODE ---
+    
     Eigen::Vector3d offset = cloud.removeStartPos();
 
     ray::Mesh mesh;
@@ -242,6 +268,10 @@ int rayExtract(int argc, char *argv[])
     {
       params.span_ratio = span_ratio.value();
     }
+    if (min_span_width_option.isSet())
+    {
+      params.min_span_width = min_span_width.value();
+    }
     if (gravity_factor_option.isSet())
     {
       params.gravity_factor = gravity_factor.value();
@@ -262,6 +292,7 @@ int rayExtract(int argc, char *argv[])
     params.segment_branches = segment_branches.isSet();
     params.alpha_weighting = alpha_weighted.isSet();
     params.largest_diameter = largest_diameter.isSet();
+    params.maintain_main_branch_thickness = maintain_thickness.isSet();
 
     ray::Trees trees(cloud, offset, mesh, params, verbose.isSet());
 
@@ -274,13 +305,12 @@ int rayExtract(int argc, char *argv[])
     // it is a bit inefficient to load from file just to convert it into the forest structure, but
     // it works OK for now. Better would be for ray::Trees so store the result as a ray::ForestStructure
     ray::ForestStructure forest;
-    if (!forest.load(cloud_file.nameStub() + "_trees.txt"))
+    if (forest.load(cloud_file.nameStub() + "_trees.txt") && !forest.trees.empty())
     {
-      usage();
+      ray::Mesh tree_mesh;
+      forest.generateSmoothMesh(tree_mesh, -1, 1, 1, 1);
+      ray::writePlyMesh(cloud_file.nameStub() + "_trees_mesh.ply", tree_mesh, true); 
     }
-    ray::Mesh tree_mesh;
-    forest.generateSmoothMesh(tree_mesh, -1, 1, 1, 1);
-    ray::writePlyMesh(cloud_file.nameStub() + "_trees_mesh.ply", tree_mesh, true);
   }
   // extract the tree locations from a larger, aerial view of a forest
   else if (extract_forest)

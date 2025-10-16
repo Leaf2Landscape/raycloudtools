@@ -7,6 +7,7 @@
 #include "raylib/rayprogress.h"
 #include "raylib/rayprogressthread.h"
 #include "rayunused.h"
+#include "extraction/raytrees.h"
 
 #if RAYLIB_WITH_LAS
 #include <liblas/factory.hpp>
@@ -170,7 +171,7 @@ bool RAYLIB_EXPORT writeLas(std::string file_name, const std::vector<Eigen::Vect
   std::cout << "saving LAZ file" << std::endl;
 
   liblas::Header header;
-  header.SetDataFormatId(liblas::ePointFormat1);  // Time only
+  header.SetDataFormatId(liblas::ePointFormat3);  // XYZ + Intensity + Time + RGB
 
   if (file_name.find(".laz") != std::string::npos)
     header.SetCompressed(true);
@@ -185,19 +186,41 @@ bool RAYLIB_EXPORT writeLas(std::string file_name, const std::vector<Eigen::Vect
     return false;
   }
 
-  const double scale = 1e-4;
+  const double scale = 1e-3;
   header.SetScale(scale, scale, scale);
 
   liblas::Writer writer(ofs, header);
   liblas::Point point(&header);
+  liblas::Color color;
   point.SetHeader(&header);  // TODO HACK Version 1.7.0 does not correctly resize the data. Commit
                              // 6e8657336ba445fcec3c9e70c2ebcd2e25af40b9 (1.8.0 3 July fixes it)
   for (unsigned int i = 0; i < points.size(); i++)
   {
     point.SetCoordinates(points[i][0], points[i][1], points[i][2]);
-    point.SetIntensity(colours[i].alpha);
+    point.SetIntensity(static_cast<uint16_t>colours[i].alpha);
+    // Write RGB Added 03092025 gje
+    color.SetRed(static_cast<uint16_t>(colours[i].red));
+    color.SetGreen(static_cast<uint16_t>(colours[i].green));
+    color.SetBlue(static_cast<uint16_t>(colours[i].blue));
+    point.SetColor(color);
+    // End Write RGB Added 03092025 gje
+
+    // GPS Time (if provided)
     if (!times.empty())
       point.SetTime(times[i]);
+
+    // Point Source ID from colour → 16-bit integer Added 03092025 gje
+    int colourIndex = convertColourToInt(colours[i]);
+    if (colourIndex >= 0)   // skip black special case
+    {
+        point.SetPointSourceID(static_cast<uint16_t>(colourIndex & 0xFFFF));
+    }
+    else
+    {
+        point.SetPointSourceID(0);  // or leave default for black
+    }
+    // End Point Source ID from colour → 16-bit integer Added 03092025 gje
+
     writer.WritePoint(point);
   }
   return true;
@@ -216,7 +239,7 @@ bool RAYLIB_EXPORT writeLas(std::string file_name, const std::vector<Eigen::Vect
 LasWriter::LasWriter(const std::string &file_name)
   : file_name_(file_name)
 {
-  header_.SetDataFormatId(liblas::ePointFormat1);  // Time only
+  header_.SetDataFormatId(liblas::ePointFormat3);  // XYZ + Intensity + Time + RGB
   if (file_name_.find(".laz") != std::string::npos)
     header_.SetCompressed(true);
 
@@ -227,7 +250,7 @@ LasWriter::LasWriter(const std::string &file_name)
     std::cerr << "Error: cannot open " << file_name << " for writing." << std::endl;
     return;
   }
-  const double scale = 1e-4;
+  const double scale = 1e-3;
   header_.SetScale(scale, scale, scale);
   writer_ = new liblas::Writer(out_, header_);
 }
@@ -264,15 +287,36 @@ bool LasWriter::writeChunk(const std::vector<Eigen::Vector3d> &points, const std
     std::cerr << "Error: cannot open " << file_name_ << " for writing." << std::endl;
     return false;
   }
+  
   liblas::Point point(&header_);
+  liblas::Color color;
   point.SetHeader(&header_);  // TODO HACK Version 1.7.0 does not correctly resize the data. Commit
                               // 6e8657336ba445fcec3c9e70c2ebcd2e25af40b9 (1.8.0 3 July fixes it)
   for (unsigned int i = 0; i < points.size(); i++)
   {
     point.SetCoordinates(points[i][0], points[i][1], points[i][2]);
-    point.SetIntensity(colours[i].alpha);
+    point.SetIntensity(static_cast<uint16_t>colours[i].alpha);
+    // Write RGB Added 03092025 gje
+    color.SetRed(static_cast<uint16_t>(colours[i].red));
+    color.SetGreen(static_cast<uint16_t>(colours[i].green));
+    color.SetBlue(static_cast<uint16_t>(colours[i].blue));
+    point.SetColor(color);
+    // End Write RGB Added 03092025 gje
     if (!times.empty())
       point.SetTime(times[i]);
+    
+    // Point Source ID from colour → 16-bit integer Added 03092025 gje
+    int colourIndex = convertColourToInt(colours[i]);
+    if (colourIndex >= 0)   // skip black special case
+    {
+        point.SetPointSourceID(static_cast<uint16_t>(colourIndex & 0xFFFF));
+    }
+    else
+    {
+        point.SetPointSourceID(0);  // or leave default for black
+    }
+    // End Point Source ID from colour → 16-bit integer Added 03092025 gje
+    
     writer_->WritePoint(point);
   }
   return true;

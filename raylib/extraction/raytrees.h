@@ -26,6 +26,7 @@ struct RAYLIB_EXPORT TreesParams
   double cylinder_length_to_width;  // the slenderness of the branch segment cylinders
   double gap_ratio;                 // max gap per branch length
   double span_ratio;                // points that span a larger width determine that a branch has become two
+  double min_span_width;            // minimum absolute width for the span check, prevents over-splitting on thin, noisy branches
   double gravity_factor;   // preferences branches that are less lateral, so penalises implausable horizontal branches
   double grid_width;       // used on a grid cell with overlap, to remove trees with a base in the overlap zone
   bool segment_branches;   // flag to output the ray cloud coloured by branch segment index rather than by tree index
@@ -34,6 +35,7 @@ struct RAYLIB_EXPORT TreesParams
   bool use_rays; // use the full rays in order to estimate a smaller radius when points are not all on the real branch
   bool alpha_weighting;    // use point cloud alpha as weight for connecting points. Branches will follow high weight
   bool largest_diameter;        // only keep the tree with the largest DBH
+  bool maintain_main_branch_thickness; // When splitting, don't shrink the dominant branch.
 };
 
 struct BranchSection;  // forwards declaration
