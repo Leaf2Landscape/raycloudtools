@@ -16,7 +16,7 @@
 namespace ray
 {
 bool generateDenseVoxels(const std::string &cloud_stub, const double vox_width, Eigen::Vector3d user_bounds_min,
-                         Eigen::Vector3d user_bounds_max, bool write_empty, bool write_netcdf)
+                         Eigen::Vector3d user_bounds_max, bool write_empty, bool write_netcdf, bool extended_output)
 {
   std::string cloud_name = cloud_stub + ".ply";
   Cloud::Info info;
@@ -103,19 +103,20 @@ bool generateDenseVoxels(const std::string &cloud_stub, const double vox_width, 
 
   Cuboid grid_bounds;
   grid_bounds.min_bound_ = grid_bounds_min - Eigen::Vector3d(vox_width, vox_width, vox_width);
-  grid_bounds.max_bound_ = grid_bounds_max;
+  grid_bounds.max_bound_ = grid_bounds_max + Eigen::Vector3d(vox_width, vox_width, vox_width);
   DensityGrid grid(grid_bounds, vox_width, dims.cast<int>());
 
   std::cout << "Calculating Density " << std::endl;
   grid.calculateDensities(cloud_name);
 
-  std::cout << "Adding Neighbour Priors " << std::endl;
-  grid.addNeighbourPriors();
+  // std::cout << "Adding Neighbour Priors " << std::endl;
+  // grid.addNeighbourPriors();
 
   std::cout << "Writing Grid " << std::endl;
 
 
-  Eigen::MatrixXd points(grid.voxels().size(), 9);
+  int num_cols = extended_output ? 9 : 6;
+  Eigen::MatrixXd points(grid.voxels().size(), num_cols);
   long c = 0;
   for (long k = 0; k < dims[2]; k++)
   {
@@ -130,11 +131,19 @@ bool generateDenseVoxels(const std::string &cloud_stub, const double vox_width, 
           double x = grid_bounds.min_bound_[0] + vox_width * (i + 1.5);
           double y = grid_bounds.min_bound_[1] + vox_width * (j + 1.5);
           double z = grid_bounds.min_bound_[2] + vox_width * (k + 1.5);
-          double path_length = grid.voxels()[index].pathLength();
-          double density = grid.voxels()[index].density();
-          double surface_area = density * vox_width * vox_width * vox_width;
-          points.row(c++) << x, y, z, path_length, density, surface_area, grid.voxels()[index].numHits(),
-            grid.voxels()[index].numRays(), vox_width;
+          if (extended_output)
+          {
+            double path_length = grid.voxels()[index].pathLength();
+            double density = grid.voxels()[index].density();
+            double surface_area = density * vox_width * vox_width * vox_width;
+            points.row(c++) << x, y, z, path_length, density, surface_area, grid.voxels()[index].numHits(),
+              grid.voxels()[index].numRays(), vox_width;
+          }
+          else
+          {
+            points.row(c++) << x, y, z, grid.voxels()[index].numHits(),
+              grid.voxels()[index].numRays(), vox_width;
+          }
         }
         else
         {
@@ -143,11 +152,19 @@ bool generateDenseVoxels(const std::string &cloud_stub, const double vox_width, 
             double x = grid_bounds.min_bound_[0] + vox_width * (i + 1.5);
             double y = grid_bounds.min_bound_[1] + vox_width * (j + 1.5);
             double z = grid_bounds.min_bound_[2] + vox_width * (k + 1.5);
-            double path_length = grid.voxels()[index].pathLength();
-            double density = grid.voxels()[index].density();
-            double surface_area = density * vox_width * vox_width * vox_width;
-            points.row(c++) << x, y, z, path_length, density, surface_area, grid.voxels()[index].numHits(),
-              grid.voxels()[index].numRays(), vox_width;
+            if (extended_output)
+            {
+              double path_length = grid.voxels()[index].pathLength();
+              double density = grid.voxels()[index].density();
+              double surface_area = density * vox_width * vox_width * vox_width;
+              points.row(c++) << x, y, z, path_length, density, surface_area, grid.voxels()[index].numHits(),
+                grid.voxels()[index].numRays(), vox_width;
+            }
+            else
+            {
+              points.row(c++) << x, y, z, grid.voxels()[index].numHits(),
+                grid.voxels()[index].numRays(), vox_width;
+            }
           }
         }
       }
@@ -171,10 +188,15 @@ bool generateDenseVoxels(const std::string &cloud_stub, const double vox_width, 
             auto nVars = dataFile.addDim("nVars", points.cols());
 
             // Define variables
-            std::vector<std::string> varNames = {
-                "x", "y", "z", "path_length", "density", 
-                "surface_area", "num_hits", "num_rays", "width"
-            };
+            std::vector<std::string> varNames;
+            if (extended_output)
+            {
+                varNames = {"x", "y", "z", "path_length", "density", "surface_area", "num_hits", "num_rays", "width"};
+            }
+            else
+            {
+                varNames = {"x", "y", "z", "num_hits", "num_rays", "width"};
+            }
             
             std::vector<netCDF::NcVar> vars;
             for (const auto& varName : varNames) {
@@ -213,7 +235,14 @@ bool generateDenseVoxels(const std::string &cloud_stub, const double vox_width, 
         }
 
         // Write header
-        myfile << "x y z path_length density surface_area num_hits num_rays width\n";
+        if (extended_output)
+        {
+            myfile << "x y z path_length density surface_area num_hits num_rays width\n";
+        }
+        else
+        {
+            myfile << "x y z num_hits num_rays width\n";
+        }
 
         // Write data
         for (int r = 0; r < points.rows(); ++r) {
