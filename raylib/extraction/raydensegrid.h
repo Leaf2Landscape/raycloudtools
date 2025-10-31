@@ -11,6 +11,6 @@
 
 namespace ray
 {
-bool generateDenseVoxels(const std::string &cloud_stub, double voxel_size, Eigen::Vector3d grid_bounds_min, Eigen::Vector3d grid_bounds_max, bool write_empty, bool write_netcdf);
+bool generateDenseVoxels(const std::string &cloud_stub, double voxel_size, Eigen::Vector3d grid_bounds_min, Eigen::Vector3d grid_bounds_max, bool write_empty, bool write_netcdf, bool extended_output = false);
 }  // namespace ray
 #endif  // RAYLIB_RAYDENSEGRID_H
