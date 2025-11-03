@@ -10,6 +10,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <cmath>
 // #define OUTPUT_MOMENTS // useful when setting up unit test expected ray clouds
 
 namespace ray
@@ -346,6 +347,9 @@ bool readPly(const std::string &file_name, bool is_ray_cloud,
   bool time_is_float = false;
   bool pos_is_float = false;
   bool normal_is_float = false;
+  // Optional support for colour channels as individual properties (including float/double types)
+  int red_offset = -1, green_offset = -1, blue_offset = -1, alpha_offset_ch = -1;
+  DataType red_type = kDTnone, green_type = kDTnone, blue_type = kDTnone, alpha_type = kDTnone;
   DataType intensity_type = kDTnone;
   int rowsteps[] = { int(sizeof(float)), int(sizeof(double)), int(sizeof(unsigned short)), int(sizeof(unsigned char)), int(sizeof(int)),
                      0 };  // to match each DataType enum
@@ -415,8 +419,29 @@ bool readPly(const std::string &file_name, bool is_ray_cloud,
       intensity_offset = row_size;
       intensity_type = data_type;
     }
+    // Colour channels: support uchar/uint8 (legacy contiguous RGBA), and float/double per-channel layouts
     if (line == "property uchar red" || line == "property uint8 red")
       colour_offset = row_size;
+    if (line == "property float red" || line == "property double red")
+    {
+      red_offset = row_size;
+      red_type = (line.find("float") != std::string::npos) ? kDTfloat : kDTdouble;
+    }
+    if (line == "property float green" || line == "property double green")
+    {
+      green_offset = row_size;
+      green_type = (line.find("float") != std::string::npos) ? kDTfloat : kDTdouble;
+    }
+    if (line == "property float blue" || line == "property double blue")
+    {
+      blue_offset = row_size;
+      blue_type = (line.find("float") != std::string::npos) ? kDTfloat : kDTdouble;
+    }
+    if (line == "property float alpha" || line == "property double alpha")
+    {
+      alpha_offset_ch = row_size;
+      alpha_type = (line.find("float") != std::string::npos) ? kDTfloat : kDTdouble;
+    }
 
     row_size += rowsteps[data_type];
   }
@@ -462,14 +487,15 @@ bool readPly(const std::string &file_name, bool is_ray_cloud,
       return false;
     }
   }
-  if (colour_offset == -1)
+  const bool has_colour_fields = (colour_offset != -1) || (red_offset != -1 && green_offset != -1 && blue_offset != -1);
+  if (!has_colour_fields)
   {
     std::cout << "warning: no colour information found in " << file_name
               << ", setting colours red->green->blue based on time" << std::endl;
   }
   if (!is_ray_cloud && intensity_offset != -1)
   {
-    if (colour_offset != -1)
+    if (has_colour_fields)
     {
       std::cout << "warning: intensity and colour information both found in file. Replacing alpha with intensity value."
                 << std::endl;
@@ -492,7 +518,7 @@ bool readPly(const std::string &file_name, bool is_ray_cloud,
   starts.reserve(reserve_size);
   if (time_offset != -1)
     times.reserve(reserve_size);
-  if (colour_offset != -1)
+  if (has_colour_fields)
     colours.reserve(reserve_size);
   if (intensity_offset != -1)
     intensities.reserve(reserve_size);
@@ -592,10 +618,46 @@ bool readPly(const std::string &file_name, bool is_ray_cloud,
       times.push_back(time);
     }
 
-    if (colour_offset != -1)
+    if (has_colour_fields)
     {
-      RGBA colour = (RGBA &)vertices[colour_offset];
-      colours.push_back(colour);
+      if (colour_offset != -1)
+      {
+        // Legacy contiguous uchar RGBA
+        RGBA colour = (RGBA &)vertices[colour_offset];
+        colours.push_back(colour);
+      }
+      else
+      {
+        // Per-channel float/double colours; convert to 0..255
+        auto readAsDouble = [&](int off, DataType tp) -> double {
+          if (off == -1 || tp == kDTnone) return std::numeric_limits<double>::quiet_NaN();
+          switch (tp)
+          {
+            case kDTfloat:  return (double)((float &)vertices[off]);
+            case kDTdouble: return (double & )vertices[off];
+            case kDTuchar:  return (double)((unsigned char &)vertices[off]);
+            case kDTushort: return (double)((unsigned short &)vertices[off]);
+            case kDTint:    return (double)((int &)vertices[off]);
+            default:        return std::numeric_limits<double>::quiet_NaN();
+          }
+        };
+        auto toU8 = [](double v) -> uint8_t {
+          if (!std::isfinite(v)) return 0;
+          // Heuristic: if <= 1 assume normalized [0,1], else assume [0,255]
+          double scaled = (v <= 1.0) ? (v * 255.0) : v;
+          scaled = std::max(0.0, std::min(255.0, scaled));
+          return static_cast<uint8_t>(std::lround(scaled));
+        };
+        uint8_t r = toU8(readAsDouble(red_offset,   red_type));
+        uint8_t g = toU8(readAsDouble(green_offset, green_type));
+        uint8_t b = toU8(readAsDouble(blue_offset,  blue_type));
+        uint8_t a = 255;
+        if (alpha_offset_ch != -1)
+        {
+          a = toU8(readAsDouble(alpha_offset_ch, alpha_type));
+        }
+        colours.emplace_back(r, g, b, a);
+      }
     }
     if (!is_ray_cloud)
     {
@@ -638,7 +700,7 @@ bool readPly(const std::string &file_name, bool is_ray_cloud,
           times[j] = (double)(i + j);
         }
       }
-      if (colour_offset == -1)
+      if (!has_colour_fields)
       {
         colourByTime(times, colours);
       }
