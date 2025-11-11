@@ -34,6 +34,8 @@ struct RAYLIB_EXPORT TreesParams
   bool use_rays; // use the full rays in order to estimate a smaller radius when points are not all on the real branch
   bool alpha_weighting;    // use point cloud alpha as weight for connecting points. Branches will follow high weight
   bool largest_diameter;        // only keep the tree with the largest DBH
+  bool save_tree_bases;    // save initial tree base segmentation before Dijkstra
+  std::string tree_bases_filename;  // filename for tree bases output
 };
 
 struct BranchSection;  // forwards declaration
@@ -54,6 +56,15 @@ public:
 
   /// save the shortest paths to a PLY file for visualization
   bool saveShortestPaths(const std::string &filename, const Eigen::Vector3d &offset) const;
+
+  /// save the tree structure (cylinder centres connected by edges) to a PLY file for visualization
+  bool saveCylinderStructure(const std::string &filename, const Eigen::Vector3d &offset) const;
+
+  /// save the nearest neighbor connections for points to a PLY file for visualization
+  bool saveNearestNeighbors(const std::string &filename, const Eigen::Vector3d &offset) const;
+
+  /// save the initial tree base segmentation (before Dijkstra's algorithm) to a PLY file
+  bool saveTreeBases(const std::string &filename, const Eigen::Vector3d &offset, const std::vector<std::vector<int>> &roots_list) const;
 
 private:
   /// The piecewise cylindrical represenation of all of the trees

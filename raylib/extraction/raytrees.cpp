@@ -26,6 +26,8 @@ TreesParams::TreesParams()
   , global_taper_factor(0.3)
   , alpha_weighting(false)
   , largest_diameter(false)
+  , save_tree_bases(false)
+  , tree_bases_filename("")
 {}
 
 /// The main reconstruction algorithm
@@ -38,6 +40,12 @@ Trees::Trees(Cloud &cloud, const Eigen::Vector3d &offset, const Mesh &mesh, cons
 
   std::vector<std::vector<int>> roots_list = getRootsAndSegment(
     points_, cloud, mesh, params_->max_diameter, params_->distance_limit, params_->height_min, params_->gravity_factor, params_->alpha_weighting);
+
+  // Save tree bases if requested
+  if (params_->save_tree_bases)
+  {
+    saveTreeBases(params_->tree_bases_filename, offset, roots_list);
+  }
 
   // Now we want to convert these paths into a set of branch sections, from root to tips
   // splitting as we go up...
@@ -1333,6 +1341,247 @@ bool Trees::saveShortestPaths(const std::string &filename, const Eigen::Vector3d
 
   ofs.close();
   std::cout << "Shortest paths saved to " << filename << " (" << edge_count << " path segments)" << std::endl;
+  return true;
+}
+
+// save the tree structure (cylinder centres connected by edges) to a PLY file for visualization
+bool Trees::saveCylinderStructure(const std::string &filename, const Eigen::Vector3d &offset) const
+{
+  std::ofstream ofs(filename.c_str(), std::ios::out);
+  if (!ofs.is_open())
+  {
+    std::cerr << "Error: cannot open " << filename << " for writing." << std::endl;
+    return false;
+  }
+
+  // Count valid sections and edges (parent-child connections)
+  size_t vertex_count = 0;
+  size_t edge_count = 0;
+
+  for (size_t i = 0; i < sections_.size(); i++)
+  {
+    const auto &section = sections_[i];
+    // Skip sections that are not part of any tree (no parent and no children)
+    if (section.parent == -1 && section.children.empty())
+    {
+      continue;
+    }
+    vertex_count++;
+    if (section.parent >= 0)
+    {
+      edge_count++;
+    }
+  }
+
+  // Write PLY header for line segments
+  ofs << "ply" << std::endl;
+  ofs << "format ascii 1.0" << std::endl;
+  ofs << "comment Tree structure (cylinder centres) from raycloudtools tree extraction" << std::endl;
+  ofs << "element vertex " << vertex_count << std::endl;
+  ofs << "property float x" << std::endl;
+  ofs << "property float y" << std::endl;
+  ofs << "property float z" << std::endl;
+  ofs << "property float radius" << std::endl;
+  ofs << "property uchar red" << std::endl;
+  ofs << "property uchar green" << std::endl;
+  ofs << "property uchar blue" << std::endl;
+  ofs << "element edge " << edge_count << std::endl;
+  ofs << "property int vertex1" << std::endl;
+  ofs << "property int vertex2" << std::endl;
+  ofs << "end_header" << std::endl;
+
+  // Create mapping from section index to vertex index (for sections that are included)
+  std::vector<int> section_to_vertex(sections_.size(), -1);
+  int vertex_index = 0;
+
+  // Write vertices (cylinder centres)
+  for (size_t i = 0; i < sections_.size(); i++)
+  {
+    const auto &section = sections_[i];
+    // Skip sections that are not part of any tree
+    if (section.parent == -1 && section.children.empty())
+    {
+      continue;
+    }
+
+    section_to_vertex[i] = vertex_index++;
+    const Eigen::Vector3d pos = section.tip + offset;
+
+    // Color cylinders based on their root - each tree gets a different color
+    uint8_t red = 128, green = 128, blue = 128;
+    if (section.root != -1)
+    {
+      // Use a simple hash to generate colors based on root index
+      int root_id = section.root;
+      red = (uint8_t)((root_id * 73) % 256);
+      green = (uint8_t)((root_id * 151) % 256);
+      blue = (uint8_t)((root_id * 211) % 256);
+
+      // Ensure color is not black
+      if (red == 0 && green == 0 && blue == 0)
+      {
+        red = 128;
+      }
+    }
+
+    double rad = radius(section);
+    ofs << std::fixed << std::setprecision(6)
+        << pos[0] << " " << pos[1] << " " << pos[2] << " " << rad << " "
+        << static_cast<int>(red) << " " << static_cast<int>(green) << " " << static_cast<int>(blue) << std::endl;
+  }
+
+  // Write edges (parent-child connections representing tree structure)
+  for (size_t i = 0; i < sections_.size(); i++)
+  {
+    const auto &section = sections_[i];
+    if (section.parent >= 0 && section_to_vertex[i] != -1 && section_to_vertex[section.parent] != -1)
+    {
+      ofs << section_to_vertex[section.parent] << " " << section_to_vertex[i] << std::endl;
+    }
+  }
+
+  ofs.close();
+  std::cout << "Tree structure (cylinder centres) saved to " << filename << " (" << vertex_count << " cylinders, " << edge_count << " edges)" << std::endl;
+  return true;
+}
+
+// save the nearest neighbor connections for points to a PLY file for visualization
+bool Trees::saveNearestNeighbors(const std::string &filename, const Eigen::Vector3d &offset) const
+{
+  std::ofstream ofs(filename.c_str(), std::ios::out);
+  if (!ofs.is_open())
+  {
+    std::cerr << "Error: cannot open " << filename << " for writing." << std::endl;
+    return false;
+  }
+
+  // Build a nearest neighbor graph using the parent relationships from shortest paths
+  // Each point is connected to its parent, which represents the nearest neighbor connection
+  // used in the tree extraction algorithm
+
+  // Count valid edges (points with parents)
+  size_t edge_count = 0;
+  for (size_t i = 0; i < points_.size(); i++)
+  {
+    if (points_[i].parent != -1)
+    {
+      edge_count++;
+    }
+  }
+
+  // Write PLY header for line segments
+  ofs << "ply" << std::endl;
+  ofs << "format ascii 1.0" << std::endl;
+  ofs << "comment Nearest neighbor connections from raycloudtools tree extraction" << std::endl;
+  ofs << "element vertex " << points_.size() << std::endl;
+  ofs << "property float x" << std::endl;
+  ofs << "property float y" << std::endl;
+  ofs << "property float z" << std::endl;
+  ofs << "property uchar red" << std::endl;
+  ofs << "property uchar green" << std::endl;
+  ofs << "property uchar blue" << std::endl;
+  ofs << "element edge " << edge_count << std::endl;
+  ofs << "property int vertex1" << std::endl;
+  ofs << "property int vertex2" << std::endl;
+  ofs << "end_header" << std::endl;
+
+  // Write vertices (all points)
+  for (size_t i = 0; i < points_.size(); i++)
+  {
+    const Eigen::Vector3d pos = points_[i].pos + offset;
+
+    // Color points based on their root - each tree gets a different color
+    uint8_t red = 100, green = 100, blue = 100;
+    if (points_[i].root != -1)
+    {
+      // Use a simple hash to generate colors based on root index
+      int root_id = points_[i].root;
+      red = (uint8_t)((root_id * 73) % 256);
+      green = (uint8_t)((root_id * 151) % 256);
+      blue = (uint8_t)((root_id * 211) % 256);
+
+      // Ensure color is not black
+      if (red == 0 && green == 0 && blue == 0)
+      {
+        red = 100;
+      }
+    }
+
+    ofs << std::fixed << std::setprecision(6)
+        << pos[0] << " " << pos[1] << " " << pos[2] << " "
+        << static_cast<int>(red) << " " << static_cast<int>(green) << " " << static_cast<int>(blue) << std::endl;
+  }
+
+  // Write edges (nearest neighbor connections via parent relationships)
+  for (size_t i = 0; i < points_.size(); i++)
+  {
+    if (points_[i].parent != -1)
+    {
+      ofs << points_[i].parent << " " << i << std::endl;
+    }
+  }
+
+  ofs.close();
+  std::cout << "Nearest neighbor connections saved to " << filename << " (" << edge_count << " connections)" << std::endl;
+  return true;
+}
+
+// save the initial tree base segmentation (before Dijkstra's algorithm) to a PLY file
+bool Trees::saveTreeBases(const std::string &filename, const Eigen::Vector3d &offset, const std::vector<std::vector<int>> &roots_list) const
+{
+  std::ofstream ofs(filename.c_str(), std::ios::out);
+  if (!ofs.is_open())
+  {
+    std::cerr << "Error: cannot open " << filename << " for writing." << std::endl;
+    return false;
+  }
+
+  // Count total points in all root lists
+  size_t total_points = 0;
+  for (const auto &roots : roots_list)
+  {
+    total_points += roots.size();
+  }
+
+  // Write PLY header
+  ofs << "ply" << std::endl;
+  ofs << "format ascii 1.0" << std::endl;
+  ofs << "comment Initial tree base segmentation before Dijkstra's algorithm" << std::endl;
+  ofs << "element vertex " << total_points << std::endl;
+  ofs << "property float x" << std::endl;
+  ofs << "property float y" << std::endl;
+  ofs << "property float z" << std::endl;
+  ofs << "property uchar red" << std::endl;
+  ofs << "property uchar green" << std::endl;
+  ofs << "property uchar blue" << std::endl;
+  ofs << "end_header" << std::endl;
+
+  // Write vertices colored by tree ID
+  for (size_t tree_id = 0; tree_id < roots_list.size(); tree_id++)
+  {
+    // Generate color for this tree
+    uint8_t red = (uint8_t)((tree_id * 73) % 256);
+    uint8_t green = (uint8_t)((tree_id * 151) % 256);
+    uint8_t blue = (uint8_t)((tree_id * 211) % 256);
+
+    // Ensure color is not black
+    if (red == 0 && green == 0 && blue == 0)
+    {
+      red = 128;
+    }
+
+    // Write all root points for this tree with the same color
+    for (int root_idx : roots_list[tree_id])
+    {
+      const Eigen::Vector3d pos = points_[root_idx].pos + offset;
+      ofs << std::fixed << std::setprecision(6)
+          << pos[0] << " " << pos[1] << " " << pos[2] << " "
+          << static_cast<int>(red) << " " << static_cast<int>(green) << " " << static_cast<int>(blue) << std::endl;
+    }
+  }
+
+  ofs.close();
+  std::cout << "Tree bases saved to " << filename << " (" << roots_list.size() << " trees, " << total_points << " base points)" << std::endl;
   return true;
 }
 
