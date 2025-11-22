@@ -14,6 +14,7 @@
 #include <cinttypes>
 #include <complex>
 #include <iostream>
+#include <vector> // Required for std::vector
 
 using Complex = std::complex<double>;
 static const double kHighPassPower = 0.25;  // This fixes inout->inout11, inoutD->inoutB2 and house_inside->house3.
@@ -55,8 +56,12 @@ void Array3D::init(const Eigen::Vector3d &box_min, double voxel_width, const Eig
   box_min_ = box_min;
   voxel_width_ = voxel_width;
   dims_ = dimensions;
-  cells_.resize(dims_[0] * dims_[1] * dims_[2]);
-  memset(&cells_[0], 0, cells_.size() * sizeof(Complex));
+  // --- START OF FIX ---
+  // Replaced unsafe memset with safe C++ value-initialization.
+  // This correctly initializes each Complex object in the vector to (0.0, 0.0)
+  // by calling its default constructor.
+  cells_.assign(dims_[0] * dims_[1] * dims_[2], {});
+  // --- END OF FIX ---
   null_cell_ = 0;
 }
 
@@ -149,8 +154,10 @@ void Array3D::fillWithRays(const Cloud &cloud)
 
 void Array1D::init(int length)
 {
-  cells_.resize(length);
-  memset(&cells_[0], 0, cells_.size() * sizeof(Complex));
+  // --- START OF FIX ---
+  // Replaced unsafe memset with safe C++ value-initialization.
+  cells_.assign(length, {});
+  // --- END OF FIX ---
 }
 
 void Array1D::operator*=(const Array1D &other)

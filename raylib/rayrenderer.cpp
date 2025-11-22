@@ -13,6 +13,7 @@
 #include "xtiffio.h"   /* for TIFF */
 #endif
 #include <fstream>
+#include <cstdint> // For uint8_t, uint16_t
 #include "rayunused.h"
 
 #define DENSITY_MIN_RAYS 10  // larger is more accurate but more blurred. 0 for no adaptive blending
@@ -274,8 +275,11 @@ bool writeGeoTiffFloat(const std::string &filename, int x, int y, const float *d
 /// of surface angles.
 void DensityGrid::calculateDensities(const std::string &file_name)
 {
-  auto calculate = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends, std::vector<double> &,
-                       std::vector<RGBA> &colours) {
+  // --- START OF FIX ---
+  // Added missing parameters to the lambda signature and marked them as unused.
+  auto calculate = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends, std::vector<double> & /*times*/,
+                       std::vector<RGBA> &colours, std::vector<uint8_t> & /*classifications*/, std::vector<uint16_t> & /*branch_ids*/) {
+    // --- END OF FIX ---
     for (size_t i = 0; i < ends.size(); ++i)
     {
       Eigen::Vector3d start = starts[i];
@@ -458,8 +462,11 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
     else  // otherwise we use a common algorithm, specialising on render style only per-ray
     {
       // this lambda expression lets us chunk load the ray cloud file, so we don't run out of RAM
-      auto render = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends, std::vector<double> &,
-                        std::vector<RGBA> &colours) {
+      // --- START OF FIX ---
+      // Added missing parameters to the lambda signature and marked them as unused.
+      auto render = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends, std::vector<double> & /*times*/,
+                        std::vector<RGBA> &colours, std::vector<uint8_t> & /*classifications*/, std::vector<uint16_t> & /*branch_ids*/) {
+      // --- END OF FIX ---
         for (size_t i = 0; i < ends.size(); i++)
         {
           const RGBA &colour = colours[i];

@@ -27,15 +27,36 @@ struct RAYLIB_EXPORT Vertex
     , score(std::numeric_limits<double>::max())
     , visited(false)
     , weight(weight)
+    // Sandbox members for the top-down search
+    , parent_to_tip(-1)
+    , tip_root(-1)
+    , score_to_tip(std::numeric_limits<double>::max())
+    , distance_to_tip(std::numeric_limits<double>::max())
+    // --- START OF Geometric classification modification ---
+    , distance_to_axis(std::numeric_limits<double>::max())
+    // --- END OF Geometric classification modification ---
   {}
   Eigen::Vector3d pos;
   Eigen::Vector3d start;
+  
+  // Original (bottom-up) path data
   int parent, root;
   double distance_to_ground;
   double distance_to_end;
   double score;
   bool visited;
   uint8_t weight;
+
+  // Sandboxed (top-down) path data
+  int parent_to_tip, tip_root;
+  double score_to_tip;
+  double distance_to_tip; // Analogous to distance_to_ground
+
+  // --- START OF Geometric classification modification ---
+  // Stores the distance of this vertex to the central axis of the BranchSection it belongs to.
+  // This is calculated once and then used by the geometric classification filter.
+  double distance_to_axis;
+  // --- END OF Geometric classification modification ---
 };
 
 /// Converts a ray cloud to a set of points @c points connected by the shortest path to the ground @c mesh
@@ -46,7 +67,9 @@ struct RAYLIB_EXPORT Vertex
 /// @c gravity_factor controls how far laterally the shortest paths can travel
 std::vector<std::vector<int>> RAYLIB_EXPORT getRootsAndSegment(std::vector<Vertex> &points, const Cloud &cloud, const Mesh &mesh,
                                                                double max_diameter, double distance_limit, double height_min,
-                                                               double gravity_factor, bool alpha_weighting);
+                                                               double gravity_factor, bool alpha_weighting, bool verify_paths,
+                                                               bool debug_paths, const std::string& name_stub, const Eigen::Vector3d& offset,
+                                                               bool root_debug);
 
 }  // namespace ray
 #endif  // RAYLIB_RAYSEGMENT_H

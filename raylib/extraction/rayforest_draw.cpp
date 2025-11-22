@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <cstdint> // For uint8_t
 
 //#define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "raylib/imagewrite.h"
@@ -114,15 +115,27 @@ void segmentCloud(const std::string &cloud_name_stub, const ColourField &pixels,
     return;
 
   ray::Cloud chunk;
+  // --- START OF FIX ---
+  // Added the two missing parameters to the lambda signature to match ray::Cloud::read.
   auto segment = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                     std::vector<double> &times, std::vector<ray::RGBA> &colours) {
+                     std::vector<double> &times, std::vector<ray::RGBA> &colours,
+                     std::vector<uint8_t> &classifications, std::vector<uint16_t> &branch_ids) {
     chunk.resize(ends.size());
+    // Also resize new data vectors if they exist to pass them through.
+    if (!classifications.empty()) chunk.classifications.resize(ends.size());
+    if (!branch_ids.empty()) chunk.branch_ids.resize(ends.size());
+
     for (size_t i = 0; i < ends.size(); i++)
     {
       const Eigen::Vector3d ind = (ends[i] - min_bounds) / voxel_width;
       chunk.starts[i] = starts[i];
       chunk.ends[i] = ends[i];
       chunk.times[i] = times[i];
+
+      // Pass through new data if it exists
+      if (!classifications.empty()) chunk.classifications[i] = classifications[i];
+      if (!branch_ids.empty()) chunk.branch_ids[i] = branch_ids[i];
+
       RGBA col;
       col.alpha = colours[i].alpha;
       Col pix = pixels(static_cast<int>(ind[0]), static_cast<int>(ind[1]));
@@ -133,6 +146,7 @@ void segmentCloud(const std::string &cloud_name_stub, const ColourField &pixels,
     }
     writer.writeChunk(chunk);
   };
+  // --- END OF FIX ---
 
   if (!ray::Cloud::read(filename, segment))
     return;

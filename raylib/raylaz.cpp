@@ -18,7 +18,10 @@ namespace ray
 {
 bool readLas(const std::string &file_name,
              std::function<void(std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                                std::vector<double> &times, std::vector<RGBA> &colours)>
+                                std::vector<double> &times, std::vector<RGBA> &colours,
+                                // --- START OF MODIFICATION ---
+                                std::vector<uint8_t> &classifications)>
+                                // --- END OF MODIFICATION ---
                apply,
              size_t &num_bounded, double max_intensity, Eigen::Vector3d *offset_to_remove, size_t chunk_size)
 {
@@ -66,6 +69,10 @@ bool readLas(const std::string &file_name,
   std::vector<double> times;
   std::vector<RGBA> colours;
   std::vector<uint8_t> intensities;
+  // --- START OF MODIFICATION ---
+  std::vector<uint8_t> classifications;
+  classifications.reserve(chunk_size);
+  // --- END OF MODIFICATION ---
   starts.reserve(chunk_size);
   ends.reserve(chunk_size);
   times.reserve(chunk_size);
@@ -97,6 +104,11 @@ bool readLas(const std::string &file_name,
     }
     times.push_back(point.GetTime());
 
+    // --- START OF MODIFICATION ---
+    // Read the classification for each point
+    classifications.push_back(point.GetClassification().GetClass());
+    // --- END OF MODIFICATION ---
+
     const double point_int = point.GetIntensity();
     const double normalised_intensity = (255.0 * point_int) / max_intensity;
     const uint8_t intensity = static_cast<uint8_t>(std::min(normalised_intensity, 255.0));
@@ -112,12 +124,19 @@ bool readLas(const std::string &file_name,
       }
       for (int i = 0; i < (int)colours.size(); i++)  // add intensity into alhpa channel
         colours[i].alpha = intensities[i];
-      apply(starts, ends, times, colours);
+      
+      // --- START OF MODIFICATION ---
+      apply(starts, ends, times, colours, classifications);
+      // --- END OF MODIFICATION ---
+
       starts.clear();
       ends.clear();
       times.clear();
       colours.clear();
       intensities.clear();
+      // --- START OF MODIFICATION ---
+      classifications.clear();
+      // --- END OF MODIFICATION ---
       progress.increment();
     }
   }
@@ -141,16 +160,26 @@ bool readLas(const std::string &file_name,
 }
 
 bool readLas(std::string file_name, std::vector<Eigen::Vector3d> &positions, std::vector<double> &times,
-             std::vector<RGBA> &colours, double max_intensity, Eigen::Vector3d *offset_to_remove)
+             std::vector<RGBA> &colours, double max_intensity, 
+             // --- START OF MODIFICATION ---
+             std::vector<uint8_t> &classifications,
+             // --- END OF MODIFICATION ---
+             Eigen::Vector3d *offset_to_remove)
 {
   std::vector<Eigen::Vector3d> starts;  // dummy as lax just reads in point clouds, not ray clouds
   auto apply = [&](std::vector<Eigen::Vector3d> &start_points, std::vector<Eigen::Vector3d> &end_points,
-                   std::vector<double> &time_points, std::vector<RGBA> &colour_values) 
+                   std::vector<double> &time_points, std::vector<RGBA> &colour_values,
+                   // --- START OF MODIFICATION ---
+                   std::vector<uint8_t> &classification_values) 
+                   // --- END OF MODIFICATION ---
   {
     starts.insert(starts.end(), start_points.begin(), start_points.end());
     positions.insert(positions.end(), end_points.begin(), end_points.end());
     times.insert(times.end(), time_points.begin(), time_points.end());
     colours.insert(colours.end(), colour_values.begin(), colour_values.end());    
+    // --- START OF MODIFICATION ---
+    classifications.insert(classifications.end(), classification_values.begin(), classification_values.end());
+    // --- END OF MODIFICATION ---
   };
   size_t num_bounded;
   bool success =
@@ -165,13 +194,21 @@ bool readLas(std::string file_name, std::vector<Eigen::Vector3d> &positions, std
 }
 
 bool RAYLIB_EXPORT writeLas(std::string file_name, const std::vector<Eigen::Vector3d> &points,
-                            const std::vector<double> &times, const std::vector<RGBA> &colours)
+                            const std::vector<double> &times, const std::vector<RGBA> &colours,
+                            // --- START OF MODIFICATION ---
+                            const std::vector<uint8_t> &classifications,
+                            const std::vector<uint16_t> &point_source_ids)
+                            // --- END OF MODIFICATION ---
 {
 #if RAYLIB_WITH_LAS
   std::cout << "saving LAZ file" << std::endl;
 
   liblas::Header header;
-  header.SetDataFormatId(liblas::ePointFormat3);  // XYZ + Intensity + Time + RGB
+  // --- START OF MODIFICATION ---
+  // Using Point Format 3 which supports Time, RGB, and Point Source ID
+  // Classification is a standard field available on most formats.
+  header.SetDataFormatId(liblas::ePointFormat3);
+  // --- END OF MODIFICATION ---
 
   if (file_name.find(".laz") != std::string::npos)
     header.SetCompressed(true);
@@ -197,29 +234,29 @@ bool RAYLIB_EXPORT writeLas(std::string file_name, const std::vector<Eigen::Vect
   for (unsigned int i = 0; i < points.size(); i++)
   {
     point.SetCoordinates(points[i][0], points[i][1], points[i][2]);
-    point.SetIntensity(static_cast<uint16_t>colours[i].alpha);
-    // Write RGB Added 03092025 gje
+    point.SetIntensity(static_cast<uint16_t>(colours[i].alpha));
+    
     color.SetRed(static_cast<uint16_t>(colours[i].red));
     color.SetGreen(static_cast<uint16_t>(colours[i].green));
     color.SetBlue(static_cast<uint16_t>(colours[i].blue));
     point.SetColor(color);
-    // End Write RGB Added 03092025 gje
 
-    // GPS Time (if provided)
     if (!times.empty())
       point.SetTime(times[i]);
+      
+    // --- START OF MODIFICATION ---
+    // Set the Classification field
+    if (!classifications.empty())
+    {
+      point.SetClassification(classifications[i]);
+    }
 
-    // Point Source ID from colour → 16-bit integer Added 03092025 gje
-    int colourIndex = convertColourToInt(colours[i]);
-    if (colourIndex >= 0)   // skip black special case
+    // Set the Point Source ID field (used here for Branch ID)
+    if (!point_source_ids.empty())
     {
-        point.SetPointSourceID(static_cast<uint16_t>(colourIndex & 0xFFFF));
+      point.SetPointSourceID(point_source_ids[i]);
     }
-    else
-    {
-        point.SetPointSourceID(0);  // or leave default for black
-    }
-    // End Point Source ID from colour → 16-bit integer Added 03092025 gje
+    // --- END OF MODIFICATION ---
 
     writer.WritePoint(point);
   }
@@ -229,6 +266,10 @@ bool RAYLIB_EXPORT writeLas(std::string file_name, const std::vector<Eigen::Vect
   RAYLIB_UNUSED(points);
   RAYLIB_UNUSED(times);
   RAYLIB_UNUSED(colours);
+  // --- START OF MODIFICATION ---
+  RAYLIB_UNUSED(classifications);
+  RAYLIB_UNUSED(point_source_ids);
+  // --- END OF MODIFICATION ---
   std::cerr << "writeLas: cannot write file as WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true"
             << std::endl;
   return false;
@@ -275,7 +316,11 @@ LasWriter::~LasWriter()
 }
 
 bool LasWriter::writeChunk(const std::vector<Eigen::Vector3d> &points, const std::vector<double> &times,
-                           const std::vector<RGBA> &colours)
+                           const std::vector<RGBA> &colours,
+                           // --- START OF MODIFICATION ---
+                           const std::vector<uint8_t> &classifications,
+                           const std::vector<uint16_t> &point_source_ids)
+                           // --- END OF MODIFICATION ---
 {
 #if RAYLIB_WITH_LAS
   if (points.size() == 0)
@@ -295,27 +340,29 @@ bool LasWriter::writeChunk(const std::vector<Eigen::Vector3d> &points, const std
   for (unsigned int i = 0; i < points.size(); i++)
   {
     point.SetCoordinates(points[i][0], points[i][1], points[i][2]);
-    point.SetIntensity(static_cast<uint16_t>colours[i].alpha);
-    // Write RGB Added 03092025 gje
+    point.SetIntensity(static_cast<uint16_t>(colours[i].alpha));
+    
     color.SetRed(static_cast<uint16_t>(colours[i].red));
     color.SetGreen(static_cast<uint16_t>(colours[i].green));
     color.SetBlue(static_cast<uint16_t>(colours[i].blue));
     point.SetColor(color);
-    // End Write RGB Added 03092025 gje
+
     if (!times.empty())
       point.SetTime(times[i]);
     
-    // Point Source ID from colour → 16-bit integer Added 03092025 gje
-    int colourIndex = convertColourToInt(colours[i]);
-    if (colourIndex >= 0)   // skip black special case
+    // --- START OF MODIFICATION ---
+    // Set the Classification field
+    if (!classifications.empty())
     {
-        point.SetPointSourceID(static_cast<uint16_t>(colourIndex & 0xFFFF));
+      point.SetClassification(classifications[i]);
     }
-    else
+
+    // Set the Point Source ID field (used here for Branch ID)
+    if (!point_source_ids.empty())
     {
-        point.SetPointSourceID(0);  // or leave default for black
+      point.SetPointSourceID(point_source_ids[i]);
     }
-    // End Point Source ID from colour → 16-bit integer Added 03092025 gje
+    // --- END OF MODIFICATION ---
     
     writer_->WritePoint(point);
   }
@@ -324,6 +371,10 @@ bool LasWriter::writeChunk(const std::vector<Eigen::Vector3d> &points, const std
   RAYLIB_UNUSED(points);
   RAYLIB_UNUSED(times);
   RAYLIB_UNUSED(colours);
+  // --- START OF MODIFICATION ---
+  RAYLIB_UNUSED(classifications);
+  RAYLIB_UNUSED(point_source_ids);
+  // --- END OF MODIFICATION ---
   std::cerr << "writeLas: cannot write file as WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true"
             << std::endl;
   return false;

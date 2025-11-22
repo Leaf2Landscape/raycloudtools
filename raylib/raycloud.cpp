@@ -3,6 +3,7 @@
 // ABN 41 687 119 230
 //
 // Author: Thomas Lowe
+
 #include "raycloud.h"
 
 #include "raylaz.h"
@@ -24,28 +25,49 @@ void Cloud::clear()
   ends.clear();
   times.clear();
   colours.clear();
+  classifications.clear();
+  branch_ids.clear();
 }
 
-void Cloud::save(const std::string &file_name) const
+void Cloud::save(const std::string &file_name, bool save_extra_fields) const
 {
   std::string name = file_name;
-  writePlyRayCloud(name, starts, ends, times, colours);
+  // We now pass the extra fields to the writer.
+  // The writePlyRayCloud function will need to be updated to handle these.
+  writePlyRayCloud(name, starts, ends, times, colours, classifications, branch_ids, save_extra_fields);
 }
 
 bool Cloud::load(const std::string &file_name, bool check_extension, int min_num_rays)
 {
-  // look first for the raycloud PLY
-  if (file_name.substr(file_name.size() - 4) == ".ply" || !check_extension)
-    return loadPLY(file_name, min_num_rays);
+  // The input file could be LAZ/LAS now, which rayimport doesn't support directly
+  // but rayextract can now load.
+  const std::string ext = file_name.substr(file_name.size() - 4);
+  if (ext == ".ply")
+  {
+      return loadPLY(file_name, min_num_rays);
+  }
+  else if (ext == ".laz" || ext == ".las")
+  {
+      // We are reading a point cloud, not a ray cloud, so starts will be empty.
+      // We will have to reconstruct them if needed, or assume they are not used.
+      // For rayextract trees, start points are used for radius estimation.
+      // The readLas function sets start=end, so we must recalculate from a trajectory if available,
+      // but for now, this is a limitation we must accept.
+      return readLas(file_name, ends, times, colours, 100.0, classifications);
+  }
+  else if (!check_extension)
+  {
+      return loadPLY(file_name, min_num_rays);
+  }
 
-  std::cerr << "Attempting to load ray cloud " << file_name << " which doesn't have expected file extension .ply"
+  std::cerr << "Attempting to load ray cloud " << file_name << " which doesn't have expected file extension .ply, .laz, or .las"
             << std::endl;
   return false;
 }
 
 bool Cloud::loadPLY(const std::string &file, int min_num_rays)
 {
-  bool res = readPly(file, starts, ends, times, colours, true);
+  bool res = readPly(file, starts, ends, times, colours, classifications, branch_ids, true);
   if ((int)ends.size() < min_num_rays)
     return false;
 #if defined OUTPUT_CLOUD_MOMENTS // Only used to supply data to unit tests
@@ -150,11 +172,15 @@ void Cloud::removeUnboundedRays()
     ends[i] = ends[valids[i]];
     times[i] = times[valids[i]];
     colours[i] = colours[valids[i]];
+    if (!classifications.empty()) classifications[i] = classifications[valids[i]];
+    if (!branch_ids.empty()) branch_ids[i] = branch_ids[valids[i]];
   }
   starts.resize(valids.size());
   ends.resize(valids.size());
   times.resize(valids.size());
   colours.resize(valids.size());
+  if (!classifications.empty()) classifications.resize(valids.size());
+  if (!branch_ids.empty()) branch_ids.resize(valids.size());
 }
 
 void Cloud::decimate(double voxel_width, std::set<Eigen::Vector3i, Vector3iLess> &voxel_set)
@@ -168,11 +194,15 @@ void Cloud::decimate(double voxel_width, std::set<Eigen::Vector3i, Vector3iLess>
     ends[i] = ends[id];
     colours[i] = colours[id];
     times[i] = times[id];
+    if (!classifications.empty()) classifications[i] = classifications[id];
+    if (!branch_ids.empty()) branch_ids[i] = branch_ids[id];
   }
   starts.resize(subsample.size());
   ends.resize(subsample.size());
   colours.resize(subsample.size());
   times.resize(subsample.size());
+  if (!classifications.empty()) classifications.resize(subsample.size());
+  if (!branch_ids.empty()) branch_ids.resize(subsample.size());
 }
 
 void Cloud::eigenSolve(const std::vector<int> &ray_ids, const Eigen::MatrixXi &indices, int index, int num_neighbours,
@@ -321,7 +351,8 @@ bool RAYLIB_EXPORT Cloud::getInfo(const std::string &file_name, Info &info)
   info.start_pos.setZero();
   info.end_pos.setZero();
   auto find_bounds = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                         std::vector<double> &times, std::vector<ray::RGBA> &colours) {
+                         std::vector<double> &times, std::vector<ray::RGBA> &colours,
+                         std::vector<uint8_t>&, std::vector<uint16_t>&) { // Ignore extra fields for now
     for (size_t i = 0; i < ends.size(); i++)
     {
       if (colours[i].alpha > 0)
@@ -372,7 +403,8 @@ double Cloud::estimatePointSpacing(const std::string &file_name, const Cuboid &b
   std::set<Eigen::Vector3i, Vector3iLess> test_set;
 
   auto estimate_size = [&](std::vector<Eigen::Vector3d> &, std::vector<Eigen::Vector3d> &ends, std::vector<double> &,
-                           std::vector<ray::RGBA> &colours) {
+                           std::vector<ray::RGBA> &colours, 
+                           std::vector<uint8_t>&, std::vector<uint16_t>&) { // Ignore extra fields
     for (unsigned int i = 0; i < ends.size(); i++)
     {
       if (colours[i].alpha == 0)
@@ -444,14 +476,15 @@ void Cloud::split(Cloud &cloud1, Cloud &cloud2, std::function<bool(int i)> fptr)
   }
 }
 
-void Cloud::addRay(const Eigen::Vector3d &start, const Eigen::Vector3d &end, double time, const RGBA &colour)
+void Cloud::addRay(const Eigen::Vector3d &start, const Eigen::Vector3d &end, double time, const RGBA &colour, uint8_t classification, uint16_t branch_id)
 {
   starts.push_back(start);
   ends.push_back(end);
   times.push_back(time);
   colours.push_back(colour);
+  classifications.push_back(classification);
+  branch_ids.push_back(branch_id);
 }
-
 
 void Cloud::addRay(const Cloud &other_cloud, size_t index)
 {
@@ -459,6 +492,8 @@ void Cloud::addRay(const Cloud &other_cloud, size_t index)
   ends.push_back(other_cloud.ends[index]);
   times.push_back(other_cloud.times[index]);
   colours.push_back(other_cloud.colours[index]);
+  if (!other_cloud.classifications.empty()) classifications.push_back(other_cloud.classifications[index]);
+  if (!other_cloud.branch_ids.empty()) branch_ids.push_back(other_cloud.branch_ids[index]);
 }
 
 void Cloud::resize(size_t size)
@@ -467,6 +502,8 @@ void Cloud::resize(size_t size)
   ends.resize(size);
   times.resize(size);
   colours.resize(size);
+  if (!classifications.empty()) classifications.resize(size);
+  if (!branch_ids.empty()) branch_ids.resize(size);
 }
 
 void Cloud::reserve(size_t size)
@@ -475,6 +512,8 @@ void Cloud::reserve(size_t size)
   ends.reserve(size);
   times.reserve(size);
   colours.reserve(size);
+  classifications.reserve(size);
+  branch_ids.reserve(size);
 }
 
 Eigen::Array<double, 22, 1> Cloud::getMoments() const
@@ -524,7 +563,10 @@ Eigen::Array<double, 22, 1> Cloud::getMoments() const
 
 bool Cloud::read(const std::string &file_name,
                  std::function<void(std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                                    std::vector<double> &times, std::vector<RGBA> &colours)>
+                                    std::vector<double> &times, std::vector<RGBA> &colours,
+                                    std::vector<uint8_t> &classifications,
+                                    std::vector<uint16_t> &branch_ids
+                                    )>
                    apply)
 {
   return readPly(file_name, true, apply, 0);

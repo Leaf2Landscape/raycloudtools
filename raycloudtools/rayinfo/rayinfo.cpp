@@ -13,6 +13,7 @@
 #include <cstring>
 #include <iostream>
 #include <chrono>
+#include <cstdint> // Added for uint8_t, uint16_t
 
 void usage(int exit_code = 1)
 {
@@ -77,9 +78,15 @@ int rayInfo(int argc, char *argv[])
   ray::RGBA min_col(255, 255, 255, 255), max_col(0, 0, 0, 0);
   int num_pixels_covered = 0;
   const double voxel_width = 0.5;
+  
+  // --- START OF FIX ---
+  // Added the two missing parameters to the lambda signature to match ray::readPly.
+  // Unused parameters are left unnamed to prevent compiler warnings.
   /// This lambda function does most of the work in acquiring general information on the ray cloud
   auto get_info = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                         std::vector<double> &times, std::vector<ray::RGBA> &colours) {
+                         std::vector<double> &times, std::vector<ray::RGBA> &colours,
+                         std::vector<uint8_t>&, std::vector<uint16_t>&) {
+  // --- END OF FIX ---
     for (size_t i = 0; i < ends.size(); i++)
     {
       // estimate the area of land covered by points

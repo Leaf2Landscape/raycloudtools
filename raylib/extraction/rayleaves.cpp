@@ -15,6 +15,7 @@
 #include <cmath>
 #include <functional>
 #include <string>
+#include <cstdint> // Added for uint8_t, uint16_t
 #include "raylib/imageread.h"
 
 namespace ray
@@ -189,8 +190,12 @@ bool generateLeaves(const std::string &cloud_stub, const std::string &trees_file
   std::mt19937 gen(rd());
   std::uniform_real_distribution<> dis(0.0, 1.0);
 
-  auto add_leaves = [&](std::vector<Eigen::Vector3d> &, std::vector<Eigen::Vector3d> &ends, std::vector<double> &,
-                        std::vector<ray::RGBA> &colours) {
+  // --- START OF FIX ---
+  // Added the two missing parameters to the lambda signature to match ray::Cloud::read.
+  // Unused parameters are left unnamed to prevent compiler warnings.
+  auto add_leaves = [&](std::vector<Eigen::Vector3d> & /*starts*/, std::vector<Eigen::Vector3d> &ends, std::vector<double> & /*times*/,
+                        std::vector<ray::RGBA> &colours, std::vector<uint8_t> & /*classifications*/, std::vector<uint16_t> & /*branch_ids*/) {
+    // --- END OF FIX ---
     for (size_t i = 0; i < ends.size(); i++)
     {
       if (colours[i].alpha == 0)

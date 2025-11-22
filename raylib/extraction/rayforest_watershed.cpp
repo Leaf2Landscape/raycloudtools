@@ -10,6 +10,7 @@
 #include <cstring>
 #include <iostream>
 #include <queue>
+#include <cstdint> // For uint8_t, uint16_t
 #include "../rayply.h"
 
 namespace ray
@@ -21,6 +22,11 @@ void Forest::renderWatershed(const std::string &cloud_name_stub, std::vector<Tre
   std::vector<Eigen::Vector3d> cloud_points;
   std::vector<double> times;
   std::vector<RGBA> colours;
+  // --- START OF FIX ---
+  // Added vectors for the new data fields required by writePlyPointCloud.
+  std::vector<uint8_t> classifications;
+  std::vector<uint16_t> branch_ids;
+  // --- END OF FIX ---
   RGBA colour;
   colour.alpha = 255;
 
@@ -48,6 +54,11 @@ void Forest::renderWatershed(const std::string &cloud_name_stub, std::vector<Tre
       cloud_points.push_back(pos);
       times.push_back(0.0);
       colours.push_back(colour);
+      // --- START OF FIX ---
+      // Populate new fields with default data.
+      classifications.push_back(0);
+      branch_ids.push_back(0);
+      // --- END OF FIX ---
     }
   }
 
@@ -80,6 +91,11 @@ void Forest::renderWatershed(const std::string &cloud_name_stub, std::vector<Tre
           cloud_points.push_back(base + Eigen::Vector3d(rad * std::sin(ang), rad * std::cos(ang), z));
           times.push_back(0.0);
           colours.push_back(colour);
+          // --- START OF FIX ---
+          // Populate new fields with default data.
+          classifications.push_back(0);
+          branch_ids.push_back(0);
+          // --- END OF FIX ---
         }
       }
     }
@@ -99,11 +115,19 @@ void Forest::renderWatershed(const std::string &cloud_name_stub, std::vector<Tre
         times.push_back(0.0);
         colour.red = colour.green = colour.blue = (uint8_t)(255.0 * spacefield_(i, j));
         colours.push_back(colour);
+        // --- START OF FIX ---
+        // Populate new fields with default data.
+        classifications.push_back(0);
+        branch_ids.push_back(0);
+        // --- END OF FIX ---
       }
     }
   }
 
-  writePlyPointCloud(cloud_name_stub + "_watershed.ply", cloud_points, times, colours);
+  // --- START OF FIX ---
+  // Updated function call with the new arguments.
+  writePlyPointCloud(cloud_name_stub + "_watershed.ply", cloud_points, times, colours, classifications, branch_ids, false);
+  // --- END OF FIX ---
 }
 
 struct Point

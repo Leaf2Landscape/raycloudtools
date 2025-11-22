@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <cstdint> // Added for uint8_t, uint16_t
 
 void usage(int exit_code = 1)
 {
@@ -48,22 +49,33 @@ int rayRestore(int argc, char *argv[])
   std::set<Eigen::Vector3i, ray::Vector3iLess> voxel_set;
   full_decimated.reserve(decimated_cloud.ends.size());  // good guess at memory required
 
+  // --- START OF FIX ---
+  // Added missing parameters to the lambda signature and passed them to addRay.
   // decimation functions
   auto decimate = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                      std::vector<double> &times, std::vector<ray::RGBA> &colours) {
+                      std::vector<double> &times, std::vector<ray::RGBA> &colours,
+                      std::vector<uint8_t> &classifications, std::vector<uint16_t> &branch_ids) {
+    bool has_class = !classifications.empty();
+    bool has_branch = !branch_ids.empty();
     if (spatial_decimation)
     {
       subsample.clear();
       voxelSubsample(ends, voxel_width, subsample, voxel_set);
-      for (auto &id : subsample) full_decimated.addRay(starts[id], ends[id], times[id], colours[id]);
+      for (auto &id : subsample) 
+        full_decimated.addRay(starts[id], ends[id], times[id], colours[id],
+                              has_class ? classifications[id] : 0,
+                              has_branch ? branch_ids[id] : 0);
     }
     else
     {
       const int num_points = static_cast<int>(ends.size());
       for (int i = 0, c = 0; i < num_points; i += ray_step, c++)
-        full_decimated.addRay(starts[i], ends[i], times[i], colours[i]);
+        full_decimated.addRay(starts[i], ends[i], times[i], colours[i],
+                              has_class ? classifications[i] : 0,
+                              has_branch ? branch_ids[i] : 0);
     }
   };
+  // --- END OF FIX ---
   if (!ray::Cloud::read(full_cloud_file.name(), decimate))
     usage();
 
@@ -236,9 +248,14 @@ int rayRestore(int argc, char *argv[])
     usage();
   ray::Cloud chunk;
 
+  // --- START OF FIX ---
+  // Added missing parameters to the lambda signature and passed them to addRay.
   auto transfer = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                      std::vector<double> &times, std::vector<ray::RGBA> &colours) {
+                      std::vector<double> &times, std::vector<ray::RGBA> &colours,
+                      std::vector<uint8_t> &classifications, std::vector<uint16_t> &branch_ids) {
     chunk.clear();
+    bool has_class = !classifications.empty();
+    bool has_branch = !branch_ids.empty();
     if (spatial_decimation)
     {
       for (size_t i = 0; i < ends.size(); i++)
@@ -246,7 +263,9 @@ int rayRestore(int argc, char *argv[])
         Eigen::Vector3i place(int(std::floor(ends[i][0] / voxel_width)), int(std::floor(ends[i][1] / voxel_width)),
                               int(std::floor(ends[i][2] / voxel_width)));
         if (voxel_set.find(place) != voxel_set.end())
-          chunk.addRay(transform * starts[i], transform * ends[i], times[i], colours[i]);
+          chunk.addRay(transform * starts[i], transform * ends[i], times[i], colours[i],
+                       has_class ? classifications[i] : 0,
+                       has_branch ? branch_ids[i] : 0);
       }
     }
     else
@@ -258,11 +277,14 @@ int rayRestore(int argc, char *argv[])
         int closest_index = (i + ray_step / 2) / ray_step;
         while (pairs[pair_index][0] < closest_index && pair_index < (int)pairs.size() - 1) pair_index++;
         if (pairs[pair_index][0] == closest_index)
-          chunk.addRay(transform * starts[i], transform * ends[i], times[i], colours[i]);
+          chunk.addRay(transform * starts[i], transform * ends[i], times[i], colours[i],
+                       has_class ? classifications[i] : 0,
+                       has_branch ? branch_ids[i] : 0);
       }
     }
     writer.writeChunk(chunk);
   };
+  // --- END OF FIX ---
   if (!ray::Cloud::read(full_cloud_file.name(), transfer))
     usage();
 

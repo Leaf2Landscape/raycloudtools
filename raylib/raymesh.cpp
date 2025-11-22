@@ -220,7 +220,11 @@ void Mesh::toHeightField(Eigen::ArrayXXd &field, const Eigen::Vector3d &box_min,
   }
 }
 
-bool Mesh::splitCloud(const std::string &cloud_name, double offset, const std::string &inside_name, const std::string &outside_name)
+// --- START OF FIX ---
+// Updated function signature to include output_ext
+bool Mesh::splitCloud(const std::string &cloud_name, double offset, const std::string &inside_name,
+                      const std::string &outside_name, const std::string &output_ext)
+// --- END OF FIX ---
 {
   // Firstly, find the average vertex normals
   std::vector<Eigen::Vector3d> normals(vertices_.size());
@@ -269,7 +273,7 @@ bool Mesh::splitCloud(const std::string &cloud_name, double offset, const std::s
     {
       for (int y = (int)tri_min[1]; y <= (int)tri_max[1]; y++)
       {
-        for (int z = (int)tri_min[2]; z <= (int)tri_max[2]; z++)
+        for (int z = (int)tri_min[2]; z <= (int)tri_max[2]; z++) 
         {
           grid.insert(x, y, z, &tri);
         }
@@ -310,14 +314,21 @@ bool Mesh::splitCloud(const std::string &cloud_name, double offset, const std::s
   }
   // Fourthly, drop each end point downwards to decide whether it is inside or outside..
   CloudWriter in_cloud, out_cloud;
-  in_cloud.begin(inside_name);
-  out_cloud.begin(outside_name);
+  // --- START OF FIX ---
+  // Use the new output_ext parameter when initializing the writers
+  in_cloud.begin(inside_name, output_ext);
+  out_cloud.begin(outside_name, output_ext);
+  // --- END OF FIX ---
 
   // splitting performed per chunk
   auto write_chunk = [&in_cloud, &out_cloud, &grid, &expanded_triangle_grid, &box_min, 
                       &voxel_width, &offset](
+                    // --- START OF FIX ---
+                    // Updated lambda to accept the new classification and branch_id vectors
                     std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                    std::vector<double> &times, std::vector<RGBA> &colours) 
+                    std::vector<double> &times, std::vector<RGBA> &colours,
+                    std::vector<uint8_t> &classifications, std::vector<uint16_t> &branch_ids) 
+                    // --- END OF FIX ---
   {
     Cloud in_chunk, out_chunk;
     #pragma omp parallel for
@@ -371,7 +382,12 @@ bool Mesh::splitCloud(const std::string &cloud_name, double offset, const std::s
       Cloud &out = is_inside ? in_chunk : out_chunk;
       #pragma omp critical
       {
-        out.addRay(starts[i], ends[i], times[i], colours[i]);
+        // --- START OF FIX ---
+        // Pass the new fields to addRay
+        uint8_t classification = classifications.empty() ? 0 : classifications[i];
+        uint16_t branch_id = branch_ids.empty() ? 0 : branch_ids[i];
+        out.addRay(starts[i], ends[i], times[i], colours[i], classification, branch_id);
+        // --- END OF FIX ---
       }      
     }
     in_cloud.writeChunk(in_chunk);

@@ -6,6 +6,7 @@
 #include "raytrunks.h"
 #include <nabo/nabo.h>
 #include <queue>
+#include <cstdint> // Added for uint8_t, uint16_t
 #include "../raycuboid.h"
 #include "../raygrid.h"
 #include "../rayply.h"
@@ -22,6 +23,11 @@ void drawTrunks(const std::vector<Trunk> &trunks, const Eigen::Vector3d &offset,
   std::vector<Eigen::Vector3d> cloud_points;
   std::vector<double> times;
   std::vector<RGBA> colours;
+  // --- START OF FIX ---
+  // Added vectors for the new data fields required by writePlyPointCloud.
+  std::vector<uint8_t> classifications;
+  std::vector<uint16_t> branch_ids;
+  // --- END OF FIX ---
   RGBA colour;
   colour.red = colour.green = colour.blue = 0;
   colour.alpha = 255;
@@ -34,6 +40,11 @@ void drawTrunks(const std::vector<Trunk> &trunks, const Eigen::Vector3d &offset,
       cloud_points.push_back(point + offset);
       times.push_back(0.0);
       colours.push_back(colour);
+      // --- START OF FIX ---
+      // Populate new fields with default data.
+      classifications.push_back(0);
+      branch_ids.push_back(0);
+      // --- END OF FIX ---
     }
   }
   colour.red = colour.green = 255;
@@ -44,6 +55,11 @@ void drawTrunks(const std::vector<Trunk> &trunks, const Eigen::Vector3d &offset,
       cloud_points.push_back(point + offset);
       times.push_back(0.0);
       colours.push_back(colour);
+      // --- START OF FIX ---
+      // Populate new fields with default data.
+      classifications.push_back(0);
+      branch_ids.push_back(0);
+      // --- END OF FIX ---
     }
   }
   // Now draw each of the trunks as a cylinder composed of a set of points
@@ -76,10 +92,18 @@ void drawTrunks(const std::vector<Trunk> &trunks, const Eigen::Vector3d &offset,
         cloud_points.push_back(pos + offset);
         times.push_back(0.0);
         colours.push_back(colour);
+        // --- START OF FIX ---
+        // Populate new fields with default data.
+        classifications.push_back(0);
+        branch_ids.push_back(0);
+        // --- END OF FIX ---
       }
     }
   }
-  writePlyPointCloud("trunks_verbose.ply", cloud_points, times, colours);
+  // --- START OF FIX ---
+  // Updated function call with the new arguments.
+  writePlyPointCloud("trunks_verbose.ply", cloud_points, times, colours, classifications, branch_ids, false);
+  // --- END OF FIX ---
 }
 
 /// Used in a priority queue for identifying close neighbouring trunks
@@ -647,6 +671,11 @@ void Trunks::saveDebugTrunks(const std::string &filename, bool verbose, const st
     std::vector<Eigen::Vector3d> cloud_points;
     std::vector<double> times;
     std::vector<RGBA> colours;
+    // --- START OF FIX ---
+    // Added vectors for the new data fields required by writePlyPointCloud.
+    std::vector<uint8_t> classifications;
+    std::vector<uint16_t> branch_ids;
+    // --- END OF FIX ---
     RGBA colour;
     colour.alpha = 255;
     for (auto &id : lowest_trunk_ids)
@@ -668,10 +697,18 @@ void Trunks::saveDebugTrunks(const std::string &filename, bool verbose, const st
           cloud_points.push_back(pos + offset);
           times.push_back(0.0);
           colours.push_back(colour);
+          // --- START OF FIX ---
+          // Populate new fields with default data.
+          classifications.push_back(0);
+          branch_ids.push_back(0);
+          // --- END OF FIX ---
         }
       }
     }
-    writePlyPointCloud(filename, cloud_points, times, colours);
+    // --- START OF FIX ---
+    // Updated function call with the new arguments.
+    writePlyPointCloud(filename, cloud_points, times, colours, classifications, branch_ids, false);
+    // --- END OF FIX ---
   }  
 }
 

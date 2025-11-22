@@ -11,6 +11,7 @@
 #include "../rayutils.h"
 #include "raylib/raylibconfig.h"
 #include "raysegment.h"
+#include <set> // Needed for low_veg_indices_
 
 namespace ray
 {
@@ -36,6 +37,23 @@ struct RAYLIB_EXPORT TreesParams
   bool alpha_weighting;    // use point cloud alpha as weight for connecting points. Branches will follow high weight
   bool largest_diameter;        // only keep the tree with the largest DBH
   bool maintain_main_branch_thickness; // When splitting, don't shrink the dominant branch.
+
+  // --- START OF Geometric classification modification ---
+  /// A multiplier for the measured error (scatter) of a branch section. Points further
+  /// than 'local_radius + (multiplier * local_error)' from the axis are classified as leaves. Default 3.0.
+  double classification_error_multiplier;
+  // --- END OF Geometric classification modification ---
+
+  // --- START OF MERGED FEATURES ---
+  // Features from the LAZ/Classification Update
+  bool update_classifications;       // Flag to trigger reclassification logic.
+  std::string roots_output_filename; // Filename for saving intermediate root points.
+  
+  // Features from the Segmentation Algorithm Update
+  bool verify_paths;     // flag to enable the path combination/correction step
+  bool debug_paths;      // flag to enable saving debug path files
+  bool root_debug;       // flag to enable saving root debug files
+  // --- END OF MERGED FEATURES ---
 };
 
 struct BranchSection;  // forwards declaration
@@ -49,7 +67,10 @@ class RAYLIB_EXPORT Trees
 public:
   /// Constructs the piecewise cylindrical tree structures from the input ray cloud @c cloud
   /// The ground @c mesh defines the ground and @params are used to control the reconstruction
-  Trees(Cloud &cloud, const Eigen::Vector3d &offset, const Mesh &mesh, const TreesParams &params, bool verbose);
+  // --- START OF MERGED FEATURES ---
+  // Updated constructor signature from the Segmentation Algorithm Update
+  Trees(Cloud &cloud, const std::string& name_stub, const Eigen::Vector3d &offset, const Mesh &mesh, const TreesParams &params, bool verbose);
+  // --- END OF MERGED FEATURES ---
 
   /// save the trees representation to a text file
   bool save(const std::string &filename, const Eigen::Vector3d &offset, bool verbose) const;
@@ -60,6 +81,15 @@ private:
 
   /// calculate the distance to farthest connected branch tip, for each point in the cloud
   void calculatePointDistancesToEnd();
+
+  // --- START OF MERGED FEATURES ---
+  // New helper function declarations from the Segmentation Algorithm Update
+  /// Applies the corrections from the verification pass to the main `parent` links.
+  void applyVerificationCorrections();
+  /// Calculates the distance_to_end for the verified path graph.
+  void calculatePointDistancesToEnd_Verified();
+  // --- END OF MERGED FEATURES ---
+
   /// create the start branch segments at the root positions
   void generateRootSections(const std::vector<std::vector<int>> &roots_list);
   /// finalise the attributes of an end (tip) of a branch
@@ -88,9 +118,13 @@ private:
   void addChildSection();
   /// calculate the ownership, what branch section does each point belong to
   void calculateSectionIds(std::vector<int> &section_ids, const std::vector<std::vector<int>> &children);
+  // --- START OF Geometric classification modification ---
+  /// Calculate and store the distance of each point to the axis of its assigned BranchSection.
+  void calculateDistanceToAxis(const std::vector<int> &section_ids);
+  // --- END OF Geometric classification modification ---
   /// set ids that are locel (0-based) per tree
   void generateLocalSectionIds();
-  /// if using an overlapping grid, then remove trees with base outside the non-overlapping cell bounds
+  /// if using an overlapping grid, then remove trees with a base in the overlap zone
   void removeOutOfBoundSections(const Cloud &cloud, Eigen::Vector3d &min_bound, Eigen::Vector3d &max_bound, const Eigen::Vector3d &offset);
   /// colour the cloud based on the section id for each point
   void segmentCloud(Cloud &cloud, std::vector<int> &root_segs, const std::vector<int> &section_ids);
@@ -114,6 +148,7 @@ private:
   double forest_weight_{0};
   double forest_weight_squared_{0};
   std::vector<int> contiguous_section_ids_; // converts section ids to contiguous (empty trees removed) sectino ids for output
+  std::set<int> low_veg_indices_; // stores indices of points filtered as low veg during trunk analysis
 
 };
 
@@ -136,6 +171,10 @@ struct RAYLIB_EXPORT BranchSection
     , radius_scale(1)
     , split_count(0)
     , tree_height(0)
+    // --- START OF Geometric classification modification ---
+    , measured_radius(0.0)
+    , measured_error(0.0)
+    // --- END OF Geometric classification modification ---
   {}
   Eigen::Vector3d tip;
 
@@ -154,6 +193,13 @@ struct RAYLIB_EXPORT BranchSection
   std::vector<int> roots;  // root points
   std::vector<int> ends;
   std::vector<int> children;
+
+  // --- START OF Geometric classification modification ---
+  // The radius directly measured from the point data for this section.
+  double measured_radius;
+  // The mean absolute deviation (scatter) of points from the measured_radius for this section.
+  double measured_error;
+  // --- END OF Geometric classification modification ---
 };
 
 /// Converts an index in to a unique colour

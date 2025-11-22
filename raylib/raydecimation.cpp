@@ -7,7 +7,9 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <cstdint> // For uint8_t, uint16_t
 #include "raycloudwriter.h"
+#include "rayunused.h"
 
 namespace ray
 {
@@ -22,13 +24,20 @@ bool decimateSpatial(const std::string &file_stub, double vox_width)
   std::vector<int64_t> subsample;
   std::set<Eigen::Vector3i, ray::Vector3iLess> voxel_set;
 
+  // --- START OF FIX ---
+  // Added the two missing parameters to the lambda signature.
   auto decimate = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                      std::vector<double> &times, std::vector<ray::RGBA> &colours) 
+                      std::vector<double> &times, std::vector<ray::RGBA> &colours,
+                      std::vector<uint8_t> &classifications, std::vector<uint16_t> &branch_ids) 
   {
     double width = 0.01 * vox_width;
     subsample.clear();
     voxelSubsample(ends, width, subsample, voxel_set);
     chunk.resize(subsample.size());
+    // Also resize the new data vectors if they exist to prevent crashes.
+    if (!classifications.empty()) chunk.classifications.resize(subsample.size());
+    if (!branch_ids.empty()) chunk.branch_ids.resize(subsample.size());
+    
     for (int64_t i = 0; i < (int64_t)subsample.size(); i++)
     {
       int64_t id = subsample[i];
@@ -36,9 +45,13 @@ bool decimateSpatial(const std::string &file_stub, double vox_width)
       chunk.ends[i] = ends[id];
       chunk.colours[i] = colours[id];
       chunk.times[i] = times[id];
+      // Pass through the new data.
+      if (!classifications.empty()) chunk.classifications[i] = classifications[id];
+      if (!branch_ids.empty()) chunk.branch_ids[i] = branch_ids[id];
     }
     writer.writeChunk(chunk);
   };
+  // --- END OF FIX ---
 
   if (!ray::Cloud::read(file_stub + ".ply", decimate))
     return false;
@@ -54,21 +67,32 @@ bool decimateTemporal(const std::string &file_stub, int num_rays)
 
   // By maintaining these buffers below, we avoid almost all memory fragmentation
   ray::Cloud chunk;
+  // --- START OF FIX ---
+  // Added the two missing parameters to the lambda signature.
   auto decimate = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                      std::vector<double> &times, std::vector<ray::RGBA> &colours) 
+                      std::vector<double> &times, std::vector<ray::RGBA> &colours,
+                      std::vector<uint8_t> &classifications, std::vector<uint16_t> &branch_ids) 
   {
     size_t decimation = (size_t)num_rays;
     size_t count = (ends.size() + decimation - 1) / decimation;
     chunk.resize(count);
+    // Also resize the new data vectors if they exist to prevent crashes.
+    if (!classifications.empty()) chunk.classifications.resize(count);
+    if (!branch_ids.empty()) chunk.branch_ids.resize(count);
+    
     for (size_t i = 0, c = 0; i < ends.size(); i += decimation, c++)
     {
       chunk.starts[c] = starts[i];
       chunk.ends[c] = ends[i];
       chunk.times[c] = times[i];
       chunk.colours[c] = colours[i];
+      // Pass through the new data.
+      if (!classifications.empty()) chunk.classifications[c] = classifications[i];
+      if (!branch_ids.empty()) chunk.branch_ids[c] = branch_ids[i];
     }
     writer.writeChunk(chunk);
   };
+  // --- END OF FIX ---
 
   if (!ray::Cloud::read(file_stub + ".ply", decimate))
     return false;
@@ -87,8 +111,12 @@ bool decimateSpatioTemporal(const std::string &file_stub, double vox_width, int 
   std::map<Eigen::Vector3i, Eigen::Vector2i, ray::Vector3iLess> voxel_map;
   std::vector<Eigen::Vector3i> samples;
 
-  auto decimate = [&](std::vector<Eigen::Vector3d> &, std::vector<Eigen::Vector3d> &ends,
-                      std::vector<double> &, std::vector<ray::RGBA> &) 
+  // --- START OF FIX ---
+  // Added missing parameters to the lambda signature and marked them as unused.
+  auto decimate = [&](std::vector<Eigen::Vector3d> & /*starts*/, std::vector<Eigen::Vector3d> &ends,
+                      std::vector<double> & /*times*/, std::vector<ray::RGBA> & /*colours*/,
+                      std::vector<uint8_t> & /*classifications*/, std::vector<uint16_t> & /*branch_ids*/) 
+  // --- END OF FIX ---
   {
     double voxel_width = 0.01 * vox_width;
     // firstly we store a count per cell
@@ -132,10 +160,13 @@ bool decimateSpatioTemporal(const std::string &file_stub, double vox_width, int 
     voxel_map.find(Eigen::Vector3i(pos[0],pos[1],pos[2]))->second[1] = max_num;
   }
 
+  // --- START OF FIX ---
+  // Added the two missing parameters to the lambda signature.
   auto finalise = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                      std::vector<double> &times, std::vector<ray::RGBA> &colours) 
+                      std::vector<double> &times, std::vector<ray::RGBA> &colours,
+                      std::vector<uint8_t> &classifications, std::vector<uint16_t> &branch_ids) 
   {
-    chunk.resize(0);
+    chunk.clear();
     for (size_t i = 0; i<ends.size(); i++)
     {
       Eigen::Vector3d coords = ends[i] / voxel_width;
@@ -152,12 +183,16 @@ bool decimateSpatioTemporal(const std::string &file_stub, double vox_width, int 
           chunk.ends.push_back(ends[i]);
           chunk.colours.push_back(colours[i]);
           chunk.times.push_back(times[i]);
+          // Pass through the new data.
+          if (!classifications.empty()) chunk.classifications.push_back(classifications[i]);
+          if (!branch_ids.empty()) chunk.branch_ids.push_back(branch_ids[i]);
         }
         ends_left--;
       }
     }
     writer.writeChunk(chunk);
   };
+  // --- END OF FIX ---
   if (!ray::Cloud::read(file_stub + ".ply", finalise))
     return false;   
   writer.end();
@@ -175,8 +210,11 @@ bool decimateRaysSpatial(const std::string &file_stub, double vox_width)
   ray::Cloud chunk;
 
   Subsampler subsampler;
+  // --- START OF FIX ---
+  // Added the two missing parameters to the lambda signature.
   auto decimate = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                      std::vector<double> &times, std::vector<ray::RGBA> &colours) 
+                      std::vector<double> &times, std::vector<ray::RGBA> &colours,
+                      std::vector<uint8_t> &classifications, std::vector<uint16_t> &branch_ids) 
   {
     double width = 0.01 * vox_width;
     subsampler.subsample.clear();
@@ -191,6 +229,10 @@ bool decimateRaysSpatial(const std::string &file_stub, double vox_width)
       #endif 
     }
     chunk.resize(subsampler.subsample.size());
+    // Also resize the new data vectors if they exist to prevent crashes.
+    if (!classifications.empty()) chunk.classifications.resize(subsampler.subsample.size());
+    if (!branch_ids.empty()) chunk.branch_ids.resize(subsampler.subsample.size());
+
     for (int64_t i = 0; i < (int64_t)subsampler.subsample.size(); i++)
     {
       int64_t id = subsampler.subsample[i];
@@ -198,9 +240,13 @@ bool decimateRaysSpatial(const std::string &file_stub, double vox_width)
       chunk.ends[i] = ends[id];
       chunk.colours[i] = colours[id];
       chunk.times[i] = times[id];
+      // Pass through the new data.
+      if (!classifications.empty()) chunk.classifications[i] = classifications[id];
+      if (!branch_ids.empty()) chunk.branch_ids[i] = branch_ids[id];
     }
     writer.writeChunk(chunk);
   };
+  // --- END OF FIX ---
 
   if (!ray::Cloud::read(file_stub + ".ply", decimate))
     return false;
@@ -230,8 +276,12 @@ bool decimateAngular(const std::string &file_stub, double radius_per_length)
   }
   int index = -1;
 
+  // --- START OF FIX ---
+  // Added missing parameters to the lambda signature and marked them as unused.
   auto decimate = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                      std::vector<double> &, std::vector<ray::RGBA> &) 
+                      std::vector<double> & /*times*/, std::vector<ray::RGBA> & /*colours*/,
+                      std::vector<uint8_t> & /*classifications*/, std::vector<uint16_t> & /*branch_ids*/) 
+  // --- END OF FIX ---
   {
     for (size_t i = 0; i<ends.size(); i++)
     {
@@ -272,14 +322,17 @@ bool decimateAngular(const std::string &file_stub, double radius_per_length)
   index = -1;
   int head = 0;
   // the finalise step uses the visiteds data to decide whether to include each ray
+  // --- START OF FIX ---
+  // Added the two missing parameters to the lambda signature.
   auto finalise = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                      std::vector<double> &times, std::vector<ray::RGBA> &colours) 
+                      std::vector<double> &times, std::vector<ray::RGBA> &colours,
+                      std::vector<uint8_t> &classifications, std::vector<uint16_t> &branch_ids) 
   {
-    chunk.resize(0);
+    chunk.clear();
     for (size_t i = 0; i<ends.size(); i++)
     {
       index++;
-      if (index != candidate_indices[head])
+      if (head >= (int)candidate_indices.size() || index != candidate_indices[head]) // Added bounds check for head
         continue;
       head++;
       double radius = (starts[i] - ends[i]).norm() * 0.01*radius_per_length;
@@ -293,10 +346,14 @@ bool decimateAngular(const std::string &file_stub, double radius_per_length)
         chunk.ends.push_back(ends[i]);
         chunk.colours.push_back(colours[i]);
         chunk.times.push_back(times[i]);
+        // Pass through the new data.
+        if (!classifications.empty()) chunk.classifications.push_back(classifications[i]);
+        if (!branch_ids.empty()) chunk.branch_ids.push_back(branch_ids[i]);
       }
     }
     writer.writeChunk(chunk);
   };
+  // --- END OF FIX ---
   if (!ray::Cloud::read(file_stub + ".ply", finalise))
     return false;
   writer.end();

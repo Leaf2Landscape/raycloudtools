@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <vector>
 
 #include "raylib/raycloud.h"
 #include "raylib/raylaz.h"
@@ -54,27 +55,24 @@ int rayImport(int argc, char *argv[])
   if (!standard_format && !position_format && !ray_format && !unbound_format)
     usage();
 
-  ray::Cloud cloud;
   const std::string &traj_file = trajectory_file.name();
   const std::string &trans_file = transform_file.name();
-  // Sensors we use have 0 to 100 for normal output, and to 255 for special reflective surfaces
   double maximum_intensity = max_intensity.value();
 
-  // init transformation
   std::vector<double> transformation;
-  // load the trajectory first, it should fit into main memory
-
+  
   ray::Trajectory trajectory;
   if (standard_format)
   {
     const std::string traj_end = traj_file.substr(traj_file.size() - 4);
-    // allow the trajectory file to be in multiple different formats
     if (traj_end == ".ply" || traj_end == ".las" || traj_end == ".laz")
     {
       std::vector<Eigen::Vector3d> starts;
       std::vector<Eigen::Vector3d> ends;
       std::vector<double> times;
       std::vector<ray::RGBA> colours;
+      // --- START OF MODIFICATION ---
+      // Trajectory files won't have the new fields, so we use the legacy reader
       if (traj_end == ".ply")
       {
         if (!ray::readPly(traj_file, starts, ends, times, colours, false))
@@ -82,9 +80,11 @@ int rayImport(int argc, char *argv[])
       }
       else
       {
-        if (!ray::readLas(traj_file, ends, times, colours, maximum_intensity))
+        std::vector<uint8_t> dummy_class; // Dummy vector for classification
+        if (!ray::readLas(traj_file, ends, times, colours, maximum_intensity, dummy_class))
           return false;
       }
+      // --- END OF MODIFICATION ---
       trajectory.points() = std::move(ends);
       trajectory.times() = std::move(times);
     }
@@ -97,31 +97,56 @@ int rayImport(int argc, char *argv[])
     save_file += "_raycloud";
   size_t num_bounded;
   std::ofstream ofs;
-  ray::RayPlyBuffer buffer;
-  if (!ray::writeRayCloudChunkStart(save_file + ".ply", ofs))
-    usage();
+  
+  // --- START OF MODIFICATION: Flexible writer setup ---
+  bool write_header_and_buffer_initialized = false;
+  std::vector<char> buffer;
+  bool has_input_classification = false;
+  bool has_input_branch_id = false;
+  size_t vertex_byte_size = 0;
+  // --- END OF MODIFICATION ---
+  
   Eigen::Vector3d start_pos(0, 0, 0);
   bool has_warned = false;
   double min_time = std::numeric_limits<double>::max();
   double max_time = std::numeric_limits<double>::lowest();
+
+  // --- START OF MODIFICATION: Update add_chunk to handle new fields ---
   auto add_chunk = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                       std::vector<double> &times, std::vector<ray::RGBA> &colours) {
-    if (start_pos.squaredNorm() == 0.0)
+                       std::vector<double> &times, std::vector<ray::RGBA> &colours,
+                       std::vector<uint8_t> &classifications, std::vector<uint16_t> &branch_ids) {
+
+    if (!write_header_and_buffer_initialized) {
+        has_input_classification = !classifications.empty() && classifications[0] != 0;
+        has_input_branch_id = !branch_ids.empty() && branch_ids[0] != 0;
+
+        ray::writeRayCloudChunkStart(save_file + ".ply", ofs, has_input_classification, has_input_branch_id);
+
+        #if RAYLIB_DOUBLE_RAYS
+        vertex_byte_size += sizeof(double) * 3;
+        #else
+        vertex_byte_size += sizeof(float) * 3;
+        #endif
+        vertex_byte_size += sizeof(double); // time
+        vertex_byte_size += sizeof(float) * 3; // ray
+        vertex_byte_size += sizeof(ray::RGBA);
+        if (has_input_classification) vertex_byte_size += sizeof(uint8_t);
+        if (has_input_branch_id) vertex_byte_size += sizeof(uint16_t);
+
+        write_header_and_buffer_initialized = true;
+    }
+
+    if (ends.empty()) return;
+
+    if (start_pos.squaredNorm() == 0.0 && !ends.empty())
     {
       start_pos = ends[0];
     }
-    // user provides a single sensor location (e.g. for static scanners)
-    else if (position_format || unbound_format)
+    
+    if (position_format || unbound_format)
     {
-      starts = ends;
-      Eigen::Vector3d pos = position.value();
-      for (auto &start : starts)
-      {
-        start = pos;
-      }
+      starts.assign(ends.size(), position.value());
     }
-    // user provides a constant ray vector
-    // e.g. for an overhead aerial scan, if no trajectory is available
     else if (ray_format)
     {
       starts = ends;
@@ -131,60 +156,45 @@ int rayImport(int argc, char *argv[])
         start += offset;
       }
     }
-    // otherwise, a trajectory has been passed in
     else
     {
-      // find the corresponding sensor locations for each point in the cloud
       trajectory.calculateStartPoints(times, starts);
       for (size_t i = 0; i < colours.size(); i++)
       {
         min_time = std::min(min_time, times[i]);
         max_time = std::max(max_time, times[i]);
-        if (colours[i].alpha == 0 && ends[i][2] < starts[i][2])  // a nonreturn, we need to remove downward ones
+        if (colours[i].alpha == 0 && ends[i][2] < starts[i][2])
         {
           Eigen::Vector3d dir = (ends[i] - starts[i]).normalized();
-          const double minimal_distance_for_nonreturns = 0.1;
-          ends[i] = starts[i] + dir * minimal_distance_for_nonreturns;
+          ends[i] = starts[i] + dir * 0.1;
         }
       }
     }
-    // option to remove the start position, for data that is in a global frame
-    // this is particularly useful if we are storing the ray cloud positions using floats
+
     if (remove.isSet())
     {
-      for (auto &end : ends)
-      {
-        end -= start_pos;
-      }
-      for (auto &start : starts)
-      {
-        start -= start_pos;
-      }
+      for (auto &end : ends) end -= start_pos;
+      for (auto &start : starts) start -= start_pos;
     }
     if (maximum_intensity == 0.0)
     {
-      for (auto &c : colours)
-      {
-        c.alpha = 255;
-      }
+      for (auto &c : colours) c.alpha = 255;
     }
     if (unbound_format)
     {
-      for (auto &c : colours)
-      {
-        c.alpha = u_int8_t(0);
-      }
+      for (auto &c : colours) c.alpha = 0;
     }
-    if (!ray::writeRayCloudChunk(ofs, buffer, starts, ends, times, colours, has_warned))
+    
+    if (!ray::writeRayCloudChunk(ofs, buffer, starts, ends, times, colours, classifications, branch_ids, has_warned))
     {
       usage();
     }
   };
+  // --- END OF MODIFICATION ---
 
   if (unbound_format)
   {
     std::ifstream inputFile(trans_file);
-
     if (inputFile.is_open())
     {
       std::string line;
@@ -192,10 +202,7 @@ int rayImport(int argc, char *argv[])
       {
         std::stringstream ss(line);
         double number;
-        while (ss >> number)
-        {
-          transformation.push_back(number);
-        }
+        while (ss >> number) transformation.push_back(number);
       }
       inputFile.close();
     }
@@ -206,25 +213,41 @@ int rayImport(int argc, char *argv[])
   }
 
   Eigen::Vector3d *offset = remove.isSet() ? &start_pos : nullptr;
+  
+  // --- START OF MODIFICATION: Update read calls to be flexible ---
   if (cloud_file.nameExt() == "ply")
   {
     bool can_times_be_missing = position_format || ray_format;
-    if (!ray::readPly(cloud_file.name(), false, add_chunk, maximum_intensity,
-                      can_times_be_missing))  // special case of reading a non-ray-cloud ply
+    if (!ray::readPly(cloud_file.name(), false, add_chunk, maximum_intensity, can_times_be_missing))
     {
       usage();
     }
   }
   else if (cloud_file.nameExt() == "laz" || cloud_file.nameExt() == "las")
   {
-    if (!ray::readLas(cloud_file.name(), add_chunk, num_bounded, maximum_intensity, offset))
+    // The LAS reader doesn't have branch_id, so we create a dummy lambda to adapt.
+    auto las_add_chunk_adapter = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
+                                     std::vector<double> &times, std::vector<ray::RGBA> &colours,
+                                     std::vector<uint8_t> &classifications) {
+        std::vector<uint16_t> dummy_branch_ids; // Empty vector
+        add_chunk(starts, ends, times, colours, classifications, dummy_branch_ids);
+    };
+    if (!ray::readLas(cloud_file.name(), las_add_chunk_adapter, num_bounded, maximum_intensity, offset))
     {
       usage();
     }
   }
+  // --- END OF MODIFICATION ---
   else if (cloud_file.nameExt() == "rxp")
   {
-    if (!ray::readRXP(cloud_file.name(), add_chunk, num_bounded, maximum_intensity, transformation))
+    // The RXP reader needs a similar adapter as it doesn't provide new fields.
+    auto rxp_add_chunk_adapter = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
+                                      std::vector<double> &times, std::vector<ray::RGBA> &colours) {
+        std::vector<uint8_t> dummy_class;
+        std::vector<uint16_t> dummy_branch_ids;
+        add_chunk(starts, ends, times, colours, dummy_class, dummy_branch_ids);
+    };
+    if (!ray::readRXP(cloud_file.name(), rxp_add_chunk_adapter, num_bounded, maximum_intensity, transformation))
     {
       usage();
     }
@@ -234,18 +257,17 @@ int rayImport(int argc, char *argv[])
     std::cout << "Error converting unknown type: " << cloud_file.name() << std::endl;
     usage();
   }
+  
   if (standard_format)
   {
     const float grace_period = 30.0;
     if (trajectory.times()[0] < min_time - grace_period)
     {
-      std::cout << "trajectory begins " << min_time - trajectory.times()[0] << " s before first point cloud time"
-                << std::endl;
+      std::cout << "trajectory begins " << min_time - trajectory.times()[0] << " s before first point cloud time" << std::endl;
     }
     if (trajectory.times().back() > max_time + grace_period)
     {
-      std::cout << "trajectory ends " << trajectory.times().back() - max_time << " s after last point cloud time"
-                << std::endl;
+      std::cout << "trajectory ends " << trajectory.times().back() - max_time << " s after last point cloud time" << std::endl;
     }
     if (min_time < trajectory.times()[0] - grace_period || max_time > trajectory.times().back() + grace_period ||
         min_time > trajectory.times().back() || max_time < trajectory.times()[0])
@@ -263,9 +285,12 @@ int rayImport(int argc, char *argv[])
     std::cout << "rayimport <point cloud> <trajectory file> --max_intensity 0" << std::endl;
   }
 
-  ray::writeRayCloudChunkEnd(ofs);
-  // if we remove the start position, then it is useful to print this value that is removed
-  // so that the user hasn't lost information
+  // --- START OF MODIFICATION: Use flexible writer end function ---
+  if(write_header_and_buffer_initialized) {
+      ray::writeRayCloudChunkEnd(ofs, vertex_byte_size);
+  }
+  // --- END OF MODIFICATION ---
+
   if (remove.isSet())
   {
     std::cout << "start position: " << start_pos.transpose() << " removed from all points" << std::endl;

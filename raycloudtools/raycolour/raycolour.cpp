@@ -16,6 +16,7 @@
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <cstdint> // Added for uint8_t
 
 void usage(int exit_code = 1)
 {
@@ -74,9 +75,12 @@ void colourFromImage(const std::string &cloud_file, const std::string &image_fil
               << ", stretching to fit) " << std::endl;
   }
 
+  // --- START OF FIX ---
+  // Added missing parameters to the lambda signature and passed them to writeChunk.
   auto colour_from_image = [&bounds, &writer, &image_data, width_x, width_y, width, height, num_channels](
                              std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                             std::vector<double> &times, std::vector<ray::RGBA> &colours) {
+                             std::vector<double> &times, std::vector<ray::RGBA> &colours,
+                             std::vector<uint8_t> &classifications, std::vector<uint16_t> &branch_ids) {
     for (size_t i = 0; i < ends.size(); i++)
     {
       const int ind0 = static_cast<int>((ends[i][0] - bounds.min_bound_[0]) / width_x);
@@ -86,8 +90,16 @@ void colourFromImage(const std::string &cloud_file, const std::string &image_fil
       colours[i].green = image_data[index + 1];
       colours[i].blue = image_data[index + 2];
     }
-    writer.writeChunk(starts, ends, times, colours);
+    ray::Cloud chunk;
+    chunk.starts = starts;
+    chunk.ends = ends;
+    chunk.times = times;
+    chunk.colours = colours;
+    chunk.classifications = classifications;
+    chunk.branch_ids = branch_ids;
+    writer.writeChunk(chunk);
   };
+  // --- END OF FIX ---
 
   if (!ray::Cloud::read(cloud_file, colour_from_image))
     usage();
@@ -122,9 +134,12 @@ int rayColour(int argc, char *argv[])
     if (!writer.begin(out_file))
       usage();
 
+    // --- START OF FIX ---
+    // Added missing parameters to the lambda signature and passed them to writeChunk.
     auto colour_rays = [flat_colour, flat_alpha, &type, &col, &alpha, &writer, &split_alpha](
                          std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                         std::vector<double> &times, std::vector<ray::RGBA> &colours) {
+                         std::vector<double> &times, std::vector<ray::RGBA> &colours,
+                         std::vector<uint8_t> &classifications, std::vector<uint16_t> &branch_ids) {
       if (flat_colour)
       {
         for (auto &colour : colours)
@@ -172,8 +187,16 @@ int rayColour(int argc, char *argv[])
         else
           usage();
       }
-      writer.writeChunk(starts, ends, times, colours);
+      ray::Cloud chunk;
+      chunk.starts = starts;
+      chunk.ends = ends;
+      chunk.times = times;
+      chunk.colours = colours;
+      chunk.classifications = classifications;
+      chunk.branch_ids = branch_ids;
+      writer.writeChunk(chunk);
     };
+    // --- END OF FIX ---
 
     if (image_format)
     {
@@ -363,7 +386,7 @@ int rayColour(int argc, char *argv[])
       cloud.colours[i].blue = (uint8_t)((double)cloud.colours[i].blue * s);
     }
   }
-  cloud.save(out_file);
+  cloud.save(out_file, true); // Save extra fields if they exist
 
   return 0;
 }

@@ -6,10 +6,19 @@
 #ifndef RAYLIB_RAYCLOUD_H
 #define RAYLIB_RAYCLOUD_H
 
+// --- START OF FIX ---
+// Add all required standard library headers
+#include <vector>
+#include <string>
+#include <functional>
+#include <cstdint> // For uint8_t and uint16_t
+// --- END OF FIX ---
+
+#include <set>
+
 #include "raylib/raycuboid.h"
 #include "raylib/raylibconfig.h"
 
-#include <set>
 #include "raygrid.h"
 #include "raypose.h"
 #include "rayutils.h"
@@ -38,6 +47,10 @@ public:
   std::vector<Eigen::Vector3d> ends;
   std::vector<double> times;
   std::vector<RGBA> colours;
+  // --- START OF MODIFICATION ---
+  std::vector<uint8_t> classifications;
+  std::vector<uint16_t> branch_ids;
+  // --- END OF MODIFICATION ---
 
   void clear();
   /// reserve the cloud's vectors
@@ -54,7 +67,9 @@ public:
   /// the number of rays
   inline size_t rayCount() const { return ends.size(); }
 
-  void save(const std::string &file_name) const;
+  // --- START OF MODIFICATION ---
+  void save(const std::string &file_name, bool save_extra_fields = false) const;
+  // --- END OF MODIFICATION ---
   /// load a ray cloud file. @c check_extension checks the file extension before proceeding
   bool load(const std::string &file_name, bool check_extension = true, int min_num_rays = 4);
 
@@ -94,7 +109,9 @@ public:
   /// spatial decimation of the ray cloud, into one end point per voxel of width @c voxel_width
   void decimate(double voxel_width, std::set<Eigen::Vector3i, Vector3iLess> &voxel_set);
   /// add a new ray to the ray cloud
-  void addRay(const Eigen::Vector3d &start, const Eigen::Vector3d &end, double time, const RGBA &colour);
+  // --- START OF MODIFICATION ---
+  void addRay(const Eigen::Vector3d &start, const Eigen::Vector3d &end, double time, const RGBA &colour, uint8_t classification = 0, uint16_t branch_id = 0);
+  // --- END OF MODIFICATION ---
   /// add a new ray to the ray cloud, from another cloud
   void addRay(const Cloud &other_cloud, size_t index);
 
@@ -165,7 +182,12 @@ public:
   /// This forwards the call to a function appropriate to the ray cloud file format
   static bool read(const std::string &file_name,
                    std::function<void(std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                                      std::vector<double> &times, std::vector<RGBA> &colours)>
+                                      std::vector<double> &times, std::vector<RGBA> &colours,
+                                      // --- START OF MODIFICATION ---
+                                      std::vector<uint8_t> &classifications,
+                                      std::vector<uint16_t> &branch_ids
+                                      // --- END OF MODIFICATION ---
+                                      )>
                      apply);
 
 private:

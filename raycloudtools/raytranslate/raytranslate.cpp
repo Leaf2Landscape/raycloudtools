@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <cstdint> // Added for uint8_t, uint16_t
 
 void usage(int exit_code = 1)
 {
@@ -46,11 +47,15 @@ int rayTranslate(int argc, char *argv[])
 
   const std::string temp_name = cloud_file.nameStub() + "~.ply";  // tilde is a common suffix for temporary files
 
-  auto translate = [&](Eigen::Vector3d &start, Eigen::Vector3d &end, double &time, ray::RGBA &) {
+  // --- START OF FIX ---
+  // Added the two missing parameters to the lambda signature to match the
+  // updated ray::convertCloud function. Unused parameters are unnamed.
+  auto translate = [&](Eigen::Vector3d &start, Eigen::Vector3d &end, double &time, ray::RGBA &, uint8_t&, uint16_t&) {
     start += translation;
     end += translation;
     time += time_delta;
   };
+  // --- END OF FIX ---
   if (!ray::convertCloud(cloud_file.name(), temp_name, translate))
     usage();
 

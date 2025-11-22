@@ -41,6 +41,40 @@
             "problemMatcher": [
                 "$gcc"
             ]
+        },
+        {
+            "label": "Run compile_install.sh and Output to File",
+            "type": "shell",
+            "command": "/workspaces/raycloudtools/.devcontainer/commands/compile_install.sh > ${workspaceFolder}/compile_output.txt 2>&1",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "clear": true
+            }
+        },
+        {
+            "label": "Run compile_install.sh with Live Output and Output to File",
+            "type": "shell",
+            "command": "/workspaces/raycloudtools/.devcontainer/commands/compile_install.sh 2>&1 | tee ${workspaceFolder}/compile_output.txt",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "clear": true
+            }
         }
     ]
 }

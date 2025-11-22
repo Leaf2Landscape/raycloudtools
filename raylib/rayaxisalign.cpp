@@ -31,8 +31,15 @@ bool transformAndSaveCloud(const std::string &in_file, const std::string &out_fi
     return false;
   Cloud chunk;
 
+  // --- START OF FIX ---
+  // Added the two missing parameters to the lambda signature to match ray::Cloud::read
   auto transform = [&chunk, &writer, &pose](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                                            std::vector<double> &times, std::vector<RGBA> &colours) {
+                                            std::vector<double> &times, std::vector<RGBA> &colours,
+                                            std::vector<uint8_t> &classifications, std::vector<uint16_t> &branch_ids) {
+    // Mark the new parameters as unused since they are not needed for this operation
+    RAYLIB_UNUSED(classifications);
+    RAYLIB_UNUSED(branch_ids);
+    // --- END OF FIX ---
     chunk.clear();
     chunk.times = times;
     chunk.colours = colours;
@@ -197,11 +204,18 @@ bool alignCloudToAxes(const std::string &cloud_name, const std::string &aligned_
 
   // fill in the accumulator: (sum of positions, #end points) within each cell
   // also fill in the vertical density (number of end points) array
+  // --- START OF FIX ---
+  // Added the two missing parameters to the lambda signature to match ray::Cloud::read
   auto fill_arrays = [&min_bound, &mid_bound, &position_accumulator, &step_x, &step_y, &step_z, &vertical_weights](
                        std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                       std::vector<double> &times, std::vector<ray::RGBA> &colours) {
+                       std::vector<double> &times, std::vector<ray::RGBA> &colours,
+                       std::vector<uint8_t> &classifications, std::vector<uint16_t> &branch_ids) {
     RAYLIB_UNUSED(starts);
     RAYLIB_UNUSED(times);
+    // Mark the new parameters as unused since they are not needed for this operation
+    RAYLIB_UNUSED(classifications);
+    RAYLIB_UNUSED(branch_ids);
+    // --- END OF FIX ---
     for (size_t e = 0; e < ends.size(); e++)
     {
       if (colours[e].alpha == 0)  // unbounded

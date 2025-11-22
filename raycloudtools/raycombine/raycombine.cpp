@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <cstdint> // Added for uint8_t, uint16_t
 
 void usage(int exit_code = 1)
 {
@@ -123,17 +124,23 @@ int rayCombine(int argc, char *argv[])
     if (!writer.begin(combined_file))
       usage();
 
+    // --- START OF FIX ---
+    // Added missing parameters to the lambda signature and passed them to the chunk.
     // By maintaining these buffers below, we avoid almost all memory fragmentation
     auto concatenate = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                        std::vector<double> &times, std::vector<ray::RGBA> &colours) 
+                        std::vector<double> &times, std::vector<ray::RGBA> &colours,
+                        std::vector<uint8_t> &classifications, std::vector<uint16_t> &branch_ids) 
     {
       ray::Cloud chunk;
       chunk.starts = starts;
       chunk.ends = ends;
       chunk.colours = colours;
       chunk.times = times;
+      chunk.classifications = classifications;
+      chunk.branch_ids = branch_ids;
       writer.writeChunk(chunk);
     };
+    // --- END OF FIX ---
     for (int i = 0; i < (int)cloud_files.files().size(); i++)
     {
       if (!ray::Cloud::read(cloud_files.files()[i].name(), concatenate))

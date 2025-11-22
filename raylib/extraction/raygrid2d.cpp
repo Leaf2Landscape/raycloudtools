@@ -4,6 +4,10 @@
 //
 // Author: Thomas Lowe
 #include "raygrid2d.h"
+#include "../raycloud.h" // Needed for ray::Cloud::read
+#include <fstream>      // For std::ofstream/ifstream
+#include <vector>       // For std::vector
+#include <cstdint>      // For uint8_t, uint16_t
 
 namespace ray
 {
@@ -19,8 +23,8 @@ void OccupancyGrid2D::init(const Eigen::Vector3d &min_bound, const Eigen::Vector
   std::cout << "min: " << min_bound.transpose() << ", ext: " << extent.transpose() << ", dims: " << dims_.transpose()
             << std::endl;
 
-  pixels_.resize(dims_[0] * dims_[1]);
-  memset(&pixels_[0], 0, sizeof(Pixel) * pixels_.size());
+  // This correctly initializes each Pixel object, setting its 'bits' member to zero.
+  pixels_.assign(dims_[0] * dims_[1], {});
 }
 
 /// save the grid
@@ -59,9 +63,13 @@ void OccupancyGrid2D::fillDensities(const std::string &cloudname, const Eigen::A
   bounds_.max_bound_ = min_bound_ + dims_.cast<double>() * pixel_width_ - Eigen::Vector3d(eps, eps, eps);
   const double scale = static_cast<double>(GRID2D_SUBPIXELS);
 
+  // --- START OF FIX (1/2) ---
+  // Added missing parameters to the lambda signature and marked them as unused.
   // filling in the free space per chunk of ray cloud
   auto addFreeSpace = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                          std::vector<double> &, std::vector<ray::RGBA> &) {
+                          std::vector<double> & /*times*/, std::vector<ray::RGBA> & /*colours*/,
+                          std::vector<uint8_t> & /*classifications*/, std::vector<uint16_t> & /*branch_ids*/) {
+    // --- END OF FIX (1/2) ---
     for (size_t i = 0; i < ends.size(); ++i)
     {
       Eigen::Vector3d start = starts[i];
@@ -138,9 +146,13 @@ void OccupancyGrid2D::fillDensities(const std::string &cloudname, const Eigen::A
   };
   ray::Cloud::read(cloudname, addFreeSpace);
 
+  // --- START OF FIX (2/2) ---
+  // Added missing parameters to the lambda signature and marked them as unused.
   // wherever these is an end point, we want to remove it as free space
-  auto removeOccupiedSpace = [&](std::vector<Eigen::Vector3d> &, std::vector<Eigen::Vector3d> &ends,
-                                 std::vector<double> &, std::vector<ray::RGBA> &colours) {
+  auto removeOccupiedSpace = [&](std::vector<Eigen::Vector3d> & /*starts*/, std::vector<Eigen::Vector3d> &ends,
+                                 std::vector<double> & /*times*/, std::vector<ray::RGBA> &colours,
+                                 std::vector<uint8_t> & /*classifications*/, std::vector<uint16_t> & /*branch_ids*/) {
+    // --- END OF FIX (2/2) ---
     for (size_t i = 0; i < ends.size(); ++i)
     {
       if (colours[i].alpha == 0)
@@ -202,8 +214,11 @@ void RayIndexGrid2D::init(const Eigen::Vector3d &min_bound, const Eigen::Vector3
   std::cout << "min: " << min_bound.transpose() << ", ext: " << extent.transpose() << ", dims: " << dims_.transpose()
             << std::endl;
 
-  pixels_.resize(dims_[0] * dims_[1]);
-  memset(&pixels_[0], 0, sizeof(Pixel) * pixels_.size());
+  // --- START OF FIX (3/3) ---
+  // Replaced unsafe memset with safe C++ value-initialization. This is critical
+  // because the Pixel struct contains a std::vector, which cannot be zeroed out.
+  pixels_.assign(dims_[0] * dims_[1], {});
+  // --- END OF FIX (3/3) ---
 }
 
 void RayIndexGrid2D::fillRays(const Cloud &cloud)

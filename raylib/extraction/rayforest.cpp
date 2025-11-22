@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <cstdint> // For uint8_t, uint16_t
 
 namespace ray
 {
@@ -99,9 +100,13 @@ ray::ForestStructure Forest::extract(const std::string &cloud_name_stub, Mesh &m
   std::cout << "dims for heightfield: " << grid_dims.transpose() << std::endl;
   Eigen::ArrayXXd highs = Eigen::ArrayXXd::Constant(grid_dims[0], grid_dims[1], std::numeric_limits<double>::lowest());
 
+  // --- START OF FIX ---
+  // Added the two missing parameters to the lambda signature to match ray::Cloud::read.
+  // Unused parameters are left unnamed to prevent compiler warnings.
   // fill in the highest points on the input cloud
-  auto fillHeightField = [&](std::vector<Eigen::Vector3d> &, std::vector<Eigen::Vector3d> &ends, std::vector<double> &,
-                             std::vector<ray::RGBA> &colours) {
+  auto fillHeightField = [&](std::vector<Eigen::Vector3d> & /*starts*/, std::vector<Eigen::Vector3d> &ends, std::vector<double> & /*times*/,
+                             std::vector<ray::RGBA> &colours, std::vector<uint8_t> & /*classifications*/, std::vector<uint16_t> & /*branch_ids*/) {
+    // --- END OF FIX ---
     for (size_t i = 0; i < ends.size(); i++)
     {
       if (colours[i].alpha == 0)

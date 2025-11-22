@@ -19,7 +19,11 @@ class RAYLIB_EXPORT Mesh
 public:
   /// Use the mesh to split a @c cloud based on which side of the mesh its end points are on
   /// The two resulting clouds are @c inside and @c outside
-  bool splitCloud(const std::string &cloud_name, double offset, const std::string &inside_name, const std::string &outside_name);
+  // --- START OF FIX ---
+  // Added the output_ext parameter to match the call in raysplit.cpp
+  bool splitCloud(const std::string &cloud_name, double offset, const std::string &inside_name,
+                  const std::string &outside_name, const std::string &output_ext);
+  // --- END OF FIX ---
 
   /// Convert the mesh into a height field (2D array of heights) based on the supplied bounding box and cell width
   void toHeightField(Eigen::ArrayXXd &field, const Eigen::Vector3d &box_min, Eigen::Vector3d box_max,

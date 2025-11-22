@@ -19,12 +19,18 @@ namespace ray
 /// Read a laz or las file, into the fields passed by reference.
 bool RAYLIB_EXPORT readLas(std::string file_name, std::vector<Eigen::Vector3d> &positions, std::vector<double> &times,
                            std::vector<RGBA> &colours, double max_intensity,
+                           // --- START OF MODIFICATION ---
+                           std::vector<uint8_t> &classifications,
+                           // --- END OF MODIFICATION ---
                            Eigen::Vector3d *offset_to_remove = nullptr);
 
 /// Chunk-based version of readLas. This calls @c apply for every @c chunk_size points loaded
 bool RAYLIB_EXPORT readLas(const std::string &file_name,
                            std::function<void(std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                                              std::vector<double> &times, std::vector<RGBA> &colours)>
+                                              std::vector<double> &times, std::vector<RGBA> &colours,
+                                              // --- START OF MODIFICATION ---
+                                              std::vector<uint8_t> &classifications)>
+                           // --- END OF MODIFICATION ---
                              apply,
                            size_t &num_bounded, double max_intensity, Eigen::Vector3d *offset_to_remove,
                            size_t chunk_size = 1000000);
@@ -32,7 +38,11 @@ bool RAYLIB_EXPORT readLas(const std::string &file_name,
 
 /// Write to a laz or las file. The intensity is the only part that is extracted from the @c colours argument.
 bool RAYLIB_EXPORT writeLas(std::string file_name, const std::vector<Eigen::Vector3d> &points,
-                            const std::vector<double> &times, const std::vector<RGBA> &colours);
+                            const std::vector<double> &times, const std::vector<RGBA> &colours,
+                            // --- START OF MODIFICATION ---
+                            const std::vector<uint8_t> &classifications,
+                            const std::vector<uint16_t> &point_source_ids);
+                            // --- END OF MODIFICATION ---
 
 /// Class for chunked writing of las/laz files.
 class RAYLIB_EXPORT LasWriter
@@ -44,7 +54,11 @@ public:
   ~LasWriter();
   /// write a chunk of points to the file, described by the vector arguments
   bool writeChunk(const std::vector<Eigen::Vector3d> &points, const std::vector<double> &times,
-                  const std::vector<RGBA> &colours);
+                  const std::vector<RGBA> &colours,
+                  // --- START OF MODIFICATION ---
+                  const std::vector<uint8_t> &classifications,
+                  const std::vector<uint16_t> &point_source_ids);
+                  // --- END OF MODIFICATION ---
 
 private:
   const std::string &file_name_;
