@@ -399,10 +399,10 @@ bool splitColour(const std::string &file_name, const std::string &cloud_name_stu
   };
   if (!ray::Cloud::read(file_name, count_colours)) return false;
 
-  const int max_total_files = 5000;
+  const int max_total_files = 50000;
   if (num_colours > max_total_files) { std::cerr << "Error: " << num_colours << " colours generates more than the maximum number of files: " << max_total_files << std::endl; return false; }
   
-  const int max_files_at_once = 512;
+  const int max_files_at_once = 512;  // operating systems will fail with too many open file pointers.
   std::cout << "splitting into: " << num_colours << " files" << std::endl;
   if (num_colours > max_files_at_once) { std::cout << "Warning: cloud has more unique colours than allowed for simultaneous files " << max_files_at_once << " so using multiple passes." << std::endl; }
   

@@ -27,6 +27,7 @@ echo "Conditional copying of RiVLib completed."
 # Build RayCloudTools
 echo "Building RayCloudTools..."
 cd /workspaces/raycloudtools
+rm -rf build
 mkdir -p build
 cd build 
 
@@ -56,6 +57,7 @@ echo "Build Raycloudtools completed successfully."
 # Clone and build TreeTools
 echo "building TreeTools..."
 cd treetools
+rm -rf build
 mkdir -p build
 cd build
 cmake .. \

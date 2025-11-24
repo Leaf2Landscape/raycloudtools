@@ -11,6 +11,8 @@
 #include <fstream>
 #include <iostream>
 #include <vector> // For dynamic buffer
+#include <cmath>
+// #define OUTPUT_MOMENTS // useful when setting up unit test expected ray clouds
 
 namespace ray
 {
@@ -373,6 +375,9 @@ bool readPly(const std::string &file_name, bool is_ray_cloud,
   bool time_is_float = false;
   bool pos_is_float = false;
   bool normal_is_float = false;
+  // Optional support for colour channels as individual properties (including float/double types)
+  int red_offset = -1, green_offset = -1, blue_offset = -1, alpha_offset_ch = -1;
+  DataType red_type = kDTnone, green_type = kDTnone, blue_type = kDTnone, alpha_type = kDTnone;
   DataType intensity_type = kDTnone;
   int rowsteps[] = { int(sizeof(float)), int(sizeof(double)), int(sizeof(unsigned short)), int(sizeof(unsigned char)), int(sizeof(int)), 0 };
 
@@ -398,6 +403,69 @@ bool readPly(const std::string &file_name, bool is_ray_cloud,
     if (line.find("classification") != std::string::npos) classification_offset = row_size;
     if (line.find("branch_id") != std::string::npos || line.find("PointSourceID") != std::string::npos) branch_id_offset = row_size;
     
+    if (line == "property float x" || line == "property double x")
+    {
+      offset = row_size;
+      if (line.find("float") != std::string::npos)
+        pos_is_float = true;
+    }
+    if (line == "property float rayx" || line == "property double rayx")
+    {
+#if RAYLIB_WITH_NORMAL_FIELD
+      if (normal_offset == -1)
+#endif
+      {
+        normal_offset = row_size;
+        normal_is_float = line.find("float") != std::string::npos;
+      }
+    }
+    // Support both standard PLY format and CloudCompare format with scalar_ prefixes
+    if (line == "property float nx" || line == "property double nx" || 
+        line == "property float scalar_nx" || line == "property double scalar_nx")
+    {
+#if !RAYLIB_WITH_NORMAL_FIELD
+      if (normal_offset == -1)
+#endif
+      {
+        normal_offset = row_size;
+        normal_is_float = line.find("float") != std::string::npos;
+      }
+    }
+    if (line.find("time") != std::string::npos || line.find("scalar_time") != std::string::npos)
+    {
+      time_offset = row_size;
+      if (line.find("float") != std::string::npos)
+        time_is_float = true;
+    }
+    if (line.find("intensity") != std::string::npos || line.find("scalar_alpha") != std::string::npos)
+    {
+      intensity_offset = row_size;
+      intensity_type = data_type;
+    }
+    // Colour channels: support uchar/uint8 (legacy contiguous RGBA), and float/double per-channel layouts
+    if (line == "property uchar red" || line == "property uint8 red")
+      colour_offset = row_size;
+    if (line == "property float red" || line == "property double red")
+    {
+      red_offset = row_size;
+      red_type = (line.find("float") != std::string::npos) ? kDTfloat : kDTdouble;
+    }
+    if (line == "property float green" || line == "property double green")
+    {
+      green_offset = row_size;
+      green_type = (line.find("float") != std::string::npos) ? kDTfloat : kDTdouble;
+    }
+    if (line == "property float blue" || line == "property double blue")
+    {
+      blue_offset = row_size;
+      blue_type = (line.find("float") != std::string::npos) ? kDTfloat : kDTdouble;
+    }
+    if (line == "property float alpha" || line == "property double alpha")
+    {
+      alpha_offset_ch = row_size;
+      alpha_type = (line.find("float") != std::string::npos) ? kDTfloat : kDTdouble;
+    }
+
     row_size += rowsteps[data_type];
   }
 
@@ -413,6 +481,55 @@ bool readPly(const std::string &file_name, bool is_ray_cloud,
   std::vector<char> vertex_buffer(row_size);
     // pre-reserving avoids memory fragmentation
   std::vector<Eigen::Vector3d> ends, starts;
+  size_t size = length / row_size;
+
+  ray::Progress progress;
+  ray::ProgressThread progress_thread(progress);
+  size_t num_chunks = (size + (chunk_size - 1)) / chunk_size;
+  progress.begin("read and process", num_chunks);
+
+  std::vector<unsigned char> vertices(row_size);
+  bool warning_set = false;
+  if (size == 0)
+  {
+    std::cerr << "no entries found in ply file" << std::endl;
+    return false;
+  }
+  if (time_offset == -1)
+  {
+    if (times_optional)
+    {
+      std::cout << "Warning: no times provided in file, applying 1 second difference per ray consecutively, starting at 0 seconds" << std::endl;
+    }
+    else
+    {
+      std::cerr << "error: no time information found in " << file_name << std::endl;
+      return false;
+    }
+  }
+  const bool has_colour_fields = (colour_offset != -1) || (red_offset != -1 && green_offset != -1 && blue_offset != -1);
+  if (!has_colour_fields)
+  {
+    std::cout << "warning: no colour information found in " << file_name
+              << ", setting colours red->green->blue based on time" << std::endl;
+  }
+  if (!is_ray_cloud && intensity_offset != -1)
+  {
+    if (has_colour_fields)
+    {
+      std::cout << "warning: intensity and colour information both found in file. Replacing alpha with intensity value."
+                << std::endl;
+    }
+    else
+    {
+      std::cout << "intensity information found in file, storing this in the ray cloud 8-bit alpha channel."
+                << std::endl;
+    }
+  }
+
+  // pre-reserving avoids memory fragmentation
+  std::vector<Eigen::Vector3d> ends;
+  std::vector<Eigen::Vector3d> starts;
   std::vector<double> times;
   std::vector<ray::RGBA> colours;
   std::vector<uint8_t> classifications;
@@ -425,6 +542,16 @@ bool readPly(const std::string &file_name, bool is_ray_cloud,
   colours.reserve(reserve_size);
   if (classification_offset != -1) classifications.reserve(reserve_size);
   if (branch_id_offset != -1) branch_ids.reserve(reserve_size);
+  if (time_offset != -1)
+    times.reserve(reserve_size);
+  if (has_colour_fields)
+    colours.reserve(reserve_size);
+  if (intensity_offset != -1)
+    intensities.reserve(reserve_size);
+  bool any_returns = false;
+  int identical_times = 0;
+  double last_time = std::numeric_limits<double>::lowest();
+  double last_unique_time = std::numeric_limits<double>::lowest();
   
   for (size_t i = 0; i < size; i++)
   {
@@ -462,6 +589,47 @@ bool readPly(const std::string &file_name, bool is_ray_cloud,
     
     if (colour_offset != -1) {
         colours.push_back(*reinterpret_cast<const RGBA*>(&vertex_buffer[colour_offset]));
+
+    if (has_colour_fields)
+    {
+      if (colour_offset != -1)
+      {
+        // Legacy contiguous uchar RGBA
+        RGBA colour = (RGBA &)vertices[colour_offset];
+        colours.push_back(colour);
+      }
+      else
+      {
+        // Per-channel float/double colours; convert to 0..255
+        auto readAsDouble = [&](int off, DataType tp) -> double {
+          if (off == -1 || tp == kDTnone) return std::numeric_limits<double>::quiet_NaN();
+          switch (tp)
+          {
+            case kDTfloat:  return (double)((float &)vertices[off]);
+            case kDTdouble: return (double & )vertices[off];
+            case kDTuchar:  return (double)((unsigned char &)vertices[off]);
+            case kDTushort: return (double)((unsigned short &)vertices[off]);
+            case kDTint:    return (double)((int &)vertices[off]);
+            default:        return std::numeric_limits<double>::quiet_NaN();
+          }
+        };
+        auto toU8 = [](double v) -> uint8_t {
+          if (!std::isfinite(v)) return 0;
+          // Heuristic: if <= 1 assume normalized [0,1], else assume [0,255]
+          double scaled = (v <= 1.0) ? (v * 255.0) : v;
+          scaled = std::max(0.0, std::min(255.0, scaled));
+          return static_cast<uint8_t>(std::lround(scaled));
+        };
+        uint8_t r = toU8(readAsDouble(red_offset,   red_type));
+        uint8_t g = toU8(readAsDouble(green_offset, green_type));
+        uint8_t b = toU8(readAsDouble(blue_offset,  blue_type));
+        uint8_t a = 255;
+        if (alpha_offset_ch != -1)
+        {
+          a = toU8(readAsDouble(alpha_offset_ch, alpha_type));
+        }
+        colours.emplace_back(r, g, b, a);
+      }
     }
 
     if (classification_offset != -1) {
@@ -483,6 +651,78 @@ bool readPly(const std::string &file_name, bool is_ray_cloud,
       starts.clear(); ends.clear(); times.clear(); colours.clear();
       classifications.clear(); branch_ids.clear();
     }
+      if (time_offset == -1)
+      {
+        times.resize(ends.size());
+        for (size_t j = 0; j < times.size(); j++) 
+        {
+          times[j] = (double)(i + j);
+        }
+      }
+      if (!has_colour_fields)
+      {
+        colourByTime(times, colours);
+      }
+      if (!is_ray_cloud)
+      {
+        if (intensity_offset != -1)
+        {
+          for (size_t j = 0; j < intensities.size(); j++)
+          {
+            colours[j].alpha = intensities[j];
+            // colour zero-intensity rays black. This is a helpful debug tool.
+            if (intensities[j] == 0)
+            {
+              colours[j].red = colours[j].green = colours[j].blue = 0;
+            }
+            else
+            {
+              any_returns = true;
+            }
+          }
+        }
+        else
+        {
+          for (size_t j = 0; j < colours.size(); j++)
+          {
+            if (colours[j].alpha == 0)
+            {
+              // colour zero-intensity rays black. This is a helpful debug tool.
+              colours[j].red = colours[j].green = colours[j].blue = 0;
+            }
+            else
+            {
+              any_returns = true;
+            }
+          }
+        }
+      }
+      apply(starts, ends, times, colours);
+      starts.clear();
+      ends.clear();
+      times.clear();
+      colours.clear();
+      intensities.clear();
+      progress.increment();
+
+      if (!is_ray_cloud && i==size-1 && identical_times > 0)
+      {
+        std::cout << std::endl;
+        std::cout << "warning: " << identical_times << "/" << size << " rays have identical times," << std::endl;
+        std::cout << "since rayrestore relies on unique time stamps, a 1 microsecond increment has been applied for these times." << std::endl;
+      }
+    }
+  }
+  progress.end();
+  progress_thread.requestQuit();
+  progress_thread.join();
+
+  if (!is_ray_cloud && any_returns == false) // no return rays
+  {
+    std::cerr << "Error: ray cloud has no identified points; all rays are zero-intensity non-returns," << std::endl;
+    std::cerr << "many functions will not operate on this degerenate case." << std::endl;
+    std::cerr << "Use raycolour cloud.ply alpha 1 to force all rays to have end points and full intensity." << std::endl;
+    std::cerr << "Or re-import using rayimport points.ply --max_intensity 0." << std::endl;
   }
 
   return true;
