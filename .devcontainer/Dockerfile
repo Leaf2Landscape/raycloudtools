@@ -21,12 +21,25 @@ RUN apt-get update && apt-get upgrade -y && \
     libgeotiff-dev \
     libboost-all-dev \
     wget \
+    unzip \
     libnetcdf-dev \
     libnetcdf-c++4-dev \
     libgtest-dev && \
     rm -rf /var/lib/apt/lists/*
 
-# Clone, build and clean up LASzip
+# ===================================================================
+# START: Added LAStools Installation
+# ===================================================================
+# Download and extract the official LAStools distribution which contains
+# the full LASlib and LASzip libraries. The intended use of these libraries
+# is to compile their source files directly into your application, not to
+# build them as system-wide shared libraries.
+RUN git clone --depth 1 https://github.com/LAStools/LAStools.git /usr/local/lastools
+# ===================================================================
+# END: Added LAStools Installation
+# ===================================================================
+
+# Clone, build and clean up LASzip (Existing installation, as requested)
 RUN git clone https://github.com/LASzip/LASzip.git && \
     cd LASzip && \
     git checkout tags/2.0.1 && \
@@ -37,7 +50,7 @@ RUN git clone https://github.com/LASzip/LASzip.git && \
     cp bin/Release/liblas* /usr/lib/ && \
     cd ../.. && rm -rf LASzip
 
-# Clone, build and clean up libLAS
+# Clone, build and clean up libLAS (Existing installation, as requested)
 RUN git clone https://github.com/libLAS/libLAS.git && \
     cd libLAS && \
     mkdir build && cd build && \
