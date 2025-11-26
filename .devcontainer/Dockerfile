@@ -26,6 +26,8 @@ RUN apt-get update && apt-get upgrade -y && \
     libgtest-dev && \
     rm -rf /var/lib/apt/lists/*
 
+RUN git clone --depth 1 https://github.com/LAStools/LAStools.git /usr/local/lastools
+
 # Clone, build and clean up LASzip
 RUN git clone https://github.com/LASzip/LASzip.git && \
     cd LASzip && \
