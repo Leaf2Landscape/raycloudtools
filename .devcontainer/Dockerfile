@@ -21,12 +21,11 @@ RUN apt-get update && apt-get upgrade -y && \
     libgeotiff-dev \
     libboost-all-dev \
     wget \
+    unzip \
     libnetcdf-dev \
     libnetcdf-c++4-dev \
     libgtest-dev && \
     rm -rf /var/lib/apt/lists/*
-
-RUN git clone --depth 1 https://github.com/LAStools/LAStools.git /usr/local/lastools
 
 # Clone, build and clean up LASzip
 RUN git clone https://github.com/LASzip/LASzip.git && \

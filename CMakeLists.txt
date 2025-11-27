@@ -30,7 +30,9 @@ option(RAYCLOUD_BUILD_TESTS "Build unit tests?" OFF)
 option(RAYCLOUD_LEAK_TRACK "Enable memory leak tracking?" OFF)
 
 # WITH_ build options.
+# Note: The old WITH_LAS uses libLAS. The new WITH_LASTOOLS uses the official LASlib.
 option(WITH_LAS "With liblas for las file support?" OFF)
+option(WITH_LASTOOLS "With official LAStools (LASlib/LASzip) support?" ON)
 option(WITH_RIEGL "With rdb and RiVLib support?" OFF)
 option(WITH_QHULL "With libqhull support?" OFF)
 option(WITH_TIFF "With libgeotiff support?" OFF)
@@ -40,12 +42,13 @@ option(WITH_NETCDF "With NetCDF support?" OFF)
 
 # Convert WITH_ options to 1/0 so we can use them in configuration headers.
 ras_bool_to_int(WITH_LAS)
+ras_bool_to_int(WITH_LASTOOLS)
 ras_bool_to_int(WITH_RIEGL)
 ras_bool_to_int(WITH_QHULL)
 ras_bool_to_int(WITH_TIFF)
 ras_bool_to_int(WITH_TBB)
 ras_bool_to_int(WITH_NORMAL_FIELD)
-ras_bool_to_int(WITH_NETCDF)  
+ras_bool_to_int(WITH_NETCDF)
 
 # other build-time options
 option(DOUBLE_RAYS "Store ray ends as doubles, so distances can be large" OFF)

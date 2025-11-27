@@ -2,27 +2,59 @@ Starting conditional copying of RiVLib ...
 rivlib folder not found.
 Conditional copying of RiVLib completed.
 Building RayCloudTools...
--- Configuring done (3.4s)
--- Generating done (61.1s)
+-- The C compiler identification is GNU 13.3.0
+-- The CXX compiler identification is GNU 13.3.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Found Python3: /usr/bin/python3 (found version "3.12.3") found components: Interpreter Development Development.Module Development.Embed 
+-- Found OpenMP_C: -fopenmp (found version "4.5") 
+-- Found OpenMP_CXX: -fopenmp (found version "4.5") 
+-- Found OpenMP: TRUE (found version "4.5")  
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE  
+-- Found libLAS: /usr/local/lib/liblas.so  
+-- Found GeoTIFF: /usr/include/geotiff  
+-- Found TIFF: /usr/lib/x86_64-linux-gnu/libtiff.so (found version "4.5.1")  
+-- Found PROJ: /usr/lib/x86_64-linux-gnu/libproj.so  
+-- Found NetCDF: /usr/lib/x86_64-linux-gnu/libnetcdf.so (found version "4.9.2") 
+-- Found NetCDF_CXX: /usr/lib/x86_64-linux-gnu/libnetcdf_c++4.so  
+-- Performing Test COMPILER_HAS_HIDDEN_VISIBILITY
+-- Performing Test COMPILER_HAS_HIDDEN_VISIBILITY - Success
+-- Performing Test COMPILER_HAS_HIDDEN_INLINE_VISIBILITY
+-- Performing Test COMPILER_HAS_HIDDEN_INLINE_VISIBILITY - Success
+-- Performing Test COMPILER_HAS_DEPRECATED_ATTR
+-- Performing Test COMPILER_HAS_DEPRECATED_ATTR - Success
+-- Found GTest: /usr/lib/x86_64-linux-gnu/cmake/GTest/GTestConfig.cmake (found version "1.14.0")  
+-- Configuring done (17.2s)
+-- Generating done (13.7s)
 -- Build files have been written to: /workspaces/raycloudtools/build
-[  1%] Building CXX object raylib/CMakeFiles/raylib.dir/rayalignment.cpp.o
-[  2%] Building CXX object raylib/CMakeFiles/raylib.dir/rayaxisalign.cpp.o
-[  3%] Building CXX object raylib/CMakeFiles/raylib.dir/raycloud.cpp.o
+[  2%] Building CXX object raylib/CMakeFiles/raylib.dir/rayalignment.cpp.o
+[  4%] Building CXX object raylib/CMakeFiles/raylib.dir/rayaxisalign.cpp.o
+[  4%] Building CXX object raylib/CMakeFiles/raylib.dir/raycloud.cpp.o
 [  4%] Building CXX object raylib/CMakeFiles/raylib.dir/raycloudwriter.cpp.o
-[  6%] Building CXX object raylib/CMakeFiles/raylib.dir/rayconcavehull.cpp.o
-[  7%] Building CXX object raylib/CMakeFiles/raylib.dir/rayconvexhull.cpp.o
-[  8%] Building CXX object raylib/CMakeFiles/raylib.dir/raydecimation.cpp.o
-[  9%] Building CXX object raylib/CMakeFiles/raylib.dir/rayellipsoid.cpp.o
+[  7%] Building CXX object raylib/CMakeFiles/raylib.dir/rayconcavehull.cpp.o
+[  8%] Building CXX object raylib/CMakeFiles/raylib.dir/rayconvexhull.cpp.o
+[  9%] Building CXX object raylib/CMakeFiles/raylib.dir/raydecimation.cpp.o
 [ 11%] Building CXX object raylib/CMakeFiles/raylib.dir/rayfinealignment.cpp.o
-[ 12%] Building CXX object raylib/CMakeFiles/raylib.dir/rayforestgen.cpp.o
-[ 13%] Building CXX object raylib/CMakeFiles/raylib.dir/rayforeststructure.cpp.o
-[ 14%] Building CXX object raylib/CMakeFiles/raylib.dir/raylaz.cpp.o
-[ 16%] Building CXX object raylib/CMakeFiles/raylib.dir/rayriegl.cpp.o
+[ 13%] Building CXX object raylib/CMakeFiles/raylib.dir/rayellipsoid.cpp.o
+[ 13%] Building CXX object raylib/CMakeFiles/raylib.dir/rayforestgen.cpp.o
+[ 14%] Building CXX object raylib/CMakeFiles/raylib.dir/rayforeststructure.cpp.o
+[ 17%] Building CXX object raylib/CMakeFiles/raylib.dir/raylaz.cpp.o
+[ 17%] Building CXX object raylib/CMakeFiles/raylib.dir/rayriegl.cpp.o
 [ 17%] Building CXX object raylib/CMakeFiles/raylib.dir/raymerger.cpp.o
-[ 18%] Building CXX object raylib/CMakeFiles/raylib.dir/raymesh.cpp.o
-[ 19%] Building CXX object raylib/CMakeFiles/raylib.dir/rayply.cpp.o
+[ 20%] Building CXX object raylib/CMakeFiles/raylib.dir/rayply.cpp.o
+[ 20%] Building CXX object raylib/CMakeFiles/raylib.dir/raymesh.cpp.o
 [ 20%] Building CXX object raylib/CMakeFiles/raylib.dir/rayprogressthread.cpp.o
-[ 22%] Building CXX object raylib/CMakeFiles/raylib.dir/rayroomgen.cpp.o
+[ 23%] Building CXX object raylib/CMakeFiles/raylib.dir/rayroomgen.cpp.o
 [ 23%] Building CXX object raylib/CMakeFiles/raylib.dir/raysplitter.cpp.o
 [ 24%] Building CXX object raylib/CMakeFiles/raylib.dir/raybuildinggen.cpp.o
 [01m[K/workspaces/raycloudtools/raylib/rayply.cpp:[m[K In function '[01m[Kbool ray::[01;32m[KwriteRayCloudChunk[m[K(std::ofstream&, std::vector<char>&, const std::vector<Eigen::Matrix<double, 3, 1> >&, const std::vector<Eigen::Matrix<double, 3, 1> >&, const std::vector<double>&, const std::vector<RGBA>&, const std::vector<unsigned char>&, const std::vector<short unsigned int>&, bool&)[m[K':
@@ -61,14 +93,14 @@ Building RayCloudTools...
 [ 40%] Building CXX object raylib/CMakeFiles/raylib.dir/extraction/rayclusters.cpp.o
 [ 41%] Building CXX object raylib/CMakeFiles/raylib.dir/extraction/rayleaves.cpp.o
 [ 43%] Building CXX object raylib/CMakeFiles/raylib.dir/extraction/rayterrain.cpp.o
-[01m[K/workspaces/raycloudtools/raylib/raysplitter.cpp:[m[K In lambda function:
-[01m[K/workspaces/raycloudtools/raylib/raysplitter.cpp:338:40:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Klong int[m[K' to '[01m[Kint[m[K' may change value [[01;35m[K-Wconversion[m[K]
-  338 |             const int time_dif = [01;35m[Kt_idx - min_time[m[K;
-      |                                  [01;35m[K~~~~~~^~~~~~~~~~[m[K
 [ 44%] Building CXX object raylib/CMakeFiles/raylib.dir/extraction/raytrees.cpp.o
 [ 45%] Building CXX object raylib/CMakeFiles/raylib.dir/extraction/rayforest.cpp.o
 [ 46%] Building CXX object raylib/CMakeFiles/raylib.dir/extraction/rayforest_draw.cpp.o
 [ 48%] Building CXX object raylib/CMakeFiles/raylib.dir/extraction/rayforest_watershed.cpp.o
+[01m[K/workspaces/raycloudtools/raylib/raysplitter.cpp:[m[K In lambda function:
+[01m[K/workspaces/raycloudtools/raylib/raysplitter.cpp:338:40:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Klong int[m[K' to '[01m[Kint[m[K' may change value [[01;35m[K-Wconversion[m[K]
+  338 |             const int time_dif = [01;35m[Kt_idx - min_time[m[K;
+      |                                  [01;35m[K~~~~~~^~~~~~~~~~[m[K
 [ 49%] Building CXX object raylib/CMakeFiles/raylib.dir/extraction/raysegment.cpp.o
 [ 50%] Building CXX object raylib/CMakeFiles/raylib.dir/extraction/raydensegrid.cpp.o
 In file included from [01m[K/workspaces/raycloudtools/raylib/extraction/rayleaves.cpp:19[m[K:
@@ -117,27 +149,27 @@ In file included from [01m[K/workspaces/raycloudtools/raylib/extraction/raylea
 [01m[K/workspaces/raycloudtools/raylib/extraction/raysegment.cpp:522:47:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[KEigen::Index[m[K' {aka '[01m[Klong int[m[K'} to '[01m[KEigen::DenseCoeffsBase<Eigen::Array<int, -1, -1>, 1>::Scalar[m[K' {aka '[01m[Kint[m[K'} may change value [[01;35m[K-Wconversion[m[K]
   522 |               bests_grid(x, y) = [01;35m[Kbest_idx.x() + sums.rows() * best_idx.y()[m[K;
       |                                  [01;35m[K~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~[m[K
-[01m[K/workspaces/raycloudtools/raylib/extraction/raydensegrid.cpp:[m[K In function '[01m[Kbool ray::[01;32m[KgenerateDenseVoxels[m[K(const std::string&, double, Eigen::Vector3d, Eigen::Vector3d, bool, bool)[m[K':
+[01m[K/workspaces/raycloudtools/raylib/extraction/raydensegrid.cpp:[m[K In function '[01m[Kbool ray::[01;32m[KgenerateDenseVoxels[m[K(const std::string&, double, Eigen::Vector3d, Eigen::Vector3d, bool, bool, bool)[m[K':
 [01m[K/workspaces/raycloudtools/raylib/extraction/raydensegrid.cpp:70:53:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Klong int[m[K' to '[01m[KEigen::DenseCoeffsBase<Eigen::Matrix<double, 3, 1>, 1>::Scalar[m[K' {aka '[01m[Kdouble[m[K'} changes value from '[01m[K9223372036854775805[m[K' to '[01m[K9.2233720368547758e+18[m[K' [[01;35m[K-Wfloat-conversion[m[K]
    70 |     if (temp2[i] > [01;35m[Kstd::numeric_limits<long>::max() - 2[m[K)
       |                    [01;35m[K~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~[m[K
-[01m[K/workspaces/raycloudtools/raylib/extraction/raydensegrid.cpp:130:63:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Klong int[m[K' to '[01m[Kdouble[m[K' may change value [[01;35m[K-Wconversion[m[K]
-  130 |           double x = grid_bounds.min_bound_[0] + vox_width * ([01;35m[Ki[m[K + 1.5);
-      |                                                               [01;35m[K^[m[K
 [01m[K/workspaces/raycloudtools/raylib/extraction/raydensegrid.cpp:131:63:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Klong int[m[K' to '[01m[Kdouble[m[K' may change value [[01;35m[K-Wconversion[m[K]
-  131 |           double y = grid_bounds.min_bound_[1] + vox_width * ([01;35m[Kj[m[K + 1.5);
+  131 |           double x = grid_bounds.min_bound_[0] + vox_width * ([01;35m[Ki[m[K + 1.5);
       |                                                               [01;35m[K^[m[K
 [01m[K/workspaces/raycloudtools/raylib/extraction/raydensegrid.cpp:132:63:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Klong int[m[K' to '[01m[Kdouble[m[K' may change value [[01;35m[K-Wconversion[m[K]
-  132 |           double z = grid_bounds.min_bound_[2] + vox_width * ([01;35m[Kk[m[K + 1.5);
+  132 |           double y = grid_bounds.min_bound_[1] + vox_width * ([01;35m[Kj[m[K + 1.5);
       |                                                               [01;35m[K^[m[K
-[01m[K/workspaces/raycloudtools/raylib/extraction/raydensegrid.cpp:143:65:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Klong int[m[K' to '[01m[Kdouble[m[K' may change value [[01;35m[K-Wconversion[m[K]
-  143 |             double x = grid_bounds.min_bound_[0] + vox_width * ([01;35m[Ki[m[K + 1.5);
+[01m[K/workspaces/raycloudtools/raylib/extraction/raydensegrid.cpp:133:63:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Klong int[m[K' to '[01m[Kdouble[m[K' may change value [[01;35m[K-Wconversion[m[K]
+  133 |           double z = grid_bounds.min_bound_[2] + vox_width * ([01;35m[Kk[m[K + 1.5);
+      |                                                               [01;35m[K^[m[K
+[01m[K/workspaces/raycloudtools/raylib/extraction/raydensegrid.cpp:152:65:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Klong int[m[K' to '[01m[Kdouble[m[K' may change value [[01;35m[K-Wconversion[m[K]
+  152 |             double x = grid_bounds.min_bound_[0] + vox_width * ([01;35m[Ki[m[K + 1.5);
       |                                                                 [01;35m[K^[m[K
-[01m[K/workspaces/raycloudtools/raylib/extraction/raydensegrid.cpp:144:65:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Klong int[m[K' to '[01m[Kdouble[m[K' may change value [[01;35m[K-Wconversion[m[K]
-  144 |             double y = grid_bounds.min_bound_[1] + vox_width * ([01;35m[Kj[m[K + 1.5);
+[01m[K/workspaces/raycloudtools/raylib/extraction/raydensegrid.cpp:153:65:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Klong int[m[K' to '[01m[Kdouble[m[K' may change value [[01;35m[K-Wconversion[m[K]
+  153 |             double y = grid_bounds.min_bound_[1] + vox_width * ([01;35m[Kj[m[K + 1.5);
       |                                                                 [01;35m[K^[m[K
-[01m[K/workspaces/raycloudtools/raylib/extraction/raydensegrid.cpp:145:65:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Klong int[m[K' to '[01m[Kdouble[m[K' may change value [[01;35m[K-Wconversion[m[K]
-  145 |             double z = grid_bounds.min_bound_[2] + vox_width * ([01;35m[Kk[m[K + 1.5);
+[01m[K/workspaces/raycloudtools/raylib/extraction/raydensegrid.cpp:154:65:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Klong int[m[K' to '[01m[Kdouble[m[K' may change value [[01;35m[K-Wconversion[m[K]
+  154 |             double z = grid_bounds.min_bound_[2] + vox_width * ([01;35m[Kk[m[K + 1.5);
       |                                                                 [01;35m[K^[m[K
 In file included from [01m[K/usr/include/c++/13/bits/stl_algobase.h:64[m[K,
                  from [01m[K/usr/include/c++/13/string:51[m[K,
@@ -215,46 +247,32 @@ In member function '[01m[Kvoid Eigen::internal::assign_op<DstScalar, SrcScalar
       |                     [01;36m[K^~~~~~~~[m[K
 [ 51%] Linking CXX shared library libraylib.so
 [ 51%] Built target raylib
-[ 59%] Building CXX object raycloudtools/rayinfo/CMakeFiles/rayinfo.dir/rayinfo.cpp.o
-[ 59%] Building CXX object raycloudtools/raytranslate/CMakeFiles/raytranslate.dir/raytranslate.cpp.o
-[ 59%] Building CXX object raycloudtools/rayrotate/CMakeFiles/rayrotate.dir/rayrotate.cpp.o
-[ 59%] Building CXX object raycloudtools/rayrender/CMakeFiles/rayrender.dir/rayrender.cpp.o
-[ 59%] Building CXX object raycloudtools/raysmooth/CMakeFiles/raysmooth.dir/raysmooth.cpp.o
-[ 59%] Building CXX object raycloudtools/raydenoise/CMakeFiles/raydenoise.dir/raydenoise.cpp.o
-[ 61%] Building CXX object raycloudtools/rayalign/CMakeFiles/rayalign.dir/rayalign.cpp.o
-[ 61%] Building CXX object raycloudtools/raywrap/CMakeFiles/raywrap.dir/raywrap.cpp.o
-[ 62%] Building CXX object raycloudtools/raycreate/CMakeFiles/raycreate.dir/raycreate.cpp.o
-[ 64%] Building CXX object raycloudtools/raytransients/CMakeFiles/raytransients.dir/raytransients.cpp.o
-[ 65%] Building CXX object tests/raytest/CMakeFiles/raytest.dir/raytests.cpp.o
-[ 66%] Building CXX object tests/raytest/CMakeFiles/raytest.dir/testmain.cpp.o
-[ 69%] Building CXX object raycloudtools/raydecimate/CMakeFiles/raydecimate.dir/raydecimate.cpp.o
-[ 70%] Building CXX object raycloudtools/raysplit/CMakeFiles/raysplit.dir/raysplit.cpp.o
-[ 71%] Building CXX object raycloudtools/rayimport/CMakeFiles/rayimport.dir/rayimport.cpp.o
-[ 74%] Building CXX object raycloudtools/rayrestore/CMakeFiles/rayrestore.dir/rayrestore.cpp.o
-[ 74%] Building CXX object raycloudtools/rayexport/CMakeFiles/rayexport.dir/rayexport.cpp.o
-[ 74%] Building CXX object raycloudtools/raycolour/CMakeFiles/raycolour.dir/raycolour.cpp.o
-[ 75%] Building CXX object raycloudtools/raycombine/CMakeFiles/raycombine.dir/raycombine.cpp.o
+[ 71%] Building CXX object raycloudtools/raytranslate/CMakeFiles/raytranslate.dir/raytranslate.cpp.o
+[ 74%] Building CXX object raycloudtools/raydecimate/CMakeFiles/raydecimate.dir/raydecimate.cpp.o
+[ 76%] Building CXX object raycloudtools/rayexport/CMakeFiles/rayexport.dir/rayexport.cpp.o
+[ 76%] Building CXX object raycloudtools/raydenoise/CMakeFiles/raydenoise.dir/raydenoise.cpp.o
+[ 76%] Building CXX object raycloudtools/raycreate/CMakeFiles/raycreate.dir/raycreate.cpp.o
+[ 76%] Building CXX object raycloudtools/rayinfo/CMakeFiles/rayinfo.dir/rayinfo.cpp.o
+[ 76%] Building CXX object raycloudtools/raywrap/CMakeFiles/raywrap.dir/raywrap.cpp.o
+[ 76%] Building CXX object raycloudtools/rayrotate/CMakeFiles/rayrotate.dir/rayrotate.cpp.o
+[ 76%] Building CXX object raycloudtools/raytransients/CMakeFiles/raytransients.dir/raytransients.cpp.o
+[ 76%] Building CXX object raycloudtools/rayrender/CMakeFiles/rayrender.dir/rayrender.cpp.o
+[ 76%] Building CXX object raycloudtools/rayimport/CMakeFiles/rayimport.dir/rayimport.cpp.o
+[ 76%] Building CXX object raycloudtools/raycombine/CMakeFiles/raycombine.dir/raycombine.cpp.o
+[ 76%] Building CXX object raycloudtools/raysplit/CMakeFiles/raysplit.dir/raysplit.cpp.o
+[ 76%] Building CXX object raycloudtools/raysmooth/CMakeFiles/raysmooth.dir/raysmooth.cpp.o
+[ 76%] Building CXX object raycloudtools/raycolour/CMakeFiles/raycolour.dir/raycolour.cpp.o
+[ 76%] Building CXX object raycloudtools/rayalign/CMakeFiles/rayalign.dir/rayalign.cpp.o
 [ 76%] Building CXX object raycloudtools/rayextract/CMakeFiles/rayextract.dir/rayextract.cpp.o
+[ 76%] Building CXX object raycloudtools/rayrestore/CMakeFiles/rayrestore.dir/rayrestore.cpp.o
+[ 76%] Building CXX object tests/raytest/CMakeFiles/raytest.dir/raytests.cpp.o
+[ 76%] Building CXX object tests/raytest/CMakeFiles/raytest.dir/testmain.cpp.o
 [ 77%] Linking CXX executable ../../bin/raytranslate
 [ 79%] Linking CXX executable ../../bin/rayrotate
 [ 80%] Linking CXX executable ../../bin/raysmooth
-[ 81%] Linking CXX executable ../../bin/rayinfo
+[ 81%] Linking CXX executable ../../bin/raywrap
 [ 82%] Linking CXX executable ../../bin/rayrender
-[ 83%] Linking CXX executable ../../bin/raywrap
-[ 85%] Linking CXX executable ../../bin/raytransients
-[ 85%] Built target raytranslate
-[ 86%] Linking CXX executable ../../bin/rayalign
-[ 86%] Built target rayrotate
-[ 86%] Built target raysmooth
-[ 87%] Linking CXX executable ../../bin/raycreate
-[ 88%] Linking CXX executable ../../bin/raydenoise
-[ 88%] Built target rayinfo
-[ 88%] Built target rayrender
-[ 88%] Built target raywrap
-[ 88%] Built target raytransients
-[ 88%] Built target rayalign
-[ 88%] Built target raycreate
-[ 88%] Built target raydenoise
+[ 83%] Linking CXX executable ../../bin/rayinfo
 [01m[K/workspaces/raycloudtools/raycloudtools/rayextract/rayextract.cpp:141:74:[m[K [01;35m[Kwarning: [m[Kmulti-character character constant [[01;35m[K-Wmultichar[m[K]
   141 |     alpha_weighted("alpha_weighting", 'p'), write_netcdf("write_netcdf", [01;35m[K'wn'[m[K), largest_diameter("largest_diameter", 'l'),
       |                                                                          [01;35m[K^~~~[m[K
@@ -282,6 +300,20 @@ In member function '[01m[Kvoid Eigen::internal::assign_op<DstScalar, SrcScalar
 [01m[K/workspaces/raycloudtools/raycloudtools/rayextract/rayextract.cpp:188:75:[m[K [01;35m[Kwarning: [m[Kmulti-character character constant [[01;35m[K-Wmultichar[m[K]
   188 |   ray::OptionalKeyValueArgument grid_bounds_max_option("grid_bounds_max", [01;35m[K'bmax'[m[K, &grid_bounds_max);
       |                                                                           [01;35m[K^~~~~~[m[K
+[ 85%] Linking CXX executable ../../bin/raytransients
+[ 85%] Built target raytranslate
+[ 86%] Linking CXX executable ../../bin/rayalign
+[ 86%] Built target rayrotate
+[ 86%] Built target raysmooth
+[ 87%] Linking CXX executable ../../bin/raycreate
+[ 87%] Built target raywrap
+[ 87%] Built target rayrender
+[ 87%] Built target rayinfo
+[ 88%] Linking CXX executable ../../bin/raydenoise
+[ 88%] Built target raytransients
+[ 88%] Built target rayalign
+[ 88%] Built target raycreate
+[ 88%] Built target raydenoise
 In file included from [01m[K/workspaces/raycloudtools/raycloudtools/raycolour/raycolour.cpp:11[m[K:
 [01m[K/workspaces/raycloudtools/raylib/imageread.h:[m[K In function '[01m[Kvoid[01;32m[K stbi__jpeg_dequantize[m[K(short int*, stbi__uint16*)[m[K':
 [01m[K/workspaces/raycloudtools/raylib/imageread.h:3043:15:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Kint[m[K' to '[01m[Kshort int[m[K' may change value [[01;35m[K-Wconversion[m[K]
@@ -339,20 +371,21 @@ In file included from [01m[K/workspaces/raycloudtools/raylib/raycuboid.h:10[m
   166 |     return [01;35m[K(*middle + *middle2) / static_cast<T>(2)[m[K;
       |            [01;35m[K~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~[m[K
 [ 90%] Linking CXX executable ../../bin/raydecimate
-[ 91%] Linking CXX executable ../../bin/raytest
-[ 92%] Linking CXX executable ../../bin/rayexport
-[ 92%] Built target raydecimate
+[ 91%] Linking CXX executable ../../bin/rayexport
+[ 91%] Built target raydecimate
+[ 92%] Linking CXX executable ../../bin/raytest
 [ 93%] Linking CXX executable ../../bin/rayimport
 [ 95%] Linking CXX executable ../../bin/raysplit
 [ 96%] Linking CXX executable ../../bin/rayextract
 [ 97%] Linking CXX executable ../../bin/raycombine
 [ 97%] Built target rayexport
-[ 97%] Built target raytest
 [ 97%] Built target rayimport
 [ 97%] Built target raycombine
-[ 97%] Built target raysplit
+[ 97%] Built target raytest
 [ 97%] Built target rayextract
+[ 97%] Built target raysplit
 [ 98%] Linking CXX executable ../../bin/raycolour
+[ 98%] Built target raycolour
 In file included from [01m[K/usr/include/eigen3/Eigen/src/Core/util/ConfigureVectorization.h:346[m[K,
                  from [01m[K/usr/include/eigen3/Eigen/Core:22[m[K,
                  from [01m[K/usr/include/eigen3/Eigen/Dense:1[m[K,
@@ -404,7 +437,6 @@ In member function '[01m[KEigen::internal::mapbase_evaluator<Derived, PlainObj
 [01m[K/usr/include/eigen3/Eigen/src/Geometry/Quaternion.h:657:36:[m[K [01;36m[Knote: [m[K'[01m[Ksvd[m[K' declared here
   657 |     JacobiSVD<Matrix<Scalar,2,3> > [01;36m[Ksvd[m[K(m, ComputeFullV);
       |                                    [01;36m[K^~~[m[K
-[ 98%] Built target raycolour
 [100%] Linking CXX executable ../../bin/rayrestore
 [100%] Built target rayrestore
 [ 51%] Built target raylib
@@ -429,116 +461,128 @@ In member function '[01m[KEigen::internal::mapbase_evaluator<Derived, PlainObj
 [100%] Built target raytest
 Install the project...
 -- Install configuration: "RelWithDebInfo"
--- Up-to-date: /usr/local/lib/cmake/raycloudtools/raycloudtools-targets.cmake
--- Up-to-date: /usr/local/lib/cmake/raycloudtools/raycloudtools-targets-relwithdebinfo.cmake
--- Up-to-date: /usr/local/lib/cmake/raycloudtools/raycloudtools-config.cmake
--- Up-to-date: /usr/local/lib/cmake/raycloudtools/raycloudtools-version.cmake
--- Up-to-date: /usr/local/include/raylib/rayalignment.h
--- Up-to-date: /usr/local/include/raylib/rayaxisalign.h
--- Up-to-date: /usr/local/include/raylib/raycloud.h
--- Up-to-date: /usr/local/include/raylib/raycloudwriter.h
--- Up-to-date: /usr/local/include/raylib/rayconcavehull.h
--- Up-to-date: /usr/local/include/raylib/rayconvexhull.h
--- Up-to-date: /usr/local/include/raylib/raydecimation.h
--- Up-to-date: /usr/local/include/raylib/rayellipsoid.h
--- Up-to-date: /usr/local/include/raylib/rayfinealignment.h
--- Up-to-date: /usr/local/include/raylib/rayforestgen.h
--- Up-to-date: /usr/local/include/raylib/rayforeststructure.h
--- Up-to-date: /usr/local/include/raylib/raygrid.h
--- Up-to-date: /usr/local/include/raylib/raylaz.h
--- Up-to-date: /usr/local/include/raylib/rayriegl.h
--- Up-to-date: /usr/local/include/raylib/raymerger.h
--- Up-to-date: /usr/local/include/raylib/raymesh.h
--- Up-to-date: /usr/local/include/raylib/rayply.h
--- Up-to-date: /usr/local/include/raylib/raypose.h
--- Up-to-date: /usr/local/include/raylib/rayprogress.h
--- Up-to-date: /usr/local/include/raylib/rayprogressthread.h
--- Up-to-date: /usr/local/include/raylib/rayroomgen.h
--- Up-to-date: /usr/local/include/raylib/raysplitter.h
--- Up-to-date: /usr/local/include/raylib/raybuildinggen.h
--- Up-to-date: /usr/local/include/raylib/raycuboid.h
--- Up-to-date: /usr/local/include/raylib/rayterraingen.h
--- Up-to-date: /usr/local/include/raylib/raythreads.h
--- Up-to-date: /usr/local/include/raylib/raytrajectory.h
--- Up-to-date: /usr/local/include/raylib/raytreegen.h
--- Up-to-date: /usr/local/include/raylib/raytreestructure.h
--- Up-to-date: /usr/local/include/raylib/rayunused.h
--- Up-to-date: /usr/local/include/raylib/rayutils.h
--- Up-to-date: /usr/local/include/raylib/rayparse.h
--- Up-to-date: /usr/local/include/raylib/rayrandom.h
--- Up-to-date: /usr/local/include/raylib/rayrenderer.h
--- Up-to-date: /usr/local/include/raylib/extraction/raytrunk.h
--- Up-to-date: /usr/local/include/raylib/extraction/raytrunks.h
--- Up-to-date: /usr/local/include/raylib/extraction/rayclusters.h
--- Up-to-date: /usr/local/include/raylib/extraction/rayleaves.h
--- Up-to-date: /usr/local/include/raylib/extraction/rayterrain.h
--- Up-to-date: /usr/local/include/raylib/extraction/raytrees.h
--- Up-to-date: /usr/local/include/raylib/extraction/rayforest.h
--- Up-to-date: /usr/local/include/raylib/extraction/raysegment.h
--- Up-to-date: /usr/local/include/raylib/extraction/raytreenode.h
--- Up-to-date: /usr/local/include/raylib/extraction/raygrid2d.h
--- Up-to-date: /usr/local/include/raylib/extraction/raydensegrid.h
--- Up-to-date: /usr/local/include/raylib/raylibconfig.h
--- Up-to-date: /usr/local/include/raylib/raylib_export.h
+-- Installing: /usr/local/lib/cmake/raycloudtools/raycloudtools-targets.cmake
+-- Installing: /usr/local/lib/cmake/raycloudtools/raycloudtools-targets-relwithdebinfo.cmake
+-- Installing: /usr/local/lib/cmake/raycloudtools/raycloudtools-config.cmake
+-- Installing: /usr/local/lib/cmake/raycloudtools/raycloudtools-version.cmake
+-- Installing: /usr/local/include/raylib/rayalignment.h
+-- Installing: /usr/local/include/raylib/rayaxisalign.h
+-- Installing: /usr/local/include/raylib/raycloud.h
+-- Installing: /usr/local/include/raylib/raycloudwriter.h
+-- Installing: /usr/local/include/raylib/rayconcavehull.h
+-- Installing: /usr/local/include/raylib/rayconvexhull.h
+-- Installing: /usr/local/include/raylib/raydecimation.h
+-- Installing: /usr/local/include/raylib/rayellipsoid.h
+-- Installing: /usr/local/include/raylib/rayfinealignment.h
+-- Installing: /usr/local/include/raylib/rayforestgen.h
+-- Installing: /usr/local/include/raylib/rayforeststructure.h
+-- Installing: /usr/local/include/raylib/raygrid.h
+-- Installing: /usr/local/include/raylib/raylaz.h
+-- Installing: /usr/local/include/raylib/rayriegl.h
+-- Installing: /usr/local/include/raylib/raymerger.h
+-- Installing: /usr/local/include/raylib/raymesh.h
+-- Installing: /usr/local/include/raylib/rayply.h
+-- Installing: /usr/local/include/raylib/raypose.h
+-- Installing: /usr/local/include/raylib/rayprogress.h
+-- Installing: /usr/local/include/raylib/rayprogressthread.h
+-- Installing: /usr/local/include/raylib/rayroomgen.h
+-- Installing: /usr/local/include/raylib/raysplitter.h
+-- Installing: /usr/local/include/raylib/raybuildinggen.h
+-- Installing: /usr/local/include/raylib/raycuboid.h
+-- Installing: /usr/local/include/raylib/rayterraingen.h
+-- Installing: /usr/local/include/raylib/raythreads.h
+-- Installing: /usr/local/include/raylib/raytrajectory.h
+-- Installing: /usr/local/include/raylib/raytreegen.h
+-- Installing: /usr/local/include/raylib/raytreestructure.h
+-- Installing: /usr/local/include/raylib/rayunused.h
+-- Installing: /usr/local/include/raylib/rayutils.h
+-- Installing: /usr/local/include/raylib/rayparse.h
+-- Installing: /usr/local/include/raylib/rayrandom.h
+-- Installing: /usr/local/include/raylib/rayrenderer.h
+-- Installing: /usr/local/include/raylib/extraction/raytrunk.h
+-- Installing: /usr/local/include/raylib/extraction/raytrunks.h
+-- Installing: /usr/local/include/raylib/extraction/rayclusters.h
+-- Installing: /usr/local/include/raylib/extraction/rayleaves.h
+-- Installing: /usr/local/include/raylib/extraction/rayterrain.h
+-- Installing: /usr/local/include/raylib/extraction/raytrees.h
+-- Installing: /usr/local/include/raylib/extraction/rayforest.h
+-- Installing: /usr/local/include/raylib/extraction/raysegment.h
+-- Installing: /usr/local/include/raylib/extraction/raytreenode.h
+-- Installing: /usr/local/include/raylib/extraction/raygrid2d.h
+-- Installing: /usr/local/include/raylib/extraction/raydensegrid.h
+-- Installing: /usr/local/include/raylib/raylibconfig.h
+-- Installing: /usr/local/include/raylib/raylib_export.h
 -- Installing: /usr/local/lib/libraylib.so.0.0.1
 -- Set non-toolchain portion of runtime path of "/usr/local/lib/libraylib.so.0.0.1" to ""
--- Up-to-date: /usr/local/lib/libraylib.so
+-- Installing: /usr/local/lib/libraylib.so
 -- Installing: /usr/local/bin/rayalign-0.0.1
--- Up-to-date: /usr/local/bin/rayalign
+-- Installing: /usr/local/bin/rayalign
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/rayalign-0.0.1" to ""
 -- Installing: /usr/local/bin/raycolour-0.0.1
--- Up-to-date: /usr/local/bin/raycolour
+-- Installing: /usr/local/bin/raycolour
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/raycolour-0.0.1" to ""
 -- Installing: /usr/local/bin/raycombine-0.0.1
--- Up-to-date: /usr/local/bin/raycombine
+-- Installing: /usr/local/bin/raycombine
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/raycombine-0.0.1" to ""
 -- Installing: /usr/local/bin/raycreate-0.0.1
--- Up-to-date: /usr/local/bin/raycreate
+-- Installing: /usr/local/bin/raycreate
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/raycreate-0.0.1" to ""
 -- Installing: /usr/local/bin/raydecimate-0.0.1
--- Up-to-date: /usr/local/bin/raydecimate
+-- Installing: /usr/local/bin/raydecimate
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/raydecimate-0.0.1" to ""
 -- Installing: /usr/local/bin/raydenoise-0.0.1
--- Up-to-date: /usr/local/bin/raydenoise
+-- Installing: /usr/local/bin/raydenoise
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/raydenoise-0.0.1" to ""
 -- Installing: /usr/local/bin/rayexport-0.0.1
--- Up-to-date: /usr/local/bin/rayexport
+-- Installing: /usr/local/bin/rayexport
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/rayexport-0.0.1" to ""
 -- Installing: /usr/local/bin/rayextract-0.0.1
--- Up-to-date: /usr/local/bin/rayextract
+-- Installing: /usr/local/bin/rayextract
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/rayextract-0.0.1" to ""
 -- Installing: /usr/local/bin/rayimport-0.0.1
--- Up-to-date: /usr/local/bin/rayimport
+-- Installing: /usr/local/bin/rayimport
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/rayimport-0.0.1" to ""
 -- Installing: /usr/local/bin/rayinfo-0.0.1
--- Up-to-date: /usr/local/bin/rayinfo
+-- Installing: /usr/local/bin/rayinfo
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/rayinfo-0.0.1" to ""
 -- Installing: /usr/local/bin/rayrotate-0.0.1
--- Up-to-date: /usr/local/bin/rayrotate
+-- Installing: /usr/local/bin/rayrotate
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/rayrotate-0.0.1" to ""
 -- Installing: /usr/local/bin/raysmooth-0.0.1
--- Up-to-date: /usr/local/bin/raysmooth
+-- Installing: /usr/local/bin/raysmooth
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/raysmooth-0.0.1" to ""
 -- Installing: /usr/local/bin/raysplit-0.0.1
--- Up-to-date: /usr/local/bin/raysplit
+-- Installing: /usr/local/bin/raysplit
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/raysplit-0.0.1" to ""
 -- Installing: /usr/local/bin/raytransients-0.0.1
--- Up-to-date: /usr/local/bin/raytransients
+-- Installing: /usr/local/bin/raytransients
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/raytransients-0.0.1" to ""
 -- Installing: /usr/local/bin/raytranslate-0.0.1
--- Up-to-date: /usr/local/bin/raytranslate
+-- Installing: /usr/local/bin/raytranslate
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/raytranslate-0.0.1" to ""
 -- Installing: /usr/local/bin/rayrender-0.0.1
--- Up-to-date: /usr/local/bin/rayrender
+-- Installing: /usr/local/bin/rayrender
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/rayrender-0.0.1" to ""
 -- Installing: /usr/local/bin/rayrestore-0.0.1
--- Up-to-date: /usr/local/bin/rayrestore
+-- Installing: /usr/local/bin/rayrestore
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/rayrestore-0.0.1" to ""
 -- Installing: /usr/local/bin/raywrap-0.0.1
--- Up-to-date: /usr/local/bin/raywrap
+-- Installing: /usr/local/bin/raywrap
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/raywrap-0.0.1" to ""
 Build Raycloudtools completed successfully.
 building TreeTools...
+-- The C compiler identification is GNU 13.3.0
+-- The CXX compiler identification is GNU 13.3.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
 CMake Warning (dev) at cmake/RasClangTidy.cmake:67 (find_package):
   Policy CMP0148 is not set: The FindPythonInterp and FindPythonLibs modules
   are removed.  Run "cmake --help-policy CMP0148" for policy details.  Use
@@ -549,47 +593,171 @@ Call Stack (most recent call first):
   CMakeLists.txt:19 (ras_project)
 This warning is for project developers.  Use -Wno-dev to suppress it.
 
+-- Found PythonInterp: /usr/bin/python3 (found version "3.12.3") 
+-- Found PROJ: /usr/lib/x86_64-linux-gnu/libproj.so;/usr/lib/x86_64-linux-gnu/libsqlite3.so  
+-- Found NetCDF: /usr/lib/x86_64-linux-gnu/libnetcdf.so (found version "4.9.2") 
+-- Found OpenMP_C: -fopenmp (found version "4.5") 
+-- Found OpenMP_CXX: -fopenmp (found version "4.5") 
+-- Found OpenMP: TRUE (found version "4.5")  
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE  
 -- TREETOOLS_INCLUDE: /usr/include/eigen3;/usr/local/include
 -- TREETOOLS_LINK: /usr/local/lib/libnabo.a;gomp;raycloud::raylib;Threads::Threads
--- Configuring done (4.8s)
--- Generating done (55.8s)
+-- Performing Test COMPILER_HAS_HIDDEN_VISIBILITY
+-- Performing Test COMPILER_HAS_HIDDEN_VISIBILITY - Success
+-- Performing Test COMPILER_HAS_HIDDEN_INLINE_VISIBILITY
+-- Performing Test COMPILER_HAS_HIDDEN_INLINE_VISIBILITY - Success
+-- Performing Test COMPILER_HAS_DEPRECATED_ATTR
+-- Performing Test COMPILER_HAS_DEPRECATED_ATTR - Success
+-- Found GTest: /usr/lib/x86_64-linux-gnu/cmake/GTest/GTestConfig.cmake (found version "1.14.0")  
+-- Configuring done (17.0s)
+-- Generating done (26.7s)
 -- Build files have been written to: /workspaces/raycloudtools/treetools/build
-[  2%] Linking CXX shared library libtreelib.so
+[  2%] Building CXX object treelib/CMakeFiles/treelib.dir/treeinformation.cpp.o
+[  7%] Building CXX object treelib/CMakeFiles/treelib.dir/treeutils.cpp.o
+[  7%] Building CXX object treelib/CMakeFiles/treelib.dir/treepruner.cpp.o
+[ 10%] Linking CXX shared library libtreelib.so
 [ 10%] Built target treelib
-[ 25%] Linking CXX executable ../../bin/treediff
-[ 41%] Linking CXX executable ../../bin/treecombine
-[ 43%] Linking CXX executable ../../bin/treerotate
-[ 46%] Linking CXX executable ../../bin/treedecimate
-[ 46%] Linking CXX executable ../../bin/treetranslate
-[ 46%] Linking CXX executable ../../bin/treeprune
-[ 46%] Linking CXX executable ../../bin/treesmooth
-[ 46%] Linking CXX executable ../../bin/treeinfo
-[ 46%] Linking CXX executable ../../bin/treemesh
-[ 46%] Linking CXX executable ../../bin/treesplit
-[ 46%] Linking CXX executable ../../bin/treecreate
-[ 46%] Linking CXX executable ../../bin/treegrow
-[ 46%] Linking CXX executable ../../bin/treecolour
-[ 46%] Linking CXX executable ../../bin/treerender
-[ 48%] Linking CXX executable ../../bin/treetest
-[ 51%] Built target treetranslate
-[ 53%] Built target treeprune
-[ 58%] Built target treerotate
-[ 58%] Built target treedecimate
-[ 64%] Built target treesmooth
-[ 64%] Built target treecombine
-[ 69%] Built target treesplit
-[ 69%] Built target treecreate
-[ 71%] Built target treegrow
-[ 76%] Built target treemesh
-[ 76%] Built target treecolour
-[ 79%] Built target treerender
-[ 82%] Built target treeinfo
-[ 87%] Linking CXX executable ../../bin/treefoliage
-[ 89%] Built target treediff
-[ 89%] Linking CXX executable ../../bin/treepaint
-[ 94%] Built target treetest
-[ 97%] Built target treepaint
-[100%] Built target treefoliage
+[ 51%] Building CXX object treetools/treetranslate/CMakeFiles/treetranslate.dir/treetranslate.cpp.o
+[ 51%] Building CXX object treetools/treerender/CMakeFiles/treerender.dir/treerender.cpp.o
+[ 51%] Building CXX object treetools/treeprune/CMakeFiles/treeprune.dir/treeprune.cpp.o
+[ 51%] Building CXX object treetools/treegrow/CMakeFiles/treegrow.dir/treegrow.cpp.o
+[ 51%] Building CXX object treetools/treecolour/CMakeFiles/treecolour.dir/treecolour.cpp.o
+[ 51%] Building CXX object treetools/treefoliage/CMakeFiles/treefoliage.dir/treefoliage.cpp.o
+[ 51%] Building CXX object treetools/treedecimate/CMakeFiles/treedecimate.dir/treedecimate.cpp.o
+[ 51%] Building CXX object treetools/treepaint/CMakeFiles/treepaint.dir/treepaint.cpp.o
+[ 51%] Building CXX object treetools/treesplit/CMakeFiles/treesplit.dir/treesplit.cpp.o
+[ 51%] Building CXX object treetools/treesmooth/CMakeFiles/treesmooth.dir/treesmooth.cpp.o
+[ 51%] Building CXX object treetools/treecreate/CMakeFiles/treecreate.dir/treecreate.cpp.o
+[ 51%] Building CXX object treetools/treeinfo/CMakeFiles/treeinfo.dir/treeinfo.cpp.o
+[ 51%] Building CXX object treetools/treerotate/CMakeFiles/treerotate.dir/treerotate.cpp.o
+[ 51%] Building CXX object treetools/treecombine/CMakeFiles/treecombine.dir/treecombine.cpp.o
+[ 51%] Building CXX object treetools/treemesh/CMakeFiles/treemesh.dir/treemesh.cpp.o
+[ 51%] Building CXX object treetools/treediff/CMakeFiles/treediff.dir/treediff.cpp.o
+[ 56%] Building CXX object tests/treetest/CMakeFiles/treetest.dir/treetests.cpp.o
+[ 56%] Building CXX object tests/treetest/CMakeFiles/treetest.dir/testmain.cpp.o
+In file included from [01m[K/workspaces/raycloudtools/treetools/treetools/treecolour/treecolour.cpp:16[m[K:
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:[m[K In function '[01m[Kvoid[01;32m[K stbi__jpeg_dequantize[m[K(short int*, stbi__uint16*)[m[K':
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:3043:15:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Kint[m[K' to '[01m[Kshort int[m[K' may change value [[01;35m[K-Wconversion[m[K]
+ 3043 |       [01;35m[Kdata[i] *= dequant[i][m[K;
+      |       [01;35m[K~~~~~~~~^~~~~~~~~~~~~[m[K
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:[m[K In function '[01m[Kvoid[01;32m[K stbi__de_iphone[m[K(stbi__png*)[m[K':
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:5000:43:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Kint[m[K' to '[01m[Kstbi_uc[m[K' {aka '[01m[Kunsigned char[m[K'} may change value [[01;35m[K-Wconversion[m[K]
+ 5000 |                p[0] = [01;35m[K(p[2] * 255 + half) / a[m[K;
+      |                       [01;35m[K~~~~~~~~~~~~~~~~~~~~^~~[m[K
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:5001:43:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Kint[m[K' to '[01m[Kstbi_uc[m[K' {aka '[01m[Kunsigned char[m[K'} may change value [[01;35m[K-Wconversion[m[K]
+ 5001 |                p[1] = [01;35m[K(p[1] * 255 + half) / a[m[K;
+      |                       [01;35m[K~~~~~~~~~~~~~~~~~~~~^~~[m[K
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:5002:43:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Kint[m[K' to '[01m[Kstbi_uc[m[K' {aka '[01m[Kunsigned char[m[K'} may change value [[01;35m[K-Wconversion[m[K]
+ 5002 |                p[2] = [01;35m[K( t   * 255 + half) / a[m[K;
+      |                       [01;35m[K~~~~~~~~~~~~~~~~~~~~^~~[m[K
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:[m[K In function '[01m[Kvoid[01;32m[K stbi__hdr_convert[m[K(float*, stbi_uc*, int)[m[K':
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:7060:43:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Kint[m[K' to '[01m[Kfloat[m[K' may change value [[01;35m[K-Wconversion[m[K]
+ 7060 |          output[0] = [01;35m[K(input[0] + input[1] + input[2])[m[K * f1 / 3;
+      |                      [01;35m[K~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~[m[K
+In file included from [01m[K/workspaces/raycloudtools/treetools/treetools/treecombine/treecombine.cpp:16[m[K:
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:[m[K In function '[01m[Kvoid[01;32m[K stbi__jpeg_dequantize[m[K(short int*, stbi__uint16*)[m[K':
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:3043:15:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Kint[m[K' to '[01m[Kshort int[m[K' may change value [[01;35m[K-Wconversion[m[K]
+ 3043 |       [01;35m[Kdata[i] *= dequant[i][m[K;
+      |       [01;35m[K~~~~~~~~^~~~~~~~~~~~~[m[K
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:[m[K In function '[01m[Kvoid[01;32m[K stbi__de_iphone[m[K(stbi__png*)[m[K':
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:5000:43:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Kint[m[K' to '[01m[Kstbi_uc[m[K' {aka '[01m[Kunsigned char[m[K'} may change value [[01;35m[K-Wconversion[m[K]
+ 5000 |                p[0] = [01;35m[K(p[2] * 255 + half) / a[m[K;
+      |                       [01;35m[K~~~~~~~~~~~~~~~~~~~~^~~[m[K
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:5001:43:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Kint[m[K' to '[01m[Kstbi_uc[m[K' {aka '[01m[Kunsigned char[m[K'} may change value [[01;35m[K-Wconversion[m[K]
+ 5001 |                p[1] = [01;35m[K(p[1] * 255 + half) / a[m[K;
+      |                       [01;35m[K~~~~~~~~~~~~~~~~~~~~^~~[m[K
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:5002:43:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Kint[m[K' to '[01m[Kstbi_uc[m[K' {aka '[01m[Kunsigned char[m[K'} may change value [[01;35m[K-Wconversion[m[K]
+ 5002 |                p[2] = [01;35m[K( t   * 255 + half) / a[m[K;
+      |                       [01;35m[K~~~~~~~~~~~~~~~~~~~~^~~[m[K
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:[m[K In function '[01m[Kvoid[01;32m[K stbi__hdr_convert[m[K(float*, stbi_uc*, int)[m[K':
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:7060:43:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Kint[m[K' to '[01m[Kfloat[m[K' may change value [[01;35m[K-Wconversion[m[K]
+ 7060 |          output[0] = [01;35m[K(input[0] + input[1] + input[2])[m[K * f1 / 3;
+      |                      [01;35m[K~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~[m[K
+[ 58%] Linking CXX executable ../../bin/treetranslate
+[ 61%] Linking CXX executable ../../bin/treerotate
+[ 64%] Linking CXX executable ../../bin/treeprune
+[ 66%] Built target treetranslate
+[ 66%] Linking CXX executable ../../bin/treedecimate
+[ 69%] Linking CXX executable ../../bin/treesmooth
+[ 69%] Built target treerotate
+[ 71%] Linking CXX executable ../../bin/treecreate
+[ 74%] Linking CXX executable ../../bin/treeinfo
+[ 74%] Built target treeprune
+[ 74%] Built target treedecimate
+[ 76%] Linking CXX executable ../../bin/treediff
+[ 79%] Linking CXX executable ../../bin/treesplit
+[ 79%] Built target treesmooth
+[ 79%] Built target treecreate
+In file included from [01m[K/workspaces/raycloudtools/treetools/treetools/treepaint/treepaint.cpp:18[m[K:
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:[m[K In function '[01m[Kvoid[01;32m[K stbi__jpeg_dequantize[m[K(short int*, stbi__uint16*)[m[K':
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:3043:15:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Kint[m[K' to '[01m[Kshort int[m[K' may change value [[01;35m[K-Wconversion[m[K]
+ 3043 |       [01;35m[Kdata[i] *= dequant[i][m[K;
+      |       [01;35m[K~~~~~~~~^~~~~~~~~~~~~[m[K
+[ 82%] Linking CXX executable ../../bin/treemesh
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:[m[K In function '[01m[Kvoid[01;32m[K stbi__de_iphone[m[K(stbi__png*)[m[K':
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:5000:43:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Kint[m[K' to '[01m[Kstbi_uc[m[K' {aka '[01m[Kunsigned char[m[K'} may change value [[01;35m[K-Wconversion[m[K]
+ 5000 |                p[0] = [01;35m[K(p[2] * 255 + half) / a[m[K;
+      |                       [01;35m[K~~~~~~~~~~~~~~~~~~~~^~~[m[K
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:5001:43:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Kint[m[K' to '[01m[Kstbi_uc[m[K' {aka '[01m[Kunsigned char[m[K'} may change value [[01;35m[K-Wconversion[m[K]
+ 5001 |                p[1] = [01;35m[K(p[1] * 255 + half) / a[m[K;
+      |                       [01;35m[K~~~~~~~~~~~~~~~~~~~~^~~[m[K
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:5002:43:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Kint[m[K' to '[01m[Kstbi_uc[m[K' {aka '[01m[Kunsigned char[m[K'} may change value [[01;35m[K-Wconversion[m[K]
+ 5002 |                p[2] = [01;35m[K( t   * 255 + half) / a[m[K;
+      |                       [01;35m[K~~~~~~~~~~~~~~~~~~~~^~~[m[K
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:[m[K In function '[01m[Kvoid[01;32m[K stbi__hdr_convert[m[K(float*, stbi_uc*, int)[m[K':
+[01m[K/workspaces/raycloudtools/treetools/treelib/imageread.h:7060:43:[m[K [01;35m[Kwarning: [m[Kconversion from '[01m[Kint[m[K' to '[01m[Kfloat[m[K' may change value [[01;35m[K-Wconversion[m[K]
+ 7060 |          output[0] = [01;35m[K(input[0] + input[1] + input[2])[m[K * f1 / 3;
+      |                      [01;35m[K~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~[m[K
+[ 84%] Built target treesplit
+[ 84%] Linking CXX executable ../../bin/treegrow
+[ 84%] Built target treeinfo
+[ 84%] Built target treemesh
+[ 84%] Built target treediff
+[ 84%] Built target treegrow
+[ 87%] Linking CXX executable ../../bin/treerender
+In file included from [01m[K/usr/include/c++/13/vector:62[m[K,
+                 from [01m[K/usr/local/include/raylib/raycloud.h:11[m[K,
+                 from [01m[K/workspaces/raycloudtools/treetools/treetools/treefoliage/treefoliage.cpp:6[m[K:
+In static member function '[01m[Kstatic _Up* std::__copy_move<_IsMove, true, std::random_access_iterator_tag>::[01;32m[K__copy_m[m[K(_Tp*, _Tp*, _Up*) [35m[K[with _Tp = int; _Up = int; bool _IsMove = false][m[K[m[K',
+    inlined from '[01m[K_OI std::[01;32m[K__copy_move_a2[m[K(_II, _II, _OI) [35m[K[with bool _IsMove = false; _II = int*; _OI = int*][m[K[m[K' at [01m[K/usr/include/c++/13/bits/stl_algobase.h:506:30[m[K,
+    inlined from '[01m[K_OI std::[01;32m[K__copy_move_a1[m[K(_II, _II, _OI) [35m[K[with bool _IsMove = false; _II = int*; _OI = int*][m[K[m[K' at [01m[K/usr/include/c++/13/bits/stl_algobase.h:533:42[m[K,
+    inlined from '[01m[K_OI std::[01;32m[K__copy_move_a[m[K(_II, _II, _OI) [35m[K[with bool _IsMove = false; _II = __gnu_cxx::__normal_iterator<int*, vector<int> >; _OI = int*][m[K[m[K' at [01m[K/usr/include/c++/13/bits/stl_algobase.h:540:31[m[K,
+    inlined from '[01m[K_OI std::[01;32m[Kcopy[m[K(_II, _II, _OI) [35m[K[with _II = __gnu_cxx::__normal_iterator<int*, vector<int> >; _OI = int*][m[K[m[K' at [01m[K/usr/include/c++/13/bits/stl_algobase.h:633:7[m[K,
+    inlined from '[01m[Kstatic _ForwardIterator std::__uninitialized_copy<true>::[01;32m[K__uninit_copy[m[K(_InputIterator, _InputIterator, _ForwardIterator) [35m[K[with _InputIterator = __gnu_cxx::__normal_iterator<int*, std::vector<int> >; _ForwardIterator = int*][m[K[m[K' at [01m[K/usr/include/c++/13/bits/stl_uninitialized.h:147:27[m[K,
+    inlined from '[01m[K_ForwardIterator std::[01;32m[Kuninitialized_copy[m[K(_InputIterator, _InputIterator, _ForwardIterator) [35m[K[with _InputIterator = __gnu_cxx::__normal_iterator<int*, vector<int> >; _ForwardIterator = int*][m[K[m[K' at [01m[K/usr/include/c++/13/bits/stl_uninitialized.h:185:15[m[K,
+    inlined from '[01m[K_ForwardIterator std::[01;32m[K__uninitialized_copy_a[m[K(_InputIterator, _InputIterator, _ForwardIterator, allocator<_Tp>&) [35m[K[with _InputIterator = __gnu_cxx::__normal_iterator<int*, vector<int> >; _ForwardIterator = int*; _Tp = int][m[K[m[K' at [01m[K/usr/include/c++/13/bits/stl_uninitialized.h:373:37[m[K,
+    inlined from '[01m[Kvoid std::vector<_Tp, _Alloc>::[01;32m[K_M_range_insert[m[K(iterator, _ForwardIterator, _ForwardIterator, std::forward_iterator_tag) [35m[K[with _ForwardIterator = __gnu_cxx::__normal_iterator<int*, std::vector<int> >; _Tp = int; _Alloc = std::allocator<int>][m[K[m[K' at [01m[K/usr/include/c++/13/bits/vector.tcc:814:38[m[K,
+    inlined from '[01m[Kstd::vector<_Tp, _Alloc>::iterator std::vector<_Tp, _Alloc>::[01;32m[Kinsert[m[K(const_iterator, _InputIterator, _InputIterator) [35m[K[with _InputIterator = __gnu_cxx::__normal_iterator<int*, std::vector<int> >; <template-parameter-2-2> = void; _Tp = int; _Alloc = std::allocator<int>][m[K[m[K' at [01m[K/usr/include/c++/13/bits/stl_vector.h:1486:19[m[K,
+    inlined from '[01m[Kint[01;32m[K main[m[K(int, char**)[m[K' at [01m[K/workspaces/raycloudtools/treetools/treetools/treefoliage/treefoliage.cpp:137:24[m[K:
+[01m[K/usr/include/c++/13/bits/stl_algobase.h:437:30:[m[K [01;35m[Kwarning: [m[K'[01m[Kvoid*[01;32m[K __builtin_memmove[m[K(void*, const void*, long unsigned int)[m[K' writing between 5 and 9223372036854775804 bytes into a region of size 0 overflows the destination [[01;35m[K-Wstringop-overflow=[m[K]
+  437 |             [01;35m[K__builtin_memmove(__result, __first, sizeof(_Tp) * _Num)[m[K;
+      |             [01;35m[K~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[m[K
+In file included from [01m[K/usr/include/x86_64-linux-gnu/c++/13/bits/c++allocator.h:33[m[K,
+                 from [01m[K/usr/include/c++/13/bits/allocator.h:46[m[K,
+                 from [01m[K/usr/include/c++/13/vector:63[m[K:
+In member function '[01m[K_Tp* std::__new_allocator<_Tp>::[01;32m[Kallocate[m[K(size_type, const void*) [35m[K[with _Tp = ray::RGBA][m[K[m[K',
+    inlined from '[01m[Kstatic _Tp* std::allocator_traits<std::allocator<_Tp1> >::[01;32m[Kallocate[m[K(allocator_type&, size_type) [35m[K[with _Tp = ray::RGBA][m[K[m[K' at [01m[K/usr/include/c++/13/bits/alloc_traits.h:482:28[m[K,
+    inlined from '[01m[Kstd::_Vector_base<_Tp, _Alloc>::pointer std::_Vector_base<_Tp, _Alloc>::[01;32m[K_M_allocate[m[K(std::size_t) [35m[K[with _Tp = ray::RGBA; _Alloc = std::allocator<ray::RGBA>][m[K[m[K' at [01m[K/usr/include/c++/13/bits/stl_vector.h:381:33[m[K,
+    inlined from '[01m[Kstd::_Vector_base<_Tp, _Alloc>::pointer std::_Vector_base<_Tp, _Alloc>::[01;32m[K_M_allocate[m[K(std::size_t) [35m[K[with _Tp = int; _Alloc = std::allocator<int>][m[K[m[K' at [01m[K/usr/include/c++/13/bits/stl_vector.h:378:7[m[K,
+    inlined from '[01m[Kvoid std::vector<_Tp, _Alloc>::[01;32m[K_M_range_insert[m[K(iterator, _ForwardIterator, _ForwardIterator, std::forward_iterator_tag) [35m[K[with _ForwardIterator = __gnu_cxx::__normal_iterator<int*, std::vector<int> >; _Tp = int; _Alloc = std::allocator<int>][m[K[m[K' at [01m[K/usr/include/c++/13/bits/vector.tcc:805:40[m[K,
+    inlined from '[01m[Kstd::vector<_Tp, _Alloc>::iterator std::vector<_Tp, _Alloc>::[01;32m[Kinsert[m[K(const_iterator, _InputIterator, _InputIterator) [35m[K[with _InputIterator = __gnu_cxx::__normal_iterator<int*, std::vector<int> >; <template-parameter-2-2> = void; _Tp = int; _Alloc = std::allocator<int>][m[K[m[K' at [01m[K/usr/include/c++/13/bits/stl_vector.h:1486:19[m[K,
+    inlined from '[01m[Kint[01;32m[K main[m[K(int, char**)[m[K' at [01m[K/workspaces/raycloudtools/treetools/treetools/treefoliage/treefoliage.cpp:137:24[m[K:
+[01m[K/usr/include/c++/13/bits/new_allocator.h:151:55:[m[K [01;36m[Knote: [m[Kat offset [-9223372036854775808, -4] into destination object of size [4, 9223372036854775804] allocated by '[01m[Koperator new[m[K'
+  151 |         return static_cast<_Tp*>(_GLIBCXX_OPERATOR_NEW[01;36m[K([m[K__n * sizeof(_Tp)));
+      |                                                       [01;36m[K^[m[K
+[ 89%] Linking CXX executable ../../bin/treecombine
+[ 92%] Linking CXX executable ../../bin/treetest
+[ 92%] Built target treerender
+[ 94%] Linking CXX executable ../../bin/treecolour
+[ 97%] Linking CXX executable ../../bin/treefoliage
+[ 97%] Built target treecombine
+[ 97%] Built target treecolour
+[ 97%] Built target treefoliage
+[ 97%] Built target treetest
+[100%] Linking CXX executable ../../bin/treepaint
+[100%] Built target treepaint
 [ 10%] Built target treelib
 [ 15%] Built target treecolour
 [ 20%] Built target treecombine
@@ -610,59 +778,59 @@ This warning is for project developers.  Use -Wno-dev to suppress it.
 [100%] Built target treetest
 Install the project...
 -- Install configuration: "RelWithDebInfo"
--- Up-to-date: /usr/local/include/treelib/treeinformation.h
--- Up-to-date: /usr/local/include/treelib/treeutils.h
--- Up-to-date: /usr/local/include/treelib/treelibconfig.h
--- Up-to-date: /usr/local/include/treelib/treelib_export.h
+-- Installing: /usr/local/include/treelib/treeinformation.h
+-- Installing: /usr/local/include/treelib/treeutils.h
+-- Installing: /usr/local/include/treelib/treelibconfig.h
+-- Installing: /usr/local/include/treelib/treelib_export.h
 -- Installing: /usr/local/lib/libtreelib.so.0.0.1
 -- Set non-toolchain portion of runtime path of "/usr/local/lib/libtreelib.so.0.0.1" to ""
--- Up-to-date: /usr/local/lib/libtreelib.so
+-- Installing: /usr/local/lib/libtreelib.so
 -- Installing: /usr/local/bin/treecolour-0.0.1
--- Up-to-date: /usr/local/bin/treecolour
+-- Installing: /usr/local/bin/treecolour
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/treecolour-0.0.1" to ""
 -- Installing: /usr/local/bin/treecombine-0.0.1
--- Up-to-date: /usr/local/bin/treecombine
+-- Installing: /usr/local/bin/treecombine
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/treecombine-0.0.1" to ""
 -- Installing: /usr/local/bin/treecreate-0.0.1
--- Up-to-date: /usr/local/bin/treecreate
+-- Installing: /usr/local/bin/treecreate
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/treecreate-0.0.1" to ""
 -- Installing: /usr/local/bin/treedecimate-0.0.1
--- Up-to-date: /usr/local/bin/treedecimate
+-- Installing: /usr/local/bin/treedecimate
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/treedecimate-0.0.1" to ""
 -- Installing: /usr/local/bin/treediff-0.0.1
--- Up-to-date: /usr/local/bin/treediff
+-- Installing: /usr/local/bin/treediff
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/treediff-0.0.1" to ""
 -- Installing: /usr/local/bin/treefoliage-0.0.1
--- Up-to-date: /usr/local/bin/treefoliage
+-- Installing: /usr/local/bin/treefoliage
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/treefoliage-0.0.1" to ""
 -- Installing: /usr/local/bin/treegrow-0.0.1
--- Up-to-date: /usr/local/bin/treegrow
+-- Installing: /usr/local/bin/treegrow
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/treegrow-0.0.1" to ""
 -- Installing: /usr/local/bin/treeinfo-0.0.1
--- Up-to-date: /usr/local/bin/treeinfo
+-- Installing: /usr/local/bin/treeinfo
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/treeinfo-0.0.1" to ""
 -- Installing: /usr/local/bin/treemesh-0.0.1
--- Up-to-date: /usr/local/bin/treemesh
+-- Installing: /usr/local/bin/treemesh
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/treemesh-0.0.1" to ""
 -- Installing: /usr/local/bin/treepaint-0.0.1
--- Up-to-date: /usr/local/bin/treepaint
+-- Installing: /usr/local/bin/treepaint
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/treepaint-0.0.1" to ""
 -- Installing: /usr/local/bin/treeprune-0.0.1
--- Up-to-date: /usr/local/bin/treeprune
+-- Installing: /usr/local/bin/treeprune
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/treeprune-0.0.1" to ""
 -- Installing: /usr/local/bin/treerender-0.0.1
--- Up-to-date: /usr/local/bin/treerender
+-- Installing: /usr/local/bin/treerender
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/treerender-0.0.1" to ""
 -- Installing: /usr/local/bin/treerotate-0.0.1
--- Up-to-date: /usr/local/bin/treerotate
+-- Installing: /usr/local/bin/treerotate
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/treerotate-0.0.1" to ""
 -- Installing: /usr/local/bin/treesmooth-0.0.1
--- Up-to-date: /usr/local/bin/treesmooth
+-- Installing: /usr/local/bin/treesmooth
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/treesmooth-0.0.1" to ""
 -- Installing: /usr/local/bin/treesplit-0.0.1
--- Up-to-date: /usr/local/bin/treesplit
+-- Installing: /usr/local/bin/treesplit
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/treesplit-0.0.1" to ""
 -- Installing: /usr/local/bin/treetranslate-0.0.1
--- Up-to-date: /usr/local/bin/treetranslate
+-- Installing: /usr/local/bin/treetranslate
 -- Set non-toolchain portion of runtime path of "/usr/local/bin/treetranslate-0.0.1" to ""
 Build process completed successfully.
