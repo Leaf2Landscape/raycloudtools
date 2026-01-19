@@ -93,7 +93,8 @@ void usage(int exit_code = 1)
   std::cout << "                            --grid_bounds_max x,y,z - set max bounds of voxel grid. Defaults to max bounds of raycloud if not set." << std::endl;
   std::cout << "                            --write_empty           - write whole voxel grid incuding empty voxels." << std::endl;
   std::cout << "                            --write_netcdf          - write voxel grid in NetCDF format." << std::endl;
-  std::cout << "                            --extended_output       - include path_length, density, and surface_area in output." << std::endl; 
+  std::cout << "                            --extended_output       - include path_length, density, and surface_area in output." << std::endl;
+  std::cout << "                            --add_neighbour_priors  - add neighbour priors to improve density estimates for voxels with low ray counts." << std::endl;
   std::cout << "                                 --verbose  - extra debug output." << std::endl;
 
   }
@@ -119,7 +120,7 @@ int rayExtract(int argc, char *argv[])
   ray::OptionalFlagArgument exclude_rays("exclude_rays", 'e'), segment_branches("branch_segmentation", 'b'),
     stalks("stalks", 's'), use_rays("use_rays", 'u'), write_empty("write_empty", 'w'),
     alpha_weighted("alpha_weighting", 'p'), write_netcdf("write_netcdf", 'wn'), largest_diameter("largest_diameter", 'l'),
-    save_paths("save_paths", 'sp'), extended_output("extended_output", 'x');
+    save_paths("save_paths", 'sp'), extended_output("extended_output", 'x'), add_neighbour_priors("add_neighbour_priors", 'n');
   ray::DoubleArgument width(0.01, 10.0, 0.25), drop(0.001, 1.0), max_gradient(0.01, 5.0), min_gradient(0.01, 5.0);
   ray::IntArgument leaf_angle(1, 6);
   ray::DoubleArgument max_diameter(0.01, 100.0), distance_limit(0.01, 10.0), height_min(0.01, 1000.0),
@@ -173,7 +174,7 @@ int rayExtract(int argc, char *argv[])
     { &leaf_option, &leaf_area_option, &leaf_droop_option, &leaf_angle_option, &leaf_density_option, &stalks });
   bool extract_grid = ray::parseCommandLine(
     argc, argv, { &grid, &cloud_file },
-    { &voxel_size_option, &grid_bounds_min_option, &grid_bounds_max_option, &write_empty, &write_netcdf, &extended_output, &verbose });
+    { &voxel_size_option, &grid_bounds_min_option, &grid_bounds_max_option, &write_empty, &write_netcdf, &extended_output, &add_neighbour_priors, &verbose });
 
   if (!extract_trunks && !extract_forest && !extract_terrain && !extract_trees && !extract_leaves && !extract_grid)
   {
@@ -353,7 +354,7 @@ int rayExtract(int argc, char *argv[])
   else if (extract_grid)
   {
     ray::generateDenseVoxels(cloud_file.nameStub(), voxel_size.value(), grid_bounds_min.value(),
-                             grid_bounds_max.value(), write_empty.isSet(), write_netcdf.isSet(), extended_output.isSet());
+                             grid_bounds_max.value(), write_empty.isSet(), write_netcdf.isSet(), extended_output.isSet(), add_neighbour_priors.isSet());
   }
   else
   {
