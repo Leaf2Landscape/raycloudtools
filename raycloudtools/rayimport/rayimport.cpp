@@ -111,7 +111,7 @@ int rayImport(int argc, char *argv[])
       start_pos = ends[0];
     }
     // user provides a single sensor location (e.g. for static scanners)
-    else if (position_format || unbound_format)
+    else if (position_format)
     {
       starts = ends;
       Eigen::Vector3d pos = position.value();
