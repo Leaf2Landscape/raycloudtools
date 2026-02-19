@@ -109,7 +109,8 @@ bool writeGeoTiffFloat(const std::string &filename, int x, int y, const float *d
     }
     // the set of keys in the key-value pairs that we are parsing
     const std::vector<std::string> keys = { "+proj",  "+ellps", "+datum", "+units", "+lat_0",
-                                            "+lon_0", "+x_0",   "+y_0",   "+zone" };
+                                            "+lon_0", "+x_0",   "+y_0",   "+zone", "+south" };
+    bool is_south = false;
     std::vector<std::string> values;
     int zone_value = KvUserDefined;
     for (const auto &key : keys)
@@ -129,11 +130,20 @@ bool writeGeoTiffFloat(const std::string &filename, int x, int y, const float *d
           values.push_back("");
           continue;
         }
+        if (key == "+south")
+        {
+          continue;  // +south is optional, absence means northern hemisphere
+        }
         std::cerr << "Error: cannot find key: " << key << " in the projection file: " << projection_file << std::endl;
         return false;
       }
       // generate the list of values that correspond to the list of keys
       found += key.length() + 1;
+      if (key == "+south")
+      {
+        is_south = true;
+        continue; // don't need to set any value
+      }
       std::string::size_type space = line.find(" ", found);
       if (space == std::string::npos)
         space = line.length();
@@ -202,6 +212,12 @@ bool writeGeoTiffFloat(const std::string &filename, int x, int y, const float *d
         return false;
       }
     }
+    if (is_south)
+    {
+      GTIFKeySet(gtif, ProjFalseNorthingGeoKey, TYPE_DOUBLE, 1, 10000000.0); // false northing
+      // Usually paired with the Latitude of Natural Origin (Equator)
+      GTIFKeySet(gtif, ProjNatOriginLatGeoKey, TYPE_DOUBLE, 1, 0.0);
+    }
 
     // describe the coordinates of the image corners
     const double tiepoints[6] = { 0, 0, 0, origin_x + geo_offset[0], origin_y + geo_offset[1], 0 };
@@ -237,7 +253,7 @@ bool writeGeoTiffFloat(const std::string &filename, int x, int y, const float *d
       ss >> datum;
       if (!ss.fail())  // we are using a direct number here, so
       {
-        GTIFKeySet(gtif, GeographicTypeGeoKey, TYPE_SHORT, 1, datum);
+        GTIFKeySet(gtif, GeogGeodeticDatumGeoKey, TYPE_SHORT, 1, datum);
       }
       else
       {
@@ -270,6 +286,30 @@ bool writeGeoTiffFloat(const std::string &filename, int x, int y, const float *d
 }
 #endif
 
+void DensityGrid::calculatePeaks(const std::string &file_name)
+{
+  auto calc_peaks = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends, std::vector<double> &,
+                       std::vector<RGBA> &colours) {
+    for (size_t i = 0; i < ends.size(); ++i)
+    {
+      Eigen::Vector3d start = starts[i];
+      Eigen::Vector3d end = ends[i];
+      if (!bounds_.clipRay(start, end, 1e-10))
+      {
+        continue; // ray is outside of bounds
+      }
+      if (colours[i].alpha > 0)
+      {
+        const Eigen::Vector3d vox_end = (end - bounds_.min_bound_) / voxel_width_;
+        const Eigen::Vector3i target = Eigen::Vector3d(std::floor(vox_end[0]), std::floor(vox_end[1]), std::floor(vox_end[2])).cast<int>();
+        int peak_id = target[0] + target[1] * voxel_dims_[0];
+        peaks_[peak_id] = std::max(peaks_[peak_id], vox_end[2]);
+      }
+    }
+  };
+  Cloud::read(file_name, calc_peaks); 
+}
+
 /// Calculate the surface area per cubic metre within each voxel of the grid. Assuming an unbiased distribution
 /// of surface angles.
 void DensityGrid::calculateDensities(const std::string &file_name)
@@ -286,10 +326,38 @@ void DensityGrid::calculateDensities(const std::string &file_name)
       }
       bounded_ = colours[i].alpha > 0;
       intensity_ = bounded_ ? ((float)colours[i].alpha)/100.0f : 1.0f; // 100 is default 'full intensity'
-      walkGrid((start - bounds_.min_bound_) / voxel_width_, (end - bounds_.min_bound_) / voxel_width_, *this);
+      const Eigen::Vector3d vox_start = (start - bounds_.min_bound_) / voxel_width_;
+      const Eigen::Vector3d vox_end = (end - bounds_.min_bound_) / voxel_width_;
+      source_ = vox_start;
+      dir_ = (vox_end - vox_start).normalized();
+      walkGrid(vox_start, vox_end, *this);
     }
   };
   Cloud::read(file_name, calculate);
+}
+
+// When the cloud has a sharp change in density at the top (e.g. grass or wheat field) between air and the crop, then
+// this function adjusts the density estimation based on this two-phase density, rather than assuming the top voxel is 
+// uniform density
+void DensityGrid::flatTopCompensation()
+{
+  for (int x = 0; x < voxel_dims_[0]; x++)
+  {
+    for (int y = 0; y < voxel_dims_[1]; y++)
+    {
+      double p = peaks_[x + voxel_dims_[0]*y];
+      if (p < -10000.0)
+        continue;
+      int z = (int)std::floor(p);
+      if (z < 0 || z >= voxel_dims_[2])
+        continue;
+      int ind = getIndex(Eigen::Vector3i(x,y,z));
+
+      float r = voxels_[ind].numRays();
+      if (r > 2.0f)
+        voxels_[ind].numHits() *= (r - 2.0f)/(r - 1.0f); // unbiased estimator reduces density estimation slightly in a manner that is equivalent to choosing a grass height slightly above the peak point height
+    }
+  }
 }
 
 // This is a form of windowed average over the Moore neighbourhood (3x3x3) window.
@@ -428,21 +496,33 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
     if (style == RenderStyle::Density || style == RenderStyle::Density_rgb)
     {
       Eigen::Vector3i dims = (extent / pix_width).cast<int>() + Eigen::Vector3i(1, 1, 1);
-#if DENSITY_MIN_RAYS > 0
-      dims += Eigen::Vector3i(1, 1, 1);  // so that we have extra space to convolve
-#endif
       Cuboid grid_bounds = bounds;
+      int shift = 0;
+#if DENSITY_MIN_RAYS > 0
+      shift = 1;
+      dims += 2*Eigen::Vector3i(shift, shift, shift);  // so that we have extra space to convolve
       grid_bounds.min_bound_ -= Eigen::Vector3d(pix_width, pix_width, pix_width);
+#endif
       DensityGrid grid(grid_bounds, pix_width, dims);
 
+#if defined FLAT_TOP_COMPENSATION
+      grid.calculatePeaks(cloud_file);
+#endif
       grid.calculateDensities(cloud_file);
-
+#if defined FLAT_TOP_COMPENSATION
+      grid.flatTopCompensation();
+#endif
+#if DENSITY_MIN_RAYS > 0
       grid.addNeighbourPriors();
-
+#endif
+      double foliage_area = 0.0;
       for (int x = 0; x < width; x++)
       {
         for (int y = 0; y < height; y++)
         {
+          double p = grid.peaks_[(x+shift) + grid.dimensions()[0]*(y+shift)]; // the location before it was shifted
+          int top_z = p < -10000.0 ? -1 : (int)std::floor(p);
+
           double total_density = 0.0;
           for (int z = 0; z < depth; z++)
           {
@@ -450,11 +530,20 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
             ind[axis] = z;
             ind[ax1] = x;
             ind[ax2] = y;
-            total_density += grid.voxels()[grid.getIndex(ind)].density();
+            double d = grid.voxels()[grid.getIndex(ind)].density();
+#if defined FLAT_TOP_COMPENSATION
+            if (z == top_z-shift) 
+            {
+              d *= p - (double)top_z;
+            }
+#endif
+            total_density += d * pix_width;
           }
+          foliage_area += total_density * pix_width * pix_width;
           pixels[x + width * y] = Eigen::Vector4d(total_density, total_density, total_density, total_density);
         }
       }
+      std::cout << "total foliage area: " << foliage_area << " m^2" << std::endl;
     }
     else  // otherwise we use a common algorithm, specialising on render style only per-ray
     {
