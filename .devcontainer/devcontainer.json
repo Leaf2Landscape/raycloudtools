@@ -4,6 +4,9 @@
         "dockerfile": "Dockerfile",
         "context": ".."
     },
+    "runArgs": [
+        "--security-opt", "label=disable"
+    ],
     "customizations": {
         "vscode": {
             "extensions": [
@@ -14,6 +17,7 @@
             ]
         }
     },
+    
     "remoteUser": "root",
     "forwardPorts": [],
     "postCreateCommand": "chmod +x /workspaces/raycloudtools/.devcontainer/commands/compile_install.sh && /workspaces/raycloudtools/.devcontainer/commands/compile_install.sh"

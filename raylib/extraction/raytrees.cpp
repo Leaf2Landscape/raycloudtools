@@ -6,6 +6,7 @@
 #include "raytrees.h"
 #include <nabo/nabo.h>
 #include "rayclusters.h"
+#include <algorithm>
 #include <iomanip>
 
 namespace ray
@@ -25,7 +26,9 @@ TreesParams::TreesParams()
   , global_taper(0.012)
   , global_taper_factor(0.3)
   , alpha_weighting(false)
-  , segment_alpha_weighting(false)
+  , segment_alpha_weighting(0)
+  , segment_alpha_percentile(0.4)
+  , segment_alpha_mad_refine(true)
   , largest_diameter(false)
 {}
 
@@ -861,9 +864,19 @@ double Trees::estimateCylinderRadius(const std::vector<int> &nodes, const Eigen:
       offset += ray*std::max(0.0, std::min(-offset.dot(ray)/ray.dot(ray), 1.0)); // move to closest point
       norms.push_back(offset.norm());
       
-      // Convert alpha (0-255) to weight (0-1), with higher alpha = higher weight
-      double alpha_weight = params_->segment_alpha_weighting ? 
-          static_cast<double>(points_[node].weight) / 255.0 : 1.0;
+      // Convert alpha (0-255) to weight based on mode: 0=off, 1=linear, 2=squared, 3=binary
+      double alpha_weight = 1.0;
+      double alpha_norm = static_cast<double>(points_[node].weight) / 255.0;
+      switch (params_->segment_alpha_weighting)
+      {
+        case 1: alpha_weight = alpha_norm; break;                          // linear
+        case 2: alpha_weight = alpha_norm * alpha_norm; break;             // squared
+        case 3: alpha_weight = points_[node].weight > 128 ? 1.0 : 0.0; break; // binary
+        case 4: alpha_weight = alpha_norm; break;                          // percentile (uses linear weights)
+        case 5: alpha_weight = alpha_norm; break;                          // adaptive (uses linear weights)
+        case 6: alpha_weight = alpha_norm; break;                          // IRLS (uses linear weights initially)
+        default: alpha_weight = 1.0; break;                                // off
+      }
       weights.push_back(alpha_weight);
     }
   }
@@ -872,43 +885,301 @@ double Trees::estimateCylinderRadius(const std::vector<int> &nodes, const Eigen:
     for (auto &node : nodes)
     {
       Eigen::Vector3d offset = points_[node].pos - sections_[sec_].tip;
-      offset -= dir * offset.dot(dir); // flatten    
+      offset -= dir * offset.dot(dir); // flatten
       norms.push_back(offset.norm());
-      
-      // Convert alpha (0-255) to weight (0-1)
-      double alpha_weight = params_->segment_alpha_weighting ? 
-          static_cast<double>(points_[node].weight) / 255.0 : 1.0;
+
+      // Convert alpha (0-255) to weight based on mode: 0=off, 1=linear, 2=squared, 3=binary, 4=percentile, 5=adaptive, 6=IRLS
+      double alpha_weight = 1.0;
+      double alpha_norm = static_cast<double>(points_[node].weight) / 255.0;
+      switch (params_->segment_alpha_weighting)
+      {
+        case 1: alpha_weight = alpha_norm; break;                          // linear
+        case 2: alpha_weight = alpha_norm * alpha_norm; break;             // squared
+        case 3: alpha_weight = points_[node].weight > 128 ? 1.0 : 0.0; break; // binary
+        case 4: alpha_weight = alpha_norm; break;                          // percentile (uses linear weights)
+        case 5: alpha_weight = alpha_norm; break;                          // adaptive (uses linear weights)
+        case 6: alpha_weight = alpha_norm; break;                          // IRLS (uses linear weights initially)
+        default: alpha_weight = 1.0; break;                                // off
+      }
       weights.push_back(alpha_weight);
     }
   }
 
-  // Weighted power-law averaging
+  const double eps = 1e-5; // prevent division by 0
+
+  // Always compute the weighted power-law mean as a baseline
+  double rad_mean = 0.0;
   double weight_sum = 0.0;
   for (size_t i = 0; i < norms.size(); i++)
   {
-    rad += weights[i] * std::pow(norms[i], power);
+    rad_mean += weights[i] * std::pow(norms[i], power);
     weight_sum += weights[i];
   }
-  
-  const double eps = 1e-5; // prevent division by 0
-  rad /= weight_sum + eps;
-  rad = std::pow(rad, 1.0/power);
-  
-  // Weighted error calculation
-  double e = 0.0;
-  for (size_t i = 0; i < norms.size(); i++)
+  rad_mean /= weight_sum + eps;
+  rad_mean = std::pow(rad_mean, 1.0 / power);
+
+  if (params_->segment_alpha_weighting == 4 || params_->segment_alpha_weighting == 5)
   {
-    e += weights[i] * std::abs(norms[i] - rad);
+    // Two-pass trimmed weighted mean with adaptive refinement.
+    // Pass 1: Use the weighted percentile as a coarse cutoff to find the wood cluster.
+    // Pass 2: Refine using MAD (median absolute deviation) to adaptively tighten the
+    // cutoff around the first estimate, removing leaf points that snuck through.
+
+    // Determine the percentile to use for trimming
+    double percentile;
+    if (params_->segment_alpha_weighting == 5)
+    {
+      // Mode 5: Adaptive percentile derived from the data.
+      // wood_fraction = mean alpha weight = weight_sum / n.
+      // When most points are wood (high alpha), wood_fraction ≈ 1.0 → minimal trimming.
+      // When most points are leaf (low alpha), wood_fraction ≈ 0.2 → aggressive trimming.
+      // This naturally handles wood-only data (fraction=1.0 → no trimming) without
+      // requiring explicit uniform-weight detection.
+      double wood_fraction = weight_sum / static_cast<double>(norms.size());
+      percentile = std::max(0.15, std::min(wood_fraction, 1.0));
+    }
+    else
+    {
+      // Mode 4: Fixed percentile with explicit uniform-weight detection.
+      // When all points have the same weight (e.g., all wood points with alpha=255),
+      // percentile trimming would incorrectly discard valid outer wood points, causing
+      // systematic underestimation. In this case, skip trimming and use the standard mean.
+      bool uniform_weights = true;
+      if (weights.size() > 1)
+      {
+        double first_weight = weights[0];
+        for (size_t i = 1; i < weights.size(); i++)
+        {
+          if (std::abs(weights[i] - first_weight) > 1e-6)
+          {
+            uniform_weights = false;
+            break;
+          }
+        }
+      }
+
+      if (uniform_weights)
+      {
+        // All points have the same weight - no leaf filtering needed.
+        // Use standard weighted power-law mean without percentile trimming.
+        rad = rad_mean;
+
+        // Compute error using all points
+        double e = 0.0;
+        for (size_t i = 0; i < norms.size(); i++)
+        {
+          double diff = norms[i] - rad;
+          e += weights[i] * diff * diff;
+        }
+        accuracy = 1.0 / (1.0 + std::sqrt(e / (weight_sum + eps)));
+        return rad;
+      }
+
+      percentile = params_->segment_alpha_percentile;
+    }
+
+    // Proceed with percentile-based filtering
+    std::vector<size_t> indices(norms.size());
+    for (size_t i = 0; i < indices.size(); i++)
+      indices[i] = i;
+    std::sort(indices.begin(), indices.end(), [&norms](size_t a, size_t b) {
+      return norms[a] < norms[b];
+    });
+
+    // --- Pass 1: weighted percentile cutoff ---
+    double target = percentile * weight_sum;
+    double cumulative = 0.0;
+    double cutoff = rad_mean; // fallback
+    for (size_t i = 0; i < indices.size(); i++)
+    {
+      cumulative += weights[indices[i]];
+      if (cumulative >= target)
+      {
+        cutoff = norms[indices[i]];
+        break;
+      }
+    }
+    cutoff *= 1.5;
+
+    // Compute pass-1 trimmed power-law mean
+    double trimmed_sum = 0.0;
+    double trimmed_weight = 0.0;
+    for (size_t i = 0; i < norms.size(); i++)
+    {
+      if (norms[i] <= cutoff)
+      {
+        trimmed_sum += weights[i] * std::pow(norms[i], power);
+        trimmed_weight += weights[i];
+      }
+    }
+
+    double rad_pass1 = rad_mean;
+    if (trimmed_weight > eps)
+      rad_pass1 = std::pow(trimmed_sum / trimmed_weight, 1.0 / power);
+
+    // --- Pass 2: MAD-based adaptive refinement (optional) ---
+    if (params_->segment_alpha_mad_refine)
+    {
+      // Collect absolute deviations of inlier points from the pass-1 estimate
+      std::vector<double> abs_devs;
+      abs_devs.reserve(norms.size());
+      for (size_t i = 0; i < norms.size(); i++)
+      {
+        if (norms[i] <= cutoff)
+          abs_devs.push_back(std::abs(norms[i] - rad_pass1));
+      }
+
+      if (abs_devs.size() >= 3)
+      {
+        std::sort(abs_devs.begin(), abs_devs.end());
+        double mad = abs_devs[abs_devs.size() / 2]; // median absolute deviation
+
+        // Adaptive cutoff: points within 2.5 MAD of the pass-1 estimate
+        // The 1.4826 factor converts MAD to a consistent estimator of std deviation
+        double refined_cutoff = rad_pass1 + 2.5 * 1.4826 * mad;
+
+        // Recompute trimmed mean with the refined cutoff
+        trimmed_sum = 0.0;
+        trimmed_weight = 0.0;
+        for (size_t i = 0; i < norms.size(); i++)
+        {
+          if (norms[i] <= refined_cutoff)
+          {
+            trimmed_sum += weights[i] * std::pow(norms[i], power);
+            trimmed_weight += weights[i];
+          }
+        }
+
+        if (trimmed_weight > eps)
+        {
+          rad = std::pow(trimmed_sum / trimmed_weight, 1.0 / power);
+          cutoff = refined_cutoff; // use refined cutoff for error computation
+        }
+        else
+        {
+          rad = rad_pass1;
+        }
+      }
+      else
+      {
+        rad = rad_pass1; // too few points for refinement
+      }
+    }
+    else
+    {
+      rad = rad_pass1; // MAD refinement disabled
+    }
+
+    // Compute error using only the inlier points, so that distant leaf points
+    // don't artificially deflate accuracy and underweight good cylinder fits
+    double e = 0.0;
+    double final_weight = 0.0;
+    for (size_t i = 0; i < norms.size(); i++)
+    {
+      if (norms[i] <= cutoff)
+      {
+        e += weights[i] * std::abs(norms[i] - rad);
+        final_weight += weights[i];
+      }
+    }
+    e /= final_weight + eps;
+
+    const double sensor_noise = 0.02;
+    accuracy = rad / (e + sensor_noise);
   }
-  e /= weight_sum + eps;
-#define NEW_ACCURACY
-#if defined NEW_ACCURACY
-  const double sensor_noise = 0.02; // this prevents cylinders with a small number of very accurate points from totally dominating
-  accuracy = rad / (e + sensor_noise);
-#else // this one goes down to 0, which could be bad if all cylinder points were low accuracy
-  accuracy = std::max(eps, rad - 2.0*e) / std::max(eps, rad); // so even distribution is accuracy 0, and cylinder shell is accuracy 1 
-  accuracy *= std::min((double)nodes.size() / 3.0, 1.0);
-#endif
+  else if (params_->segment_alpha_weighting == 6)
+  {
+    // Mode 6: IRLS with Tukey bisquare reweighting.
+    // Iteratively refines the radius by downweighting points whose distance
+    // from the cylinder surface is inconsistent with the current estimate.
+    rad = rad_mean;
+
+    const int max_iter = 5;
+    const double tukey_k = 4.685; // 95% asymptotic efficiency at the normal
+
+    for (int iter = 0; iter < max_iter; iter++)
+    {
+      // Compute residuals: distance of each point from the current cylinder surface
+      std::vector<double> residuals(norms.size());
+      for (size_t i = 0; i < norms.size(); i++)
+        residuals[i] = std::abs(norms[i] - rad);
+
+      // MAD (median absolute deviation) as robust scale estimate
+      std::vector<double> sorted_res(residuals);
+      std::sort(sorted_res.begin(), sorted_res.end());
+      double mad = sorted_res[sorted_res.size() / 2];
+      double sigma = 1.4826 * mad;
+      if (sigma < eps)
+        break; // all points on surface, nothing to refine
+
+      // Tukey bisquare weights combined with alpha weights
+      double irls_sum = 0.0;
+      double irls_weight_sum = 0.0;
+      for (size_t i = 0; i < norms.size(); i++)
+      {
+        double u = residuals[i] / (tukey_k * sigma);
+        double w_tukey = (u < 1.0) ? (1.0 - u * u) * (1.0 - u * u) : 0.0;
+        double w_combined = weights[i] * w_tukey;
+        irls_sum += w_combined * std::pow(norms[i], power);
+        irls_weight_sum += w_combined;
+      }
+
+      if (irls_weight_sum < eps)
+        break; // no inliers
+
+      double rad_new = std::pow(irls_sum / irls_weight_sum, 1.0 / power);
+
+      if (std::abs(rad_new - rad) < 1e-5)
+      {
+        rad = rad_new;
+        break;
+      }
+      rad = rad_new;
+    }
+
+    // Compute accuracy from final inlier set (points with non-zero Tukey weight)
+    // Recompute residuals and weights at the final radius
+    double sigma_final = 0.0;
+    {
+      std::vector<double> final_res(norms.size());
+      for (size_t i = 0; i < norms.size(); i++)
+        final_res[i] = std::abs(norms[i] - rad);
+      std::vector<double> sorted_res(final_res);
+      std::sort(sorted_res.begin(), sorted_res.end());
+      sigma_final = 1.4826 * sorted_res[sorted_res.size() / 2];
+    }
+
+    double e = 0.0;
+    double final_weight = 0.0;
+    for (size_t i = 0; i < norms.size(); i++)
+    {
+      double res = std::abs(norms[i] - rad);
+      double u = (sigma_final > eps) ? res / (tukey_k * sigma_final) : 0.0;
+      if (u < 1.0)
+      {
+        e += weights[i] * res;
+        final_weight += weights[i];
+      }
+    }
+    e /= final_weight + eps;
+
+    const double sensor_noise = 0.02;
+    accuracy = rad / (e + sensor_noise);
+  }
+  else
+  {
+    rad = rad_mean;
+
+    // Weighted error calculation
+    double e = 0.0;
+    for (size_t i = 0; i < norms.size(); i++)
+      e += weights[i] * std::abs(norms[i] - rad);
+    e /= weight_sum + eps;
+
+    const double sensor_noise = 0.02;
+    accuracy = rad / (e + sensor_noise);
+  }
+
   accuracy = std::max(accuracy, eps);
   rad = std::max(rad, eps);
 

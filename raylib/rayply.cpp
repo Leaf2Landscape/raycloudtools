@@ -343,7 +343,9 @@ bool readPly(const std::string &file_name, bool is_ray_cloud,
   int row_size = 0;
   int offset = -1, normal_offset = -1, time_offset = -1, colour_offset = -1;
   int intensity_offset = -1;
+  int alpha_offset = -1;
   bool time_is_float = false;
+  bool colour_is_float = false;
   bool pos_is_float = false;
   bool normal_is_float = false;
   DataType intensity_type = kDTnone;
@@ -417,6 +419,13 @@ bool readPly(const std::string &file_name, bool is_ray_cloud,
     }
     if (line == "property uchar red" || line == "property uint8 red")
       colour_offset = row_size;
+    if (line == "property float red")
+    {
+      colour_offset = row_size;
+      colour_is_float = true;
+    }
+    if (line == "property uchar alpha" || line == "property uint8 alpha")
+      alpha_offset = row_size;
 
     row_size += rowsteps[data_type];
   }
@@ -594,7 +603,22 @@ bool readPly(const std::string &file_name, bool is_ray_cloud,
 
     if (colour_offset != -1)
     {
-      RGBA colour = (RGBA &)vertices[colour_offset];
+      RGBA colour;
+      if (colour_is_float)
+      {
+        // CloudCompare stores float colors in 0-255 range
+        float *float_colours = (float *)&vertices[colour_offset];
+        colour.red = static_cast<uint8_t>(std::min(255.0f, std::max(0.0f, float_colours[0])));
+        colour.green = static_cast<uint8_t>(std::min(255.0f, std::max(0.0f, float_colours[1])));
+        colour.blue = static_cast<uint8_t>(std::min(255.0f, std::max(0.0f, float_colours[2])));
+        colour.alpha = static_cast<uint8_t>(std::min(255.0f, std::max(0.0f, float_colours[3])));
+      }
+      else
+      {
+        colour = (RGBA &)vertices[colour_offset];
+      }
+      if (alpha_offset != -1)
+        colour.alpha = vertices[alpha_offset];
       colours.push_back(colour);
     }
     if (!is_ray_cloud)

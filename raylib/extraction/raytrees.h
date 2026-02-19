@@ -33,7 +33,9 @@ struct RAYLIB_EXPORT TreesParams
   double global_taper_factor; // 0 estimates per-tree tapering, 1 uses per-scan tapering, 0.5 is mid-way on mid-weight trees
   bool use_rays; // use the full rays in order to estimate a smaller radius when points are not all on the real branch
   bool alpha_weighting;    // use point cloud alpha as weight for connecting points. Branches will follow high weight
-  bool segment_alpha_weighting; // use point cloud alpha as weight for cylinder fitting
+  int segment_alpha_weighting;  // use point cloud alpha as weight for cylinder fitting: 0=off, 1=linear, 2=squared, 3=binary, 4=percentile, 5=adaptive, 6=IRLS
+  double segment_alpha_percentile; // percentile (0-1) for mode 4. Lower values ignore more leaf-point tail. Default 0.4
+  bool segment_alpha_mad_refine;   // enable MAD-based adaptive refinement in mode 4. Default true
   bool largest_diameter;        // only keep the tree with the largest DBH
 };
 
