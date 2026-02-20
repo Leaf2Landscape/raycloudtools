@@ -6,3 +6,4 @@ test_data*/
 treetools*/
 data*/
 3rd-party/rivlib*/
+.cache/*

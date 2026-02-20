@@ -131,6 +131,10 @@ int rayImport(int argc, char *argv[])
         start += offset;
       }
     }
+    // unbound data: starts are already set correctly by readRXP with the transformation applied
+    else if (unbound_format)
+    {
+    }
     // otherwise, a trajectory has been passed in
     else
     {
