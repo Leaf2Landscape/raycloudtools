@@ -101,7 +101,8 @@ struct RAYLIB_EXPORT DensityGrid
 
   void calculatePeaks(const std::string &file_name);
   /// This streams in a ray cloud file, and fills in the voxel density information
-  void calculateDensities(const std::string &file_name);
+  /// When @c intensity_weight is true, rays are weighted by return intensity (alpha/100)
+  void calculateDensities(const std::string &file_name, bool intensity_weight = false);
   void flatTopCompensation();
   /// To void low-ray-count voxels giving unstable density estimates, we fuse with neighbour information
   /// up to a specified minimum number of rays. Specified in DENSITY_MIN_RAYS

@@ -312,7 +312,7 @@ void DensityGrid::calculatePeaks(const std::string &file_name)
 
 /// Calculate the surface area per cubic metre within each voxel of the grid. Assuming an unbiased distribution
 /// of surface angles.
-void DensityGrid::calculateDensities(const std::string &file_name)
+void DensityGrid::calculateDensities(const std::string &file_name, bool intensity_weight)
 {
   auto calculate = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends, std::vector<double> &,
                        std::vector<RGBA> &colours) {
@@ -325,7 +325,7 @@ void DensityGrid::calculateDensities(const std::string &file_name)
         continue;  // ray is outside of bounds
       }
       bounded_ = colours[i].alpha > 0;
-      intensity_ = bounded_ ? ((float)colours[i].alpha)/100.0f : 1.0f; // 100 is default 'full intensity'
+      intensity_ = intensity_weight ? (bounded_ ? ((float)colours[i].alpha)/100.0f : 1.0f) : 1.0f;
       const Eigen::Vector3d vox_start = (start - bounds_.min_bound_) / voxel_width_;
       const Eigen::Vector3d vox_end = (end - bounds_.min_bound_) / voxel_width_;
       source_ = vox_start;
@@ -508,7 +508,7 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
 #if defined FLAT_TOP_COMPENSATION
       grid.calculatePeaks(cloud_file);
 #endif
-      grid.calculateDensities(cloud_file);
+      grid.calculateDensities(cloud_file, true);  // rayrender always uses intensity weighting
 #if defined FLAT_TOP_COMPENSATION
       grid.flatTopCompensation();
 #endif

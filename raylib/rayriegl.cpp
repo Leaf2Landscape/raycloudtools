@@ -79,20 +79,31 @@ public:
 
 protected:
     void on_shot_end() override {
-        static constexpr float MIN_Z_DIRECTION = 0.0f;
         static constexpr float MAX_Z_DIRECTION = 0.866f;
-        
-        // Skip points below scanner and buffer points at top of scan lines
-        if (target_count != 0 || 
-            // beam_direction[2] <= MIN_Z_DIRECTION ||
+        static constexpr float DEFAULT_RANGE = 1000.0f;
+        static constexpr float MIN_RANGE = 0.1f;
+
+        // Skip hits (bound data) and near-vertical beams at top of scan lines
+        if (target_count != 0 ||
             beam_direction[2] >= MAX_Z_DIRECTION) {
             return;
+        }
+
+        // For downward-pointing beams, limit range so endpoint stays at scanner Z
+        // rather than extending 1000m underground
+        float range = DEFAULT_RANGE;
+        if (beam_direction[2] < 0.0f)
+        {
+            auto [vx, vy, vz] = Vector3D::normalize(
+                beam_direction[0], beam_direction[1], beam_direction[2]);
+            // range that brings endpoint to beam_origin Z level
+            range = std::max(MIN_RANGE, static_cast<float>(-beam_origin[2] / vz));
         }
 
         auto [end_x, end_y, end_z] = Vector3D::getPositionAtDistance(
             beam_origin[0], beam_origin[1], beam_origin[2],
             beam_direction[0], beam_direction[1], beam_direction[2],
-            1000.0f
+            range
         );
 
         rxp_data_.end_x.push_back(end_x);

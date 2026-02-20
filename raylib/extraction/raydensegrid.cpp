@@ -16,7 +16,7 @@
 namespace ray
 {
 bool generateDenseVoxels(const std::string &cloud_stub, const double vox_width, Eigen::Vector3d user_bounds_min,
-                         Eigen::Vector3d user_bounds_max, bool write_empty, bool write_netcdf, bool extended_output, bool add_neighbour_priors)
+                         Eigen::Vector3d user_bounds_max, bool write_empty, bool write_netcdf, bool extended_output, bool add_neighbour_priors, bool intensity_weight)
 {
   std::string cloud_name = cloud_stub + ".ply";
   Cloud::Info info;
@@ -107,7 +107,7 @@ bool generateDenseVoxels(const std::string &cloud_stub, const double vox_width, 
   DensityGrid grid(grid_bounds, vox_width, dims.cast<int>());
 
   std::cout << "Calculating Density " << std::endl;
-  grid.calculateDensities(cloud_name);
+  grid.calculateDensities(cloud_name, intensity_weight);
 
   if (add_neighbour_priors)
   {
