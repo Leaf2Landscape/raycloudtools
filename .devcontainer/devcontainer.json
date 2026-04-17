@@ -16,5 +16,6 @@
     },
     "remoteUser": "root",
     "forwardPorts": [],
-    "postCreateCommand": "bash /workspaces/raycloudtools/.devcontainer/commands/compile_install.sh"
+    "postCreateCommand": "bash /workspaces/raycloudtools/.devcontainer/commands/compile_install.sh",
+    "runArgs": ["--security-opt", "label=disable"]
 }
