@@ -30,7 +30,7 @@ option(RAYCLOUD_BUILD_TESTS "Build unit tests?" OFF)
 option(RAYCLOUD_LEAK_TRACK "Enable memory leak tracking?" OFF)
 
 # WITH_ build options.
-option(WITH_LAS "With liblas for las file support?" OFF)
+option(WITH_LAS "With LASzip for las/laz file support (LAS 1.0-1.4)?" OFF)
 option(WITH_QHULL "With libqhull support?" OFF)
 option(WITH_TIFF "With libgeotiff support?" OFF)
 option(WITH_TBB "With Intel Threading Building Blocks support multi-threadding?" OFF)
@@ -58,9 +58,9 @@ set(RAYTOOLS_LINK ${libnabo_LIBRARIES} OpenMP::OpenMP_CXX Threads::Threads)
 
 # Optionally configured packages.
 if(WITH_LAS)
-  find_package(libLAS REQUIRED)
-  list(APPEND RAYTOOLS_INCLUDE ${libLAS_INCLUDE_DIRS})
-  list(APPEND RAYTOOLS_LINK ${libLAS_LIBRARIES})
+  find_package(LASzip REQUIRED)
+  list(APPEND RAYTOOLS_INCLUDE ${LASzip_INCLUDE_DIRS})
+  list(APPEND RAYTOOLS_LINK ${LASzip_LIBRARIES})
 endif(WITH_LAS)
 
 if(WITH_QHULL)
