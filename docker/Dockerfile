@@ -7,6 +7,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV LC_ALL=C
 ENV LANGUAGE=
 
+WORKDIR /src
+
+COPY . .
+
 # Update, install dependencies and cleanup
 RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y \
@@ -21,30 +25,22 @@ RUN apt-get update && apt-get upgrade -y && \
     libboost-all-dev \
     libgtest-dev && \
     rm -rf /var/lib/apt/lists/*
-    
-# Create a directory for building packages
-RUN mkdir -p /build && \
-    cd /build
 
-# Clone, build and clean up LASzip
+WORKDIR /deps
+
+# Create a directory for building packages
+RUN mkdir -p /deps && \
+    cd /deps
+
+# Clone, build and clean up LASzip (3.x supports LAS 1.4 via laszip_api.h C API)
 RUN git clone https://github.com/LASzip/LASzip.git && \
     cd LASzip && \
-    git checkout tags/2.0.1 && \
+    git checkout tags/3.4.4 && \
     mkdir build && cd build && \
-    cmake .. && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release && \
     make -j$(nproc) && \
     make install && \
-    cp bin/Release/liblas* /usr/lib/ && \
     cd ../.. && rm -rf LASzip
-
-# Clone, build and clean up libLAS
-RUN git clone https://github.com/libLAS/libLAS.git && \
-    cd libLAS && \
-    mkdir build && cd build && \
-    cmake .. -DWITH_LASZIP=ON -DWITH_GEOTIFF=OFF -DCMAKE_CXX_STANDARD=14 && \
-    make -j$(nproc) && \
-    make install && \
-    cd ../.. && rm -rf libLAS
 
 # Clone, build and clean up Qhull
 RUN git clone https://github.com/qhull/qhull.git && \
@@ -66,12 +62,12 @@ RUN git clone https://github.com/ethz-asl/libnabo.git && \
     make install && \
     cd ../.. && rm -rf libnabo
 
-# Clone, build and install raycloudtools
-RUN git clone https://github.com/Leaf2Landscape/raycloudtools.git && \
-    cd raycloudtools && \
-    mkdir build && \
-    cd build && \
-    cmake .. \
+WORKDIR /src
+
+# Build and install raycloudtools
+RUN mkdir /build && \
+    cd /build && \
+    cmake /src \
         -DGeoTIFF_INCLUDE_DIR=/usr/include/geotiff \
         -DGeoTIFF_LIBRARY=/usr/lib/x86_64-linux-gnu/libgeotiff.so \
         -DPROJ_INCLUDE_DIR=/usr/include/proj \
@@ -83,9 +79,7 @@ RUN git clone https://github.com/Leaf2Landscape/raycloudtools.git && \
         -DRAYCLOUD_BUILD_TESTS=ON \
         -DCMAKE_BUILD_TYPE=Release && \
     make -j$(nproc) && \
-    make install && \
-    cd ../.. && \
-    rm -rf raycloudtools
+    make install
 
 # Clone and build TreeTools
 RUN git clone https://github.com/Leaf2Landscape/treetools.git && \
