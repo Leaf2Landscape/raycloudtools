@@ -143,21 +143,48 @@ bool readLas(const std::string &file_name,
       starts.push_back(position);
     }
 
-    // Pack the six standard LAS fields we don't use as raycloud fields into passthrough.
+    // Pack 8 bytes of LAS 1.4 extended fields per point into passthrough.
+    // Layout: [0] ext_return[0:3]|ext_num_returns[4:7]
+    //         [1] class_flags[0:3]|scanner_chan[4:5]|scan_dir[6]|edge[7]
+    //         [2] extended_classification
+    //         [3] user_data
+    //         [4-5] extended_scan_angle (int16 LE, 0.006 deg units)
+    //         [6-7] point_source_ID (uint16 LE)
     if (passthrough_out)
     {
-      const uint8_t rb = static_cast<uint8_t>(point->return_number)
-                       | static_cast<uint8_t>(point->number_of_returns << 3)
-                       | static_cast<uint8_t>(point->scan_direction_flag << 6)
-                       | static_cast<uint8_t>(point->edge_of_flight_line << 7);
-      const uint8_t cb = static_cast<uint8_t>(point->classification)
-                       | static_cast<uint8_t>(point->synthetic_flag << 5)
-                       | static_cast<uint8_t>(point->keypoint_flag << 6)
-                       | static_cast<uint8_t>(point->withheld_flag << 7);
-      passthrough_out->push_back(rb);
-      passthrough_out->push_back(cb);
-      passthrough_out->push_back(static_cast<uint8_t>(point->scan_angle_rank));
+      uint8_t b0, b1, b2;
+      int16_t ext_angle;
+      if (format >= 6)
+      {
+        b0 = static_cast<uint8_t>(point->extended_return_number & 0x0F) |
+             static_cast<uint8_t>((point->extended_number_of_returns & 0x0F) << 4);
+        b1 = static_cast<uint8_t>(point->extended_classification_flags & 0x0F) |
+             static_cast<uint8_t>((point->extended_scanner_channel & 0x03) << 4) |
+             static_cast<uint8_t>((point->scan_direction_flag & 0x1) << 6) |
+             static_cast<uint8_t>((point->edge_of_flight_line & 0x1) << 7);
+        b2 = point->extended_classification;
+        ext_angle = point->extended_scan_angle;
+      }
+      else
+      {
+        // Convert LAS 1.2 legacy fields to LAS 1.4 extended layout.
+        b0 = static_cast<uint8_t>(point->return_number & 0x0F) |
+             static_cast<uint8_t>((point->number_of_returns & 0x0F) << 4);
+        b1 = static_cast<uint8_t>(point->synthetic_flag & 0x1) |
+             static_cast<uint8_t>((point->keypoint_flag & 0x1) << 1) |
+             static_cast<uint8_t>((point->withheld_flag & 0x1) << 2) |
+             static_cast<uint8_t>((point->scan_direction_flag & 0x1) << 6) |
+             static_cast<uint8_t>((point->edge_of_flight_line & 0x1) << 7);
+        b2 = static_cast<uint8_t>(point->classification & 0x1F);
+        // scan_angle_rank is integer degrees; extended_scan_angle is 0.006 deg units
+        ext_angle = static_cast<int16_t>(static_cast<int>(point->scan_angle_rank) * 167);
+      }
+      passthrough_out->push_back(b0);
+      passthrough_out->push_back(b1);
+      passthrough_out->push_back(b2);
       passthrough_out->push_back(point->user_data);
+      passthrough_out->push_back(static_cast<uint8_t>(static_cast<uint16_t>(ext_angle) & 0xFFu));
+      passthrough_out->push_back(static_cast<uint8_t>(static_cast<uint16_t>(ext_angle) >> 8));
       passthrough_out->push_back(static_cast<uint8_t>(point->point_source_ID & 0xFFu));
       passthrough_out->push_back(static_cast<uint8_t>(point->point_source_ID >> 8));
     }
@@ -268,8 +295,8 @@ bool RAYLIB_EXPORT writeLas(std::string file_name, const std::vector<Eigen::Vect
   laszip_get_header_pointer(writer, &header);
 
   header->version_major = 1;
-  header->version_minor = 2;
-  header->point_data_format = 1;  // GPS time only
+  header->version_minor = 4;
+  header->point_data_format = 6;  // LAS 1.4: GPS time only
   const double scale = 1e-4;
   header->x_scale_factor = scale;
   header->y_scale_factor = scale;
@@ -277,7 +304,7 @@ bool RAYLIB_EXPORT writeLas(std::string file_name, const std::vector<Eigen::Vect
   header->x_offset = 0.0;
   header->y_offset = 0.0;
   header->z_offset = 0.0;
-  header->number_of_point_records = static_cast<laszip_U32>(points.size());
+  header->extended_number_of_point_records = static_cast<laszip_U64>(points.size());
 
   const bool is_laz = file_name.find(".laz") != std::string::npos;
   std::cout << "Saving points to " << file_name << std::endl;
@@ -337,8 +364,8 @@ LasWriter::LasWriter(const std::string &file_name)
   laszip_get_header_pointer(writer_handle_, &header_);
 
   header_->version_major = 1;
-  header_->version_minor = 2;
-  header_->point_data_format = 1;  // GPS time only
+  header_->version_minor = 4;
+  header_->point_data_format = 6;  // LAS 1.4: GPS time only
   const double scale = 1e-4;
   header_->x_scale_factor = scale;
   header_->y_scale_factor = scale;
@@ -380,17 +407,20 @@ LasWriter::~LasWriter()
     laszip_update_inventory(writer_handle_);
     laszip_close_writer(writer_handle_);
     laszip_destroy(writer_handle_);
-    // laszip_close_writer clobbers number_of_point_records for streaming writes (our count
-    // wasn't known at open_writer). Patch it on disk: LAS 1.2 legacy count at offset 107.
+    // laszip_close_writer clobbers point counts for streaming writes. Patch both the legacy
+    // 32-bit count (offset 107) and the LAS 1.4 64-bit extended count (offset 247) on disk.
     if (points_written_ > 0)
     {
       std::fstream f(file_name_, std::ios::in | std::ios::out | std::ios::binary);
       if (f.is_open())
       {
-        const laszip_U32 count =
-          static_cast<laszip_U32>(std::min<uint64_t>(points_written_, std::numeric_limits<laszip_U32>::max()));
+        const laszip_U32 legacy = static_cast<laszip_U32>(
+          std::min<uint64_t>(points_written_, std::numeric_limits<laszip_U32>::max()));
         f.seekp(107);
-        f.write(reinterpret_cast<const char *>(&count), sizeof(count));
+        f.write(reinterpret_cast<const char *>(&legacy), sizeof(legacy));
+        const laszip_U64 extended = static_cast<laszip_U64>(points_written_);
+        f.seekp(247);
+        f.write(reinterpret_cast<const char *>(&extended), sizeof(extended));
       }
     }
   }
@@ -472,8 +502,8 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
   laszip_get_header_pointer(writer_handle_, &header);
 
   header->version_major = 1;
-  header->version_minor = 2;
-  header->point_data_format = 3;  // GPS time + RGB
+  header->version_minor = 4;
+  header->point_data_format = 7;  // LAS 1.4: GPS time + RGB (equivalent of format 3)
   const double scale = 1e-4;
   header->x_scale_factor = scale;
   header->y_scale_factor = scale;
@@ -501,11 +531,10 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
     return;
   }
 
-  // Explicitly set point type 3 (GPS time + RGB) and total record size.
-  // laszip_add_attribute computes the record length using the default format 1 base (28), so we
-  // must override it here to the correct format 3 base (34) + extra bytes.
-  const laszip_U16 record_size = static_cast<laszip_U16>(34 + 12 + (with_tree_id_ ? 4 : 0));
-  if (laszip_set_point_type_and_size(writer_handle_, 3, record_size))
+  // Explicitly set point type 7 (LAS 1.4 GPS time + RGB) and total record size.
+  // LAS 1.4 format 7 base = 36 bytes. laszip_add_attribute uses a default base, so override here.
+  const laszip_U16 record_size = static_cast<laszip_U16>(36 + 12 + (with_tree_id_ ? 4 : 0));
+  if (laszip_set_point_type_and_size(writer_handle_, 7, record_size))
   {
     laszip_CHAR *error;
     laszip_get_error(writer_handle_, &error);
@@ -560,16 +589,20 @@ LasRayCloudWriter::~LasRayCloudWriter()
     laszip_update_inventory(writer_handle_);
     laszip_close_writer(writer_handle_);
     laszip_destroy(writer_handle_);
-    // Patch the LAS 1.2 legacy point count on disk (same fix as LasWriter).
+    // laszip_close_writer clobbers point counts for streaming writes. Patch both the legacy
+    // 32-bit count (offset 107) and the LAS 1.4 64-bit extended count (offset 247) on disk.
     if (points_written_ > 0)
     {
       std::fstream f(file_name_, std::ios::in | std::ios::out | std::ios::binary);
       if (f.is_open())
       {
-        const laszip_U32 count =
-          static_cast<laszip_U32>(std::min<uint64_t>(points_written_, std::numeric_limits<laszip_U32>::max()));
+        const laszip_U32 legacy = static_cast<laszip_U32>(
+          std::min<uint64_t>(points_written_, std::numeric_limits<laszip_U32>::max()));
         f.seekp(107);
-        f.write(reinterpret_cast<const char *>(&count), sizeof(count));
+        f.write(reinterpret_cast<const char *>(&legacy), sizeof(legacy));
+        const laszip_U64 extended = static_cast<laszip_U64>(points_written_);
+        f.seekp(247);
+        f.write(reinterpret_cast<const char *>(&extended), sizeof(extended));
       }
     }
   }
@@ -600,21 +633,23 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
     point_->rgb[0] = static_cast<laszip_U16>(colours[i].red) * 257u;
     point_->rgb[1] = static_cast<laszip_U16>(colours[i].green) * 257u;
     point_->rgb[2] = static_cast<laszip_U16>(colours[i].blue) * 257u;
-    // Restore preserved standard LAS fields if available.
-    if (passthrough.size() >= (i + 1) * 6)
+    // Restore LAS 1.4 extended fields from 8-byte passthrough if available.
+    // Layout mirrors readLas passthrough packing (see readLas for byte definitions).
+    if (passthrough.size() >= (i + 1) * 8)
     {
-      const uint8_t *p = passthrough.data() + i * 6;
-      point_->return_number        = p[0] & 0x7u;
-      point_->number_of_returns    = (p[0] >> 3) & 0x7u;
-      point_->scan_direction_flag  = (p[0] >> 6) & 0x1u;
-      point_->edge_of_flight_line  = (p[0] >> 7) & 0x1u;
-      point_->classification       = p[1] & 0x1Fu;
-      point_->synthetic_flag       = (p[1] >> 5) & 0x1u;
-      point_->keypoint_flag        = (p[1] >> 6) & 0x1u;
-      point_->withheld_flag        = (p[1] >> 7) & 0x1u;
-      point_->scan_angle_rank      = static_cast<laszip_I8>(p[2]);
-      point_->user_data            = p[3];
-      point_->point_source_ID      = static_cast<laszip_U16>(p[4]) | (static_cast<laszip_U16>(p[5]) << 8);
+      const uint8_t *p = passthrough.data() + i * 8;
+      point_->extended_return_number       = p[0] & 0x0Fu;
+      point_->extended_number_of_returns   = (p[0] >> 4) & 0x0Fu;
+      point_->extended_classification_flags= p[1] & 0x0Fu;
+      point_->extended_scanner_channel     = (p[1] >> 4) & 0x03u;
+      point_->scan_direction_flag          = (p[1] >> 6) & 0x1u;
+      point_->edge_of_flight_line          = (p[1] >> 7) & 0x1u;
+      point_->extended_classification      = p[2];
+      point_->user_data                    = p[3];
+      int16_t ext_angle;
+      memcpy(&ext_angle, p + 4, 2);
+      point_->extended_scan_angle          = ext_angle;
+      point_->point_source_ID              = static_cast<laszip_U16>(p[6]) | (static_cast<laszip_U16>(p[7]) << 8);
     }
     // Store start - end as three float32 extra bytes so starts can be reconstructed.
     const float sx = static_cast<float>(starts[i][0] - ends[i][0]);

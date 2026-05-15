@@ -11,6 +11,7 @@
 #include "raycloudwriter.h"
 #include "raycuboid.h"
 #include "extraction/raytrees.h"
+#include "rayparse.h"
 
 namespace ray
 {
@@ -305,7 +306,7 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
 {
   overlap /= 2.0;  // it now means overlap relative to grid edge
   Cloud::Info info;
-  Cloud::getInfo(cloud_name_stub + ".ply", info);
+  Cloud::getInfo(file_name, info);
   const Eigen::Vector3d &min_bound = info.rays_bound.min_bound_;
   const Eigen::Vector3d &max_bound = info.rays_bound.max_bound_;
 
@@ -356,8 +357,9 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
     std::vector<Cloud> chunks(max_open_files);
 
     // splitting performed per chunk
+    const std::string grid_ext = getFileNameExtension(file_name);
     auto per_chunk = [&min_index, &max_index, &width, min_time, &dimensions, &cells, &chunks, length, &cell_width,
-                      &cloud_name_stub, &overlap, &pass, &max_open_files ](std::vector<Eigen::Vector3d> &starts,
+                      &cloud_name_stub, &overlap, &pass, &max_open_files, &grid_ext](std::vector<Eigen::Vector3d> &starts,
                                                   std::vector<Eigen::Vector3d> &ends, std::vector<double> &times,
                                                   std::vector<RGBA> &colours) {
       for (size_t i = 0; i < ends.size(); i++)
@@ -417,7 +419,7 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
                     name << "_" << z;
                   if (cell_width[3] > 0.0)
                     name << "_" << t;
-                  name << ".ply";
+                  name << "." << grid_ext;
                   cells[index].begin(name.str());
                 }
                 if (!cuboid.intersects(ends[i]))  // end point is outside, so mark an unbounded ray
@@ -512,7 +514,8 @@ bool splitColour(const std::string &file_name, const std::string &cloud_name_stu
       std::cout << "batch processing colours " << batch << ", to " << batch_max << std::endl;
     }
     // splitting performed per chunk
-    auto per_chunk = [&vox_map, &batch, &max_files_at_once, &chunk_size, &cells, &chunks, &cloud_name_stub, &num_colours, seg_colour](
+    const std::string colour_ext = getFileNameExtension(file_name);
+    auto per_chunk = [&vox_map, &batch, &max_files_at_once, &chunk_size, &cells, &chunks, &cloud_name_stub, &num_colours, seg_colour, &colour_ext](
                       std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                       std::vector<double> &times, std::vector<RGBA> &colours) {
       for (size_t i = 0; i < ends.size(); i++)
@@ -532,11 +535,11 @@ bool splitColour(const std::string &file_name, const std::string &cloud_name_stu
             std::stringstream name;
             if (seg_colour)
             {
-              name << cloud_name_stub << "_" << convertColourToInt(colour) << ".ply";
+              name << cloud_name_stub << "_" << convertColourToInt(colour) << "." << colour_ext;
             }
             else
             {
-              name << cloud_name_stub << "_" << (int)colour.red << "_" << (int)colour.green << "_" << (int)colour.blue << ".ply";
+              name << cloud_name_stub << "_" << (int)colour.red << "_" << (int)colour.green << "_" << (int)colour.blue << "." << colour_ext;
             }
             cells[index].begin(name.str());
           }

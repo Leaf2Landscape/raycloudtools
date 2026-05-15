@@ -181,14 +181,14 @@ void Cloud::removeUnboundedRays()
     times[i] = times[valids[i]];
     colours[i] = colours[valids[i]];
     if (!passthrough.empty())
-      memcpy(passthrough.data() + i * 6, passthrough.data() + valids[i] * 6, 6);
+      memcpy(passthrough.data() + i * 8, passthrough.data() + valids[i] * 8, 8);
   }
   starts.resize(valids.size());
   ends.resize(valids.size());
   times.resize(valids.size());
   colours.resize(valids.size());
   if (!passthrough.empty())
-    passthrough.resize(valids.size() * 6);
+    passthrough.resize(valids.size() * 8);
 }
 
 void Cloud::decimate(double voxel_width, std::set<Eigen::Vector3i, Vector3iLess> &voxel_set)
@@ -203,14 +203,14 @@ void Cloud::decimate(double voxel_width, std::set<Eigen::Vector3i, Vector3iLess>
     colours[i] = colours[id];
     times[i] = times[id];
     if (!passthrough.empty())
-      memcpy(passthrough.data() + i * 6, passthrough.data() + id * 6, 6);
+      memcpy(passthrough.data() + i * 8, passthrough.data() + id * 8, 8);
   }
   starts.resize(subsample.size());
   ends.resize(subsample.size());
   colours.resize(subsample.size());
   times.resize(subsample.size());
   if (!passthrough.empty())
-    passthrough.resize(subsample.size() * 6);
+    passthrough.resize(subsample.size() * 8);
 }
 
 void Cloud::eigenSolve(const std::vector<int> &ray_ids, const Eigen::MatrixXi &indices, int index, int num_neighbours,
@@ -499,10 +499,10 @@ void Cloud::addRay(const Cloud &other_cloud, size_t index)
   colours.push_back(other_cloud.colours[index]);
   if (!other_cloud.tree_ids.empty())
     tree_ids.push_back(other_cloud.tree_ids[index]);
-  if (other_cloud.passthrough.size() >= (index + 1) * 6)
+  if (other_cloud.passthrough.size() >= (index + 1) * 8)
   {
-    const uint8_t *src = other_cloud.passthrough.data() + index * 6;
-    passthrough.insert(passthrough.end(), src, src + 6);
+    const uint8_t *src = other_cloud.passthrough.data() + index * 8;
+    passthrough.insert(passthrough.end(), src, src + 8);
   }
 }
 

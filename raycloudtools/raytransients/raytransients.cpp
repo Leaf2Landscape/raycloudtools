@@ -85,8 +85,9 @@ int rayTransients(int argc, char *argv[])
   const ray::Cloud &transient = filter.differenceCloud();
   const ray::Cloud &fixed = filter.fixedCloud();
 
-  transient.save(cloud_file.nameStub() + "_transient.las");
-  fixed.save(cloud_file.nameStub() + "_fixed.las");
+  const std::string ext = ray::getFileNameExtension(cloud_file.name());
+  transient.save(cloud_file.nameStub() + "_transient." + ext);
+  fixed.save(cloud_file.nameStub() + "_fixed." + ext);
   return 0;
 }
 

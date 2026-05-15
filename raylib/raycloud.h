@@ -39,13 +39,14 @@ public:
   std::vector<double> times;
   std::vector<RGBA> colours;
   std::vector<int32_t> tree_ids;   ///< optional per-point tree ID (populated by rayextract trees)
-  /// Optional flat array of non-raycloud LAS fields, 6 bytes per point:
-  ///   [0] return_number[0:2] | num_returns[3:5] | scan_dir[6] | edge[7]
-  ///   [1] classification[0:4] | synthetic[5] | keypoint[6] | withheld[7]
-  ///   [2] scan_angle_rank (int8 reinterpreted as uint8)
+  /// Optional flat array of LAS 1.4 extended fields, 8 bytes per point:
+  ///   [0] ext_return_number[0:3] | ext_num_returns[4:7]
+  ///   [1] classification_flags[0:3] | scanner_channel[4:5] | scan_dir[6] | edge[7]
+  ///   [2] extended_classification (0-255)
   ///   [3] user_data
-  ///   [4..5] point_source_ID (little-endian)
-  /// Empty unless loaded from a LAS/LAZ file.
+  ///   [4..5] extended_scan_angle (int16 LE, 0.006 deg units)
+  ///   [6..7] point_source_ID (uint16 LE)
+  /// LAS 1.2 sources are converted to this layout on read. Empty unless loaded from LAS/LAZ.
   std::vector<uint8_t> passthrough;
 
   void clear();

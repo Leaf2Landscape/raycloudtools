@@ -112,7 +112,7 @@ int rayColour(int argc, char *argv[])
     usage();
 
   std::string in_file = cloud_file.name();
-  const std::string out_file = cloud_file.nameStub() + "_coloured.las";
+  const std::string out_file = cloud_file.nameStub() + "_coloured." + ray::getFileNameExtension(cloud_file.name());
   const std::string type = colour_type.selectedKey();
   uint8_t split_alpha = 100;
 
