@@ -177,6 +177,13 @@ private:
                          Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> &solver, Eigen::Vector3d &centroid) const;
 };
 
+/// Convert a ray cloud by applying @c apply to every ray, writing result to @c out_name.
+/// Handles both .las/.laz and .ply input/output based on file extension.
+bool RAYLIB_EXPORT convertCloud(const std::string &in_name, const std::string &out_name,
+                                std::function<void(Eigen::Vector3d &start, Eigen::Vector3d &end,
+                                                   double &time, RGBA &colour)>
+                                  apply);
+
 }  // namespace ray
 
 #endif  // RAYLIB_RAYCLOUD_H

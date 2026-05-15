@@ -8,6 +8,7 @@
 #include "raylaz.h"
 #include "rayparse.h"
 #include "rayply.h"
+#include "raycloudwriter.h"
 #include "rayprogress.h"
 
 #include <nabo/nabo.h>
@@ -412,7 +413,7 @@ double Cloud::estimatePointSpacing(const std::string &file_name, const Cuboid &b
       }
     }
   };
-  if (!readPly(file_name, true, estimate_size, 0))
+  if (!Cloud::read(file_name, estimate_size))
     return 0;
 
   double points_per_voxel = (double)num_points / num_voxels;
@@ -559,6 +560,24 @@ bool Cloud::read(const std::string &file_name,
     return readLas(file_name, apply, num_bounded, 1.0, nullptr);
   }
   return readPly(file_name, true, apply, 0);
+}
+
+bool convertCloud(const std::string &in_name, const std::string &out_name,
+                  std::function<void(Eigen::Vector3d &start, Eigen::Vector3d &end, double &time, RGBA &colour)> apply)
+{
+  CloudWriter writer;
+  if (!writer.begin(out_name))
+    return false;
+  auto applyToChunk = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
+                           std::vector<double> &times, std::vector<RGBA> &colours) {
+    for (size_t i = 0; i < ends.size(); i++)
+      apply(starts[i], ends[i], times[i], colours[i]);
+    writer.writeChunk(starts, ends, times, colours);
+  };
+  if (!Cloud::read(in_name, applyToChunk))
+    return false;
+  writer.end();
+  return true;
 }
 
 }  // namespace ray
