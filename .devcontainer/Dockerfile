@@ -41,7 +41,7 @@ RUN git clone https://github.com/qhull/qhull.git && \
     cd qhull && \
     git checkout tags/v7.3.2 && \
     cd build && \
-    cmake .. -DCMAKE_POSITION_INDEPENDENT_CODE:BOOL=true && \
+    cmake .. -DCMAKE_POSITION_INDEPENDENT_CODE:BOOL=true -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && \
     make -j$(nproc) && \
     make install && \
     cd ../.. && rm -rf qhull
