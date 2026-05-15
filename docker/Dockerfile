@@ -1,4 +1,4 @@
-FROM ubuntu:22.04
+FROM ubuntu:latest
 
 # Avoid prompts from apt
 ENV DEBIAN_FRONTEND=noninteractive
@@ -22,7 +22,8 @@ RUN apt-get update && apt-get upgrade -y && \
     libproj-dev \
     libgeotiff-dev \
     libgtest-dev \
-    libboost-all-dev && \
+    libboost-all-dev \
+    libgtest-dev && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /deps
@@ -73,17 +74,15 @@ RUN mkdir /build && \
         -DPROJ_LIBRARY=/usr/lib/x86_64-linux-gnu/libproj.so \
         -DWITH_QHULL=ON \
         -DWITH_LAS=ON \
-        -DDOUBLE_RAYS=ON \
+        # -DDOUBLE_RAYS=ON \ Turn on for global coords
         -DWITH_TIFF=ON \
         -DRAYCLOUD_BUILD_TESTS=ON \
         -DCMAKE_BUILD_TYPE=Release && \
     make -j$(nproc) && \
-    make install && \
-    cd ../.. && \
-    rm -rf raycloudtools
+    make install
 
 # Clone and build TreeTools
-RUN git clone https://github.com/csiro-robotics/treetools.git && \
+RUN git clone https://github.com/Leaf2Landscape/treetools.git && \
     cd treetools && \
     mkdir -p build && \
     cd build && \

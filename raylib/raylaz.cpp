@@ -88,6 +88,7 @@ bool readLas(const std::string &file_name,
     }
   }
 
+
   ray::Progress progress;
   ray::ProgressThread progress_thread(progress);
   const size_t num_chunks = (number_of_points + (chunk_size - 1)) / chunk_size;

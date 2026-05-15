@@ -1,0 +1,43 @@
+{% set name = "libnabo" %}
+{% set version = "1.1.0" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  url: https://github.com/ethz-asl/libnabo/archive/refs/tags/{{ version }}.tar.gz
+  sha256: # fill in: run `sha256sum` on the downloaded tarball
+
+build:
+  number: 0
+  run_exports:
+    - {{ pin_subpackage(name, max_pin='x.x') }}
+
+requirements:
+  build:
+    - {{ compiler('cxx') }}
+    - cmake
+    - ninja
+  host:
+    - eigen
+    - boost-cpp
+  run:
+    - eigen
+
+test:
+  commands:
+    - test -f $PREFIX/lib/libnabo.so  # [linux]
+    - test -f $PREFIX/lib/libnabo.dylib  # [osx]
+
+about:
+  home: https://github.com/ethz-asl/libnabo
+  license: BSD-3-Clause
+  license_file: lgpl-2.1.txt
+  summary: Fast K Nearest Neighbour library for low-dimensional spaces
+  description: |
+    libnabo is a fast K Nearest Neighbour library for low-dimensional spaces.
+
+extra:
+  recipe-maintainers:
+    - YOUR_GITHUB_USERNAME

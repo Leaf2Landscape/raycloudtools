@@ -453,7 +453,7 @@ void DensityGrid::calculatePeaks(const std::string &file_name)
 
 /// Calculate the surface area per cubic metre within each voxel of the grid. Assuming an unbiased distribution
 /// of surface angles.
-void DensityGrid::calculateDensities(const std::string &file_name)
+void DensityGrid::calculateDensities(const std::string &file_name, bool intensity_weight)
 {
   auto calculate = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends, std::vector<double> &,
                        std::vector<RGBA> &colours) {
@@ -463,9 +463,10 @@ void DensityGrid::calculateDensities(const std::string &file_name)
       Eigen::Vector3d end = ends[i];
       if (!bounds_.clipRay(start, end, 1e-10))
       {
-        continue; // ray is outside of bounds
+        continue;  // ray is outside of bounds
       }
       bounded_ = colours[i].alpha > 0;
+      intensity_ = intensity_weight ? (bounded_ ? ((float)colours[i].alpha)/100.0f : 1.0f) : 1.0f;
       const Eigen::Vector3d vox_start = (start - bounds_.min_bound_) / voxel_width_;
       const Eigen::Vector3d vox_end = (end - bounds_.min_bound_) / voxel_width_;
       source_ = vox_start;
@@ -648,7 +649,7 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
 #if defined FLAT_TOP_COMPENSATION
       grid.calculatePeaks(cloud_file);
 #endif
-      grid.calculateDensities(cloud_file);
+      grid.calculateDensities(cloud_file, true);  // rayrender always uses intensity weighting
 #if defined FLAT_TOP_COMPENSATION
       grid.flatTopCompensation();
 #endif
@@ -718,8 +719,7 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
           case RenderStyle::Sum:
             pix += Eigen::Vector4d(col[0], col[1], col[2], 1.0);
             break;
-          case RenderStyle::Rays:
-          {
+          case RenderStyle::Rays: {
             Eigen::Vector3d cloud_start = starts[i];
             Eigen::Vector3d cloud_end = ends[i];
             // clip to within the image (since we exclude unbounded rays from the image bounds)
@@ -810,8 +810,7 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
         case RenderStyle::Rays:
           col3d /= colour[3];  // simple mean
           break;
-        case RenderStyle::Height:
-        {
+        case RenderStyle::Height: {
           double shade =
             dir == 1.0 ? (colour[3] - min_val) / (max_val - min_val) : (colour[3] - max_val) / (min_val - max_val);
           col3d = Eigen::Vector3d(shade, shade, shade);
@@ -822,8 +821,7 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
           if (!is_hdr)
             col3d /= max_val;  // rescale to within limited colour range
           break;
-        case RenderStyle::Density_rgb:
-        {
+        case RenderStyle::Density_rgb: {
           if (is_hdr)
             col3d = colour[0] * redGreenBlueSpectrum(std::log10(std::max(1e-6, colour[0])));
           else

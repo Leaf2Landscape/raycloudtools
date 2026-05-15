@@ -1,0 +1,61 @@
+{% set name = "raycloudtools" %}
+{% set version = "0.0.1" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  url: https://github.com/csiro-robotics/raycloudtools/archive/refs/tags/v{{ version }}.tar.gz
+  sha256: # fill in: run `sha256sum` on the downloaded tarball after tagging a release
+
+build:
+  number: 0
+  # Windows is not supported (uses OpenMP pragmas and POSIX paths)
+  skip: true  # [win]
+
+requirements:
+  build:
+    - {{ compiler('cxx') }}
+    - cmake
+    - ninja
+    - pkg-config
+  host:
+    - eigen
+    - libnabo
+    - libgomp  # [linux]
+    - llvm-openmp  # [osx]
+    - laszip
+    - qhull
+    - geotiff
+    - libtiff
+    - proj
+    - tbb-devel
+  run:
+    - laszip
+    - qhull
+    - geotiff
+    - libtiff
+    - proj
+    - tbb
+
+test:
+  commands:
+    - rayinfo --help
+    - rayalign --help
+    - treeinfo --help
+    - treemesh --help
+
+about:
+  home: https://github.com/csiro-robotics/raycloudtools
+  license: LicenseRef-CSIRO
+  license_file: licence.txt
+  summary: Tools for processing and analysing ray clouds from LiDAR sensors
+  description: |
+    raycloudtools provides command-line tools (ray*, tree*) for manipulating
+    ray clouds — sets of 3D rays captured by LiDAR sensors — including
+    alignment, decimation, segmentation, extraction, and tree reconstruction.
+
+extra:
+  recipe-maintainers:
+    - YOUR_GITHUB_USERNAME

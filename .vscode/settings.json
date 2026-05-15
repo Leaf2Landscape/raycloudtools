@@ -1,0 +1,6 @@
+// This file is used to configure settings for the Visual Studio Code workspace.
+// It includes settings for CMake, debugging, and other workspace preferences.
+{
+    "cmake.configureOnOpen": false,
+    "cmake.configureOnEdit": false
+}

@@ -45,8 +45,8 @@ bool RAYLIB_EXPORT renderCloud(const std::string &cloud_file, const Cuboid &boun
 #if RAYLIB_WITH_TIFF
 // save to geotif format using floating-point per-channel colour data. This function passes a projection file in order
 // to geolocate the image
-bool RAYLIB_EXPORT writeGeoTiffFloat(const std::string &filename, int x, int y, const float *data, double pixel_width, bool scalar,
-                       const std::string &projection_file, double origin_x, double origin_y);
+bool RAYLIB_EXPORT writeGeoTiffFloat(const std::string &filename, int x, int y, const float *data, double pixel_width,
+                                     bool scalar, const std::string &projection_file, double origin_x, double origin_y);
 #endif
 
 /// This is used for estimating the per-voxel density of a ray cloud
@@ -57,8 +57,9 @@ bool RAYLIB_EXPORT writeGeoTiffFloat(const std::string &filename, int x, int y, 
 struct RAYLIB_EXPORT DensityGrid
 {
   static const int min_voxel_hits = 2;
-  static constexpr double spherical_distribution_scale =
+  static constexpr double distribution_scale =
     2.0;  // average area scale due to a spherical uniform distribution of leave angles relative to the rays
+  // static constexpr double distribution_scale = 1.0;
 
   DensityGrid(const Cuboid &grid_bounds, double vox_width, const Eigen::Vector3i &dims)
     : bounds_(grid_bounds)
@@ -83,9 +84,9 @@ struct RAYLIB_EXPORT DensityGrid
     /// the densities can be multiplied by a scalar, element-wise
     inline Voxel operator*(float scale) const;
     /// Add a ray which enters the voxel and hits within it. @c length is the ray length within the voxel
-    inline void addHitRay(float length);
+    inline void addHitRay(float length, float intensity = 1.0f);
     /// Add a ray which enters and exits the voxel. @c length is the ray path length within the voxel
-    inline void addMissRay(float length);
+    inline void addMissRay(float length, float intensity = 1.0f);
     inline const float &numHits() const { return num_hits_; }
     inline float &numHits() { return num_hits_; }
     inline const float &numRays() const { return num_rays_; }
@@ -100,7 +101,8 @@ struct RAYLIB_EXPORT DensityGrid
 
   void calculatePeaks(const std::string &file_name);
   /// This streams in a ray cloud file, and fills in the voxel density information
-  void calculateDensities(const std::string &file_name);
+  /// When @c intensity_weight is true, rays are weighted by return intensity (alpha/100)
+  void calculateDensities(const std::string &file_name, bool intensity_weight = false);
   void flatTopCompensation();
   /// To void low-ray-count voxels giving unstable density estimates, we fuse with neighbour information
   /// up to a specified minimum number of rays. Specified in DENSITY_MIN_RAYS
@@ -111,11 +113,12 @@ struct RAYLIB_EXPORT DensityGrid
   inline int getIndexFromPos(const Eigen::Vector3d &pos) const;
   /// Return the vector of density voxels
   inline const std::vector<Voxel> &voxels() const { return voxels_; }
-  inline Eigen::Vector3i dimensions(){ return voxel_dims_; }
-  inline Cuboid bounds(){ return bounds_; }
+  inline Eigen::Vector3i dimensions() { return voxel_dims_; }
+  inline Cuboid bounds() { return bounds_; }
   inline double voxelWidth() const { return voxel_width_; }
   // used in walking grid only
-  inline bool operator()(const Eigen::Vector3i &p, const Eigen::Vector3i &target, double in_length, double out_length, double max_length);
+  inline bool operator()(const Eigen::Vector3i &p, const Eigen::Vector3i &target, double in_length, double out_length,
+                         double max_length);
 
   std::vector<double> peaks_; // highest points
 private:
@@ -124,8 +127,9 @@ private:
   double voxel_width_;
   Eigen::Vector3i voxel_dims_;
   bool bounded_;
+  float intensity_;
 
-  // used when waling the grid
+  // used when walking the grid
   Eigen::Vector3d source_;
   Eigen::Vector3d dir_;
 };
@@ -133,22 +137,21 @@ private:
 // inline functions
 double DensityGrid::Voxel::numerator() const
 {
-  return spherical_distribution_scale * (num_rays_ - 1.0) * num_hits_;
+  return distribution_scale * (num_rays_ - 1.0) * num_hits_;
 }
 double DensityGrid::Voxel::denominator() const
 {
-  const double eps = 1e-10; // avoid division by 0
+  const double eps = 1e-10;  // avoid division by 0
   return eps + num_rays_ * path_length_;
 }
 double DensityGrid::Voxel::density() const
 {
-  if (num_rays_ <= min_voxel_hits)
+  if (num_rays_ <= (float)min_voxel_hits)
   {
     return 0.0;
   }
-  const double eps = 1e-10; // avoid division by 0
-  // below -1.0 should be -2.0 when min length is estimated (e.g. when initially air)
-  return spherical_distribution_scale * (num_rays_ - 1.0) * num_hits_ / (eps + num_rays_ * path_length_);
+  const double eps = 1e-10;  // avoid division by 0
+  return distribution_scale * (num_rays_ - 1.0) * num_hits_ / (eps + num_rays_ * path_length_);
 }
 void DensityGrid::Voxel::operator+=(const DensityGrid::Voxel &other)
 {
@@ -164,16 +167,16 @@ DensityGrid::Voxel DensityGrid::Voxel::operator*(float scale) const
   voxel.path_length_ = path_length_ * scale;
   return voxel;
 }
-void DensityGrid::Voxel::addHitRay(float length)
+void DensityGrid::Voxel::addHitRay(float length, float intensity)
 {
-  path_length_ += length;
-  num_hits_++;
-  num_rays_++;
+  path_length_ += length * intensity;
+  num_hits_ += intensity;
+  num_rays_ += intensity;
 }
-void DensityGrid::Voxel::addMissRay(float length)
+void DensityGrid::Voxel::addMissRay(float length, float intensity)
 {
-  path_length_ += length;
-  num_rays_++;
+  path_length_ += length * intensity;
+  num_rays_ += intensity;
 }
 int DensityGrid::getIndex(const Eigen::Vector3i &inds) const
 {
@@ -184,7 +187,8 @@ int DensityGrid::getIndexFromPos(const Eigen::Vector3d &pos) const
   Eigen::Vector3d gridspace = (pos - bounds_.min_bound_) / voxel_width_;
   return getIndex(gridspace.cast<int>());
 }
-inline bool DensityGrid::operator()(const Eigen::Vector3i &p, const Eigen::Vector3i &target, double in_length, double out_length, double max_length)
+inline bool DensityGrid::operator()(const Eigen::Vector3i &p, const Eigen::Vector3i &target, double in_length,
+                                    double out_length, double max_length)
 {
   int index = getIndex(p);
   double end_length = std::min(out_length, max_length);
@@ -204,11 +208,11 @@ inline bool DensityGrid::operator()(const Eigen::Vector3i &p, const Eigen::Vecto
   if (p == target && bounded_)
   {
     double length_in_voxel = end_length - in_length;
-    voxels_[index].addHitRay(static_cast<float>(length_in_voxel * voxel_width_));
+    voxels_[index].addHitRay(static_cast<float>(length_in_voxel * voxel_width_), intensity_);
   }
   else
   {
-    voxels_[index].addMissRay(static_cast<float>((out_length - in_length) * voxel_width_));
+    voxels_[index].addMissRay(static_cast<float>((out_length - in_length) * voxel_width_), intensity_);
   }
   return false;
 }

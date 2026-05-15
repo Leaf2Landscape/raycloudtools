@@ -6,6 +6,7 @@
 #include "raytrees.h"
 #include <nabo/nabo.h>
 #include "rayclusters.h"
+#include <iomanip>
 
 namespace ray
 {
@@ -23,6 +24,8 @@ TreesParams::TreesParams()
   , segment_branches(false)
   , global_taper(0.012)
   , global_taper_factor(0.3)
+  , alpha_weighting(false)
+  , largest_diameter(false)
 {}
 
 /// The main reconstruction algorithm
@@ -34,7 +37,7 @@ Trees::Trees(Cloud &cloud, const Eigen::Vector3d &offset, const Mesh &mesh, cons
   params_ = &params;
 
   std::vector<std::vector<int>> roots_list = getRootsAndSegment(
-    points_, cloud, mesh, params_->max_diameter, params_->distance_limit, params_->height_min, params_->gravity_factor);
+    points_, cloud, mesh, params_->max_diameter, params_->distance_limit, params_->height_min, params_->gravity_factor, params_->alpha_weighting);
 
   // Now we want to convert these paths into a set of branch sections, from root to tips
   // splitting as we go up...
@@ -274,6 +277,13 @@ Trees::Trees(Cloud &cloud, const Eigen::Vector3d &offset, const Mesh &mesh, cons
   std::vector<int> section_ids(points_.size(), -1);
   calculateSectionIds(section_ids, children);
 
+  // If the largest_diameter flag is set then filter the trees to keep only the one(s)
+  // with the largest diameter.
+  if (params_->largest_diameter)
+  {
+    filterLargestDiameterTrees();
+  }
+
   generateLocalSectionIds();
 
   Eigen::Vector3d min_bound(0, 0, 0), max_bound(0, 0, 0);
@@ -333,6 +343,7 @@ bool Trees::removeDistantPoints(std::vector<int> &nodes)
   }
   return found;
 }
+
 
 double Trees::meanTaper(const BranchSection &section) const
 {
@@ -886,39 +897,57 @@ double Trees::estimateCylinderRadius(const std::vector<int> &nodes, const Eigen:
 
 void Trees::estimateCylinderTaper(double radius, double accuracy, bool extract_from_ends)
 {
-  int par = sections_[sec_].parent;
-  int root = sections_[sec_].root;
+    // Retrieve the indices of the parent and root sections for the current section 'sec_'
+    int par = sections_[sec_].parent;   // Index of the parent section
+    int root = sections_[sec_].root;    // Index of the root (trunk) section
 
-  double l = sections_[sec_].radius_scale * sections_[root].tree_height;
-  double L = sections_[root].tree_height;
+    // Calculate the scaled length 'l' of the current section and total tree height 'L'
+    // 'radius_scale' corresponds to the fixed ratio q_s (segment radius to trunk radius) from Leonardo's rule
+    double l = sections_[sec_].radius_scale * sections_[root].tree_height;  // l = q_s * L_t
+    double L = sections_[root].tree_height;                                 // Total tree height L_t
 
-  double junction_weight = 1.0;
-  if (par > -1)
-  {
-    junction_weight = extract_from_ends ? 0.25 : 1.0; // extracting from ends means we are less confident about the quality
-  }
+    // Initialize the junction weight, which adjusts confidence in the radius estimation at branching points
+    double junction_weight = 1.0;
+    if (par > -1)  // If the section has a parent (i.e., it's not the root)
+    {
+        // If extracting from ends (less reliable measurements), reduce the junction weight
+        junction_weight = extract_from_ends ? 0.25 : 1.0;
+    }
 
-  double weight = l*l*l * accuracy * junction_weight;
- // weight *= weight; // preference the strongest weight sections
-  double taper = (radius/L) * weight;
+    // Calculate the weight for this section based on volume (l^3), accuracy, and junction weight
+    // This corresponds to the segment weight w(s,t) = w_junc_s * a_s * (q_s * L_t)^3
+    double weight = l * l * l * accuracy * junction_weight;
 
-  forest_taper_ += taper;
-  forest_weight_ += weight;
-  forest_weight_squared_ += weight*weight;
+    // Optional: Square the weight to further emphasize sections with stronger weights
+    // weight *= weight;
 
-  sections_[root].total_taper += taper;
-  sections_[root].total_weight += weight;
-  if (sections_[root].total_weight == 0.0)
-  {
-    std::cout << "bad section weight: " << l << "," << accuracy << "," << junction_weight << std::endl;
-    std::cout << "sec: " << sec_ << ", root: " << root << std::endl;
-  }
+    // Calculate the taper contribution from this section
+    // Taper is proportional to (radius / L) * weight, aligning with taper estimation T(t)
+    double taper = (radius / L) * weight;
 
-  sections_[sec_].taper = taper;
-  sections_[sec_].weight = weight;
-  sections_[sec_].len = l*l*l;
-  sections_[sec_].accuracy = accuracy;
-  sections_[sec_].junction_weight = junction_weight;
+    // Update cumulative taper and weights for the entire forest (used for scan-wide taper estimation)
+    forest_taper_ += taper;
+    forest_weight_ += weight;
+    forest_weight_squared_ += weight * weight;
+
+    // Update total taper and weight for the root section (aggregating at the tree level)
+    sections_[root].total_taper += taper;
+    sections_[root].total_weight += weight;
+
+    // Check for zero total weight, which may indicate a computational error or invalid data
+    if (sections_[root].total_weight == 0.0)
+    {
+        // Output diagnostic information for troubleshooting
+        std::cout << "bad section weight: " << l << "," << accuracy << "," << junction_weight << std::endl;
+        std::cout << "sec: " << sec_ << ", root: " << root << std::endl;
+    }
+
+    // Store computed taper and weight in the current section
+    sections_[sec_].taper = taper;
+    sections_[sec_].weight = weight;
+    sections_[sec_].len = l * l * l;                  // Store the volumetric length (l^3)
+    sections_[sec_].accuracy = accuracy;              // Store the accuracy of the radius estimation
+    sections_[sec_].junction_weight = junction_weight; // Store the junction weight used
 }
 
 // add a child section to continue reconstructing the tree segments
@@ -1235,6 +1264,83 @@ bool Trees::save(const std::string &filename, const Eigen::Vector3d &offset, boo
     }
     ofs << std::endl;
   }
+  return true;
+}
+
+// save the shortest paths to a PLY file for visualization
+bool Trees::saveShortestPaths(const std::string &filename, const Eigen::Vector3d &offset) const
+{
+  std::ofstream ofs(filename.c_str(), std::ios::out);
+  if (!ofs.is_open())
+  {
+    std::cerr << "Error: cannot open " << filename << " for writing." << std::endl;
+    return false;
+  }
+
+  // Count valid path segments (edges between connected points)
+  size_t edge_count = 0;
+  for (size_t i = 0; i < points_.size(); i++)
+  {
+    if (points_[i].parent != -1)
+    {
+      edge_count++;
+    }
+  }
+
+  // Write PLY header for line segments
+  ofs << "ply" << std::endl;
+  ofs << "format ascii 1.0" << std::endl;
+  ofs << "comment Shortest paths from raycloudtools tree extraction" << std::endl;
+  ofs << "element vertex " << points_.size() << std::endl;
+  ofs << "property float x" << std::endl;
+  ofs << "property float y" << std::endl;
+  ofs << "property float z" << std::endl;
+  ofs << "property uchar red" << std::endl;
+  ofs << "property uchar green" << std::endl;
+  ofs << "property uchar blue" << std::endl;
+  ofs << "element edge " << edge_count << std::endl;
+  ofs << "property int vertex1" << std::endl;
+  ofs << "property int vertex2" << std::endl;
+  ofs << "end_header" << std::endl;
+
+  // Write vertices (all points)
+  for (size_t i = 0; i < points_.size(); i++)
+  {
+    const Eigen::Vector3d pos = points_[i].pos + offset;
+    
+    // Color points based on their root - each tree gets a different color
+    uint8_t red = 0, green = 0, blue = 0;
+    if (points_[i].root != -1)
+    {
+      // Use a simple hash to generate colors based on root index
+      int root_id = points_[i].root;
+      red = (uint8_t)((root_id * 73) % 256);
+      green = (uint8_t)((root_id * 151) % 256);
+      blue = (uint8_t)((root_id * 211) % 256);
+      
+      // Ensure color is not black (reserved for unconnected points)
+      if (red == 0 && green == 0 && blue == 0)
+      {
+        red = 128;
+      }
+    }
+    
+    ofs << std::fixed << std::setprecision(6) 
+        << pos[0] << " " << pos[1] << " " << pos[2] << " "
+        << static_cast<int>(red) << " " << static_cast<int>(green) << " " << static_cast<int>(blue) << std::endl;
+  }
+
+  // Write edges (parent-child connections representing shortest paths)
+  for (size_t i = 0; i < points_.size(); i++)
+  {
+    if (points_[i].parent != -1)
+    {
+      ofs << points_[i].parent << " " << i << std::endl;
+    }
+  }
+
+  ofs.close();
+  std::cout << "Shortest paths saved to " << filename << " (" << edge_count << " path segments)" << std::endl;
   return true;
 }
 
