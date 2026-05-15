@@ -149,7 +149,7 @@ int rayDenoise(int argc, char *argv[])
               << " rays removed with nearest neighbour sigma more than " << sigmas.value() << std::endl;
   }
 
-  new_cloud.save(cloud_file.nameStub() + "_denoised.ply");
+  new_cloud.save(cloud_file.nameStub() + "_denoised.las");
   return 0;
 }
 

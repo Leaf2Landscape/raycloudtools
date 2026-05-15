@@ -9,6 +9,7 @@
 #include <iostream>
 
 #include "raylib/raycloud.h"
+#include "raylib/raycloudwriter.h"
 #include "raylib/raylaz.h"
 #include "raylib/rayparse.h"
 #include "raylib/rayply.h"
@@ -26,7 +27,7 @@ void usage(int exit_code = 1)
   std::cout << "                                        --max_intensity 100 - specify maximum intensity value (default 100)." << std::endl;
   std::cout << "                                                              0 sets all to full intensity (bounded rays)." << std::endl;
   std::cout << "                                        --remove_start_pos  - translate so first point is at 0,0,0" << std::endl;
-  std::cout << "The output is a .ply file of the same name (or with suffix _raycloud if the input was a .ply file)." << std::endl;
+  std::cout << "The output is a .las file of the same name (or with suffix _raycloud if the input was a .ply file)." << std::endl;
   // clang-format on
   exit(exit_code);
 }
@@ -91,12 +92,10 @@ int rayImport(int argc, char *argv[])
   if (cloud_file.nameExt() == "ply")
     save_file += "_raycloud";
   size_t num_bounded;
-  std::ofstream ofs;
-  ray::RayPlyBuffer buffer;
-  if (!ray::writeRayCloudChunkStart(save_file + ".ply", ofs))
+  ray::CloudWriter writer;
+  if (!writer.begin(save_file + ".las"))
     usage();
   Eigen::Vector3d start_pos(0, 0, 0);
-  bool has_warned = false;
   double min_time = std::numeric_limits<double>::max();
   double max_time = std::numeric_limits<double>::lowest();
   auto add_chunk = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
@@ -164,10 +163,8 @@ int rayImport(int argc, char *argv[])
         c.alpha = 255;
       }
     }
-    if (!ray::writeRayCloudChunk(ofs, buffer, starts, ends, times, colours, has_warned))
-    {
+    if (!writer.writeChunk(starts, ends, times, colours))
       usage();
-    }
   };
   Eigen::Vector3d *offset = remove.isSet() ? &start_pos : nullptr;
   if (cloud_file.nameExt() == "ply")
@@ -217,7 +214,7 @@ int rayImport(int argc, char *argv[])
     std::cout << "If your sensor lacks intensity information, set them to full using:" << std::endl;
     std::cout << "rayimport <point cloud> <trajectory file> --max_intensity 0" << std::endl;
   }
-  ray::writeRayCloudChunkEnd(ofs);
+  writer.end();
   // if we remove the start position, then it is useful to print this value that is removed
   // so that the user hasn't lost information
   if (remove.isSet())

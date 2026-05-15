@@ -232,7 +232,7 @@ int rayRestore(int argc, char *argv[])
   // now apply the estimated transformation. We need to chunk save the _restored file, using the
   // re-chunkloaded full_cloud_file
   ray::CloudWriter writer;
-  if (!writer.begin(full_cloud_file.nameStub() + "_restored.ply"))
+  if (!writer.begin(full_cloud_file.nameStub() + "_restored.las"))
     usage();
   ray::Cloud chunk;
 

@@ -6,6 +6,7 @@
 #include "raycloud.h"
 
 #include "raylaz.h"
+#include "rayparse.h"
 #include "rayply.h"
 #include "rayprogress.h"
 
@@ -28,19 +29,39 @@ void Cloud::clear()
 
 void Cloud::save(const std::string &file_name) const
 {
-  std::string name = file_name;
-  writePlyRayCloud(name, starts, ends, times, colours);
+  const std::string ext = getFileNameExtension(file_name);
+  if (ext == "las" || ext == "laz")
+    writeLasRayCloud(file_name, starts, ends, times, colours);
+  else
+    writePlyRayCloud(file_name, starts, ends, times, colours);
 }
 
 bool Cloud::load(const std::string &file_name, bool check_extension, int min_num_rays)
 {
-  // look first for the raycloud PLY
-  if (file_name.substr(file_name.size() - 4) == ".ply" || !check_extension)
+  const std::string ext = getFileNameExtension(file_name);
+  if (ext == "las" || ext == "laz")
+    return loadLas(file_name, min_num_rays);
+  if (ext == "ply" || !check_extension)
     return loadPLY(file_name, min_num_rays);
-
-  std::cerr << "Attempting to load ray cloud " << file_name << " which doesn't have expected file extension .ply"
-            << std::endl;
+  std::cerr << "Attempting to load ray cloud " << file_name
+            << " which doesn't have a supported extension (.ply, .las, .laz)" << std::endl;
   return false;
+}
+
+bool Cloud::loadLas(const std::string &file, int min_num_rays)
+{
+  auto apply = [&](std::vector<Eigen::Vector3d> &start_pts, std::vector<Eigen::Vector3d> &end_pts,
+                   std::vector<double> &time_pts, std::vector<RGBA> &colour_pts) {
+    starts.insert(starts.end(), start_pts.begin(), start_pts.end());
+    ends.insert(ends.end(), end_pts.begin(), end_pts.end());
+    times.insert(times.end(), time_pts.begin(), time_pts.end());
+    colours.insert(colours.end(), colour_pts.begin(), colour_pts.end());
+  };
+  size_t num_bounded;
+  bool res = readLas(file, apply, num_bounded, 1.0, nullptr);
+  if ((int)ends.size() < min_num_rays)
+    return false;
+  return res;
 }
 
 bool Cloud::loadPLY(const std::string &file, int min_num_rays)
@@ -350,7 +371,7 @@ bool RAYLIB_EXPORT Cloud::getInfo(const std::string &file_name, Info &info)
     info.rays_bound.min_bound_ = minVector(info.rays_bound.min_bound_, info.starts_bound.min_bound_);
     info.rays_bound.max_bound_ = maxVector(info.rays_bound.max_bound_, info.starts_bound.max_bound_);
   };
-  bool success = readPly(file_name, true, find_bounds, 0);
+  bool success = Cloud::read(file_name, find_bounds);
   info.centroid /= static_cast<double>(info.num_bounded);
   return success;
 }
@@ -527,6 +548,12 @@ bool Cloud::read(const std::string &file_name,
                                     std::vector<double> &times, std::vector<RGBA> &colours)>
                    apply)
 {
+  const std::string ext = getFileNameExtension(file_name);
+  if (ext == "las" || ext == "laz")
+  {
+    size_t num_bounded;
+    return readLas(file_name, apply, num_bounded, 1.0, nullptr);
+  }
   return readPly(file_name, true, apply, 0);
 }
 

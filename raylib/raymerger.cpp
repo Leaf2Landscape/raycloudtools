@@ -506,9 +506,9 @@ bool Merger::mergeThreeWay(const Cloud &base_cloud, Cloud &cloud1, Cloud &cloud2
   std::cout << clouds[0]->rayCount() << " and " << clouds[1]->rayCount() << " rays to combine, that are different"
             << std::endl;
 #if defined VERBOSE_MERGE
-  fixed_.save("common_rays.ply");
-  clouds[0]->save("changes_0.ply");
-  clouds[1]->save("changes_1.ply");
+  fixed_.save("common_rays.las");
+  clouds[0]->save("changes_0.las");
+  clouds[1]->save("changes_1.las");
 #endif
   // This keeps all data only where there are conflicts.
   if (config_.merge_type == MergeType::All)

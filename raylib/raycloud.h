@@ -170,6 +170,7 @@ public:
 
 private:
   bool loadPLY(const std::string &file, int min_num_rays);
+  bool loadLas(const std::string &file, int min_num_rays);
   // Convert the set of neighbouring indices into a eigen solution, which is an ellipsoid of best fit.
   inline void eigenSolve(const std::vector<int> &ray_ids, const Eigen::MatrixXi &indices, int index, int num_neighbours,
                          Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> &solver, Eigen::Vector3d &centroid) const;

@@ -119,7 +119,7 @@ int rayTranslate(int argc, char *argv[])
     #endif
   }
 
-  const std::string temp_name = cloud_file.nameStub() + "~.ply";  // tilde is a common suffix for temporary files
+  const std::string temp_name = cloud_file.nameStub() + "~.las";  // tilde is a common suffix for temporary files
   int num_missed_triangles = 0, num_totally_missed = 0;
 
   auto translate = [&](Eigen::Vector3d &start, Eigen::Vector3d &end, double &time, ray::RGBA &) 

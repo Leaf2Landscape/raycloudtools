@@ -236,7 +236,7 @@ int rayExtract(int argc, char *argv[])
     trees.save(cloud_file.nameStub() + "_trees.txt", offset, verbose.isSet());
     // we also save a segmented (one colour per tree) file, as this is a useful output
     cloud.translate(offset);
-    cloud.save(cloud_file.nameStub() + "_segmented.ply");
+    cloud.save(cloud_file.nameStub() + "_segmented.las");
     // let's also save the trees out as a mesh
     // it is a bit inefficient to load from file just to convert it into the forest structure, but
     // it works OK for now. Better would be for ray::Trees so store the result as a ray::ForestStructure

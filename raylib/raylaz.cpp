@@ -76,6 +76,17 @@ bool readLas(const std::string &file_name,
   laszip_point_struct *point;
   laszip_get_point_pointer(reader, &point);
 
+  // Detect rayclouds written by raycloudtools: look for the custom VLR marker.
+  bool is_raycloud = false;
+  for (laszip_U32 v = 0; v < header->number_of_variable_length_records; v++)
+  {
+    if (strncmp(header->vlrs[v].user_id, "raycloudtools", 16) == 0 && header->vlrs[v].record_id == 1)
+    {
+      is_raycloud = true;
+      break;
+    }
+  }
+
   ray::Progress progress;
   ray::ProgressThread progress_thread(progress);
   const size_t num_chunks = (number_of_points + (chunk_size - 1)) / chunk_size;
@@ -109,11 +120,25 @@ bool readLas(const std::string &file_name,
     Eigen::Vector3d position(coords[0], coords[1], coords[2]);
 
     ends.push_back(position);
-    starts.push_back(position);  // equal to position for laz files, as we do not store the start points
+
+    if (is_raycloud && point->num_extra_bytes >= 12)
+    {
+      // Reconstruct ray start from the stored (start - end) float32 offset.
+      float sx, sy, sz;
+      memcpy(&sx, point->extra_bytes, 4);
+      memcpy(&sy, point->extra_bytes + 4, 4);
+      memcpy(&sz, point->extra_bytes + 8, 4);
+      starts.push_back({ position[0] + sx, position[1] + sy, position[2] + sz });
+    }
+    else
+    {
+      starts.push_back(position);
+    }
 
     if (using_colour)
     {
       RGBA col;
+      // RGB stored as uint8 * 257 in the 16-bit field; low byte recovers original value.
       col.red = static_cast<uint8_t>(point->rgb[0]);
       col.green = static_cast<uint8_t>(point->rgb[1]);
       col.blue = static_cast<uint8_t>(point->rgb[2]);
@@ -121,20 +146,26 @@ bool readLas(const std::string &file_name,
     }
     times.push_back(point->gps_time);
 
-    const double point_int = point->intensity;
-    const double normalised_intensity = (255.0 * point_int) / max_intensity;
-    const uint8_t intensity = static_cast<uint8_t>(std::min(normalised_intensity, 255.0));
+    uint8_t intensity;
+    if (is_raycloud)
+    {
+      // Alpha is stored directly in the intensity field (0-255).
+      intensity = static_cast<uint8_t>(point->intensity);
+    }
+    else
+    {
+      const double normalised = (max_intensity > 0) ? (255.0 * point->intensity) / max_intensity : 255.0;
+      intensity = static_cast<uint8_t>(std::min(normalised, 255.0));
+    }
     if (intensity > 0)
       num_bounded++;
     intensities.push_back(intensity);
 
     if (ends.size() == chunk_size || i == number_of_points - 1)
     {
-      if (colours.size() == 0)
-      {
+      if (colours.empty())
         colourByTime(times, colours);
-      }
-      for (size_t j = 0; j < colours.size(); j++)  // add intensity into alpha channel
+      for (size_t j = 0; j < colours.size(); j++)
         colours[j].alpha = intensities[j];
       apply(starts, ends, times, colours);
       starts.clear();
@@ -370,6 +401,182 @@ bool LasWriter::writeChunk(const std::vector<Eigen::Vector3d> &points, const std
   RAYLIB_UNUSED(colours);
   std::cerr << "writeLas: cannot write file as WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true"
             << std::endl;
+  return false;
+#endif  // RAYLIB_WITH_LAS
+}
+
+bool RAYLIB_EXPORT writeLasRayCloud(const std::string &file_name, const std::vector<Eigen::Vector3d> &starts,
+                                    const std::vector<Eigen::Vector3d> &ends, const std::vector<double> &times,
+                                    const std::vector<RGBA> &colours)
+{
+#if RAYLIB_WITH_LAS
+  LasRayCloudWriter writer(file_name);
+  return writer.writeChunk(starts, ends, times, colours);
+#else   // RAYLIB_WITH_LAS
+  RAYLIB_UNUSED(file_name);
+  RAYLIB_UNUSED(starts);
+  RAYLIB_UNUSED(ends);
+  RAYLIB_UNUSED(times);
+  RAYLIB_UNUSED(colours);
+  std::cerr << "writeLasRayCloud: WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true" << std::endl;
+  return false;
+#endif  // RAYLIB_WITH_LAS
+}
+
+#if RAYLIB_WITH_LAS
+LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name)
+  : file_name_(file_name)
+  , points_written_(0)
+  , writer_handle_(nullptr)
+  , point_(nullptr)
+{
+  if (laszip_create(&writer_handle_))
+  {
+    std::cerr << "LasRayCloudWriter: failed to create LASzip writer" << std::endl;
+    writer_handle_ = nullptr;
+    return;
+  }
+
+  laszip_header_struct *header;
+  laszip_get_header_pointer(writer_handle_, &header);
+
+  header->version_major = 1;
+  header->version_minor = 2;
+  header->point_data_format = 3;  // GPS time + RGB
+  const double scale = 1e-4;
+  header->x_scale_factor = scale;
+  header->y_scale_factor = scale;
+  header->z_scale_factor = scale;
+  header->x_offset = 0.0;
+  header->y_offset = 0.0;
+  header->z_offset = 0.0;
+
+  // Add three float32 extra attributes for ray start offset (start - end).
+  // LASzip API type 8 = F32. Scale/offset unused for floating-point types.
+  if (laszip_add_attribute(writer_handle_, 8, "sx", "ray start x offset", 1.0, 0.0) ||
+      laszip_add_attribute(writer_handle_, 8, "sy", "ray start y offset", 1.0, 0.0) ||
+      laszip_add_attribute(writer_handle_, 8, "sz", "ray start z offset", 1.0, 0.0))
+  {
+    laszip_CHAR *error;
+    laszip_get_error(writer_handle_, &error);
+    std::cerr << "LasRayCloudWriter: failed to add extra attributes: " << error << std::endl;
+    laszip_destroy(writer_handle_);
+    writer_handle_ = nullptr;
+    return;
+  }
+
+  // Explicitly set point type 3 (GPS time + RGB) and total record size (34 base + 12 extra bytes).
+  // laszip_add_attribute computes the record length using the default format 1 base (28), so we
+  // must override it here to the correct format 3 base (34) + 12 extra bytes = 46.
+  if (laszip_set_point_type_and_size(writer_handle_, 3, 34 + 12))
+  {
+    laszip_CHAR *error;
+    laszip_get_error(writer_handle_, &error);
+    std::cerr << "LasRayCloudWriter: failed to set point type/size: " << error << std::endl;
+    laszip_destroy(writer_handle_);
+    writer_handle_ = nullptr;
+    return;
+  }
+
+  // Custom VLR marks the file as a ray cloud so readers can detect it.
+  if (laszip_add_vlr(writer_handle_, "raycloudtools", 1, 0, "raycloud", nullptr))
+  {
+    laszip_CHAR *error;
+    laszip_get_error(writer_handle_, &error);
+    std::cerr << "LasRayCloudWriter: failed to add VLR: " << error << std::endl;
+    laszip_destroy(writer_handle_);
+    writer_handle_ = nullptr;
+    return;
+  }
+
+  const bool is_laz = file_name_.find(".laz") != std::string::npos;
+  std::cout << "Saving ray cloud to " << file_name_ << std::endl;
+
+  if (laszip_open_writer(writer_handle_, file_name_.c_str(), is_laz ? 1 : 0))
+  {
+    laszip_CHAR *error;
+    laszip_get_error(writer_handle_, &error);
+    std::cerr << "LasRayCloudWriter: failed to open file for writing: " << error << std::endl;
+    laszip_destroy(writer_handle_);
+    writer_handle_ = nullptr;
+    return;
+  }
+
+  laszip_get_point_pointer(writer_handle_, &point_);
+}
+#else   // RAYLIB_WITH_LAS
+LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name)
+  : file_name_(file_name)
+{
+  RAYLIB_UNUSED(file_name);
+  std::cerr << "LasRayCloudWriter: WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true" << std::endl;
+}
+#endif  // RAYLIB_WITH_LAS
+
+LasRayCloudWriter::~LasRayCloudWriter()
+{
+#if RAYLIB_WITH_LAS
+  if (writer_handle_)
+  {
+    laszip_update_inventory(writer_handle_);
+    laszip_close_writer(writer_handle_);
+    laszip_destroy(writer_handle_);
+    // Patch the LAS 1.2 legacy point count on disk (same fix as LasWriter).
+    if (points_written_ > 0)
+    {
+      std::fstream f(file_name_, std::ios::in | std::ios::out | std::ios::binary);
+      if (f.is_open())
+      {
+        const laszip_U32 count =
+          static_cast<laszip_U32>(std::min<uint64_t>(points_written_, std::numeric_limits<laszip_U32>::max()));
+        f.seekp(107);
+        f.write(reinterpret_cast<const char *>(&count), sizeof(count));
+      }
+    }
+  }
+#else
+  std::cerr << "LasRayCloudWriter: WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true" << std::endl;
+#endif
+}
+
+bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
+                                   const std::vector<Eigen::Vector3d> &ends, const std::vector<double> &times,
+                                   const std::vector<RGBA> &colours)
+{
+#if RAYLIB_WITH_LAS
+  if (ends.empty())
+    return true;
+  if (!writer_handle_ || !point_)
+  {
+    std::cerr << "Error: LasRayCloudWriter not open for writing to " << file_name_ << std::endl;
+    return false;
+  }
+  for (size_t i = 0; i < ends.size(); i++)
+  {
+    laszip_F64 coords[3] = { ends[i][0], ends[i][1], ends[i][2] };
+    laszip_set_coordinates(writer_handle_, coords);
+    point_->gps_time = times[i];
+    point_->intensity = colours[i].alpha;
+    point_->rgb[0] = static_cast<laszip_U16>(colours[i].red) * 257u;
+    point_->rgb[1] = static_cast<laszip_U16>(colours[i].green) * 257u;
+    point_->rgb[2] = static_cast<laszip_U16>(colours[i].blue) * 257u;
+    // Store start - end as three float32 extra bytes so starts can be reconstructed.
+    const float sx = static_cast<float>(starts[i][0] - ends[i][0]);
+    const float sy = static_cast<float>(starts[i][1] - ends[i][1]);
+    const float sz = static_cast<float>(starts[i][2] - ends[i][2]);
+    memcpy(point_->extra_bytes, &sx, 4);
+    memcpy(point_->extra_bytes + 4, &sy, 4);
+    memcpy(point_->extra_bytes + 8, &sz, 4);
+    laszip_write_point(writer_handle_);
+  }
+  points_written_ += ends.size();
+  return true;
+#else   // RAYLIB_WITH_LAS
+  RAYLIB_UNUSED(starts);
+  RAYLIB_UNUSED(ends);
+  RAYLIB_UNUSED(times);
+  RAYLIB_UNUSED(colours);
+  std::cerr << "LasRayCloudWriter: WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true" << std::endl;
   return false;
 #endif  // RAYLIB_WITH_LAS
 }

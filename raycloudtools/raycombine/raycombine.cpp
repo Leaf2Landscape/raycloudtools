@@ -116,7 +116,7 @@ int rayCombine(int argc, char *argv[])
   {
     config.merge_type = ray::MergeType::All;
   }
-  std::string combined_file = output.isSet() ? output_file.name() : file_stub + "_combined.ply";
+  std::string combined_file = output.isSet() ? output_file.name() : file_stub + "_combined.las";
   if (concatenate_all)
   {
     ray::CloudWriter writer;
@@ -161,7 +161,7 @@ int rayCombine(int argc, char *argv[])
     merger.mergeMultiple(clouds, &progress);
     std::cout << merger.differenceCloud().rayCount() << " transients, " << merger.fixedCloud().rayCount()
               << " fixed rays." << std::endl;
-    merger.differenceCloud().save(file_stub + "_differences.ply");
+    merger.differenceCloud().save(file_stub + "_differences.las");
   }
 
   progress_thread.join();

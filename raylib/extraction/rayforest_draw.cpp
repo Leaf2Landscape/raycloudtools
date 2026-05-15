@@ -110,7 +110,7 @@ void segmentCloud(const std::string &cloud_name_stub, const ColourField &pixels,
 {
   const std::string filename = cloud_name_stub + ".ply";
   ray::CloudWriter writer;
-  if (!writer.begin(cloud_name_stub + "_segmented.ply"))
+  if (!writer.begin(cloud_name_stub + "_segmented.las"))
     return;
 
   ray::Cloud chunk;

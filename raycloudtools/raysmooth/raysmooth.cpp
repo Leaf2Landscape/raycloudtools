@@ -65,7 +65,7 @@ int raySmooth(int argc, char *argv[])
     cloud.ends[i] += normals[i] * (centroids[i] - cloud.ends[i]).dot(normals[i]);
   }
 
-  cloud.save(cloud_file.nameStub() + "_smooth.ply");
+  cloud.save(cloud_file.nameStub() + "_smooth.las");
 
   return 0;
 }

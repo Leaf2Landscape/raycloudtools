@@ -74,8 +74,8 @@ int raySplit(int argc, char *argv[])
     usage();
   }
 
-  const std::string in_name = cloud_file.nameStub() + "_inside.ply";
-  const std::string out_name = cloud_file.nameStub() + "_outside.ply";
+  const std::string in_name = cloud_file.nameStub() + "_inside.las";
+  const std::string out_name = cloud_file.nameStub() + "_outside.las";
   const std::string rc_name = cloud_file.name();  // ray cloud name
   bool res = true;
 

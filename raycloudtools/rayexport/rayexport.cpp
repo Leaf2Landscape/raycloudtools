@@ -14,6 +14,24 @@
 #include "raylib/rayply.h"
 #include "raylib/raytrajectory.h"
 
+namespace
+{
+// Format-agnostic chunked reader for ray clouds (.ply, .las, .laz).
+bool readRayCloud(const std::string &file_name,
+                  std::function<void(std::vector<Eigen::Vector3d> &, std::vector<Eigen::Vector3d> &,
+                                     std::vector<double> &, std::vector<ray::RGBA> &)>
+                    apply)
+{
+  const std::string ext = ray::getFileNameExtension(file_name);
+  if (ext == "las" || ext == "laz")
+  {
+    size_t num_bounded;
+    return ray::readLas(file_name, apply, num_bounded, 1.0, nullptr);
+  }
+  return ray::readPly(file_name, true, apply, 0);
+}
+}  // namespace
+
 void usage(int exit_code = 1)
 {
   // clang-format off
@@ -40,7 +58,7 @@ int rayExport(int argc, char *argv[])
     auto add_chunk = [&las_writer](std::vector<Eigen::Vector3d> &, std::vector<Eigen::Vector3d> &ends,
                                    std::vector<double> &times,
                                    std::vector<ray::RGBA> &colours) { las_writer.writeChunk(ends, times, colours); };
-    if (!ray::readPly(raycloud_file.name(), true, add_chunk, 0))
+    if (!readRayCloud(raycloud_file.name(), add_chunk))
       usage();
   }
   else if (pointcloud_file.nameExt() == "ply")
@@ -54,7 +72,7 @@ int rayExport(int argc, char *argv[])
                                      std::vector<double> &times, std::vector<ray::RGBA> &colours) {
       ray::writePointCloudChunk(ofs, buffer, ends, times, colours, has_warned);
     };
-    if (!ray::readPly(raycloud_file.name(), true, add_chunk, 0))
+    if (!readRayCloud(raycloud_file.name(), add_chunk))
       usage();
     ray::writePointCloudChunkEnd(ofs);
   }
@@ -88,7 +106,7 @@ int rayExport(int argc, char *argv[])
         }
       }    
     };
-    if (!ray::readPly(raycloud_file.name(), true, add_chunk, 0))
+    if (!readRayCloud(raycloud_file.name(), add_chunk))
     {
       usage();
     }
@@ -135,7 +153,7 @@ int rayExport(int argc, char *argv[])
       }
       ray::writePointCloudChunk(ofs, buffer, chunk.starts, chunk.times, chunk.colours, has_warned);
     };
-    if (!ray::readPly(raycloud_file.name(), true, decimate_time, 0))
+    if (!readRayCloud(raycloud_file.name(), decimate_time))
       usage();
     ray::writePointCloudChunkEnd(ofs);
   }
@@ -169,7 +187,7 @@ int rayExport(int argc, char *argv[])
         last_time_slot = time_slot;
       }
     };
-    if (!ray::readPly(raycloud_file.name(), true, decimate_time, 0))
+    if (!readRayCloud(raycloud_file.name(), decimate_time))
     {
       usage();
     }

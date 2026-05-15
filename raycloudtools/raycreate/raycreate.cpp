@@ -240,7 +240,7 @@ int rayCreate(int argc, char *argv[])
   }
   else
     usage();
-  cloud.save(type + ".ply");
+  cloud.save(type + ".las");
 
   return 0;
 }

@@ -34,6 +34,12 @@ bool RAYLIB_EXPORT readLas(const std::string &file_name,
 bool RAYLIB_EXPORT writeLas(std::string file_name, const std::vector<Eigen::Vector3d> &points,
                             const std::vector<double> &times, const std::vector<RGBA> &colours);
 
+/// Write a ray cloud to a las/laz file. Ray starts are stored as float32 extra bytes.
+/// RGBA colour is fully preserved: RGB in the LAS colour fields, alpha in intensity.
+bool RAYLIB_EXPORT writeLasRayCloud(const std::string &file_name, const std::vector<Eigen::Vector3d> &starts,
+                                    const std::vector<Eigen::Vector3d> &ends, const std::vector<double> &times,
+                                    const std::vector<RGBA> &colours);
+
 /// Class for chunked writing of las/laz files.
 class RAYLIB_EXPORT LasWriter
 {
@@ -55,6 +61,28 @@ private:
   uint64_t points_written_;
 #endif  // RAYLIB_WITH_LAS
 };
+
+/// Class for chunked writing of las/laz ray cloud files.
+/// Ray starts are stored as three float32 extra bytes (start - end offset).
+/// RGBA is fully preserved: RGB in LAS colour fields, alpha in intensity.
+class RAYLIB_EXPORT LasRayCloudWriter
+{
+public:
+  explicit LasRayCloudWriter(const std::string &file_name);
+  ~LasRayCloudWriter();
+  bool writeChunk(const std::vector<Eigen::Vector3d> &starts, const std::vector<Eigen::Vector3d> &ends,
+                  const std::vector<double> &times, const std::vector<RGBA> &colours);
+  unsigned long pointCount() const { return points_written_; }
+
+private:
+  std::string file_name_;
+  uint64_t points_written_ = 0;
+#if RAYLIB_WITH_LAS
+  laszip_POINTER writer_handle_;
+  laszip_point_struct *point_;
+#endif  // RAYLIB_WITH_LAS
+};
+
 }  // namespace ray
 
 #endif  // RAYLIB_RAYLAZ_H

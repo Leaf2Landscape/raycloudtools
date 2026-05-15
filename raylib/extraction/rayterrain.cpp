@@ -383,7 +383,7 @@ void Terrain::extract(const Cloud &cloud, const Eigen::Vector3d &offset, const s
     {
       local_cloud.addRay(p, p, t++, RGBA::white());
     }
-    local_cloud.save(file_prefix + "_terrain.ply");
+    local_cloud.save(file_prefix + "_terrain.las");
   }
 #else
   std::cerr << "Error: extracting terrain requires QHull, see README instructions for installation" << std::endl;

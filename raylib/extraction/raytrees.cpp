@@ -182,7 +182,7 @@ Trees::Trees(Cloud &cloud, const Eigen::Vector3d &offset, const Mesh &mesh, cons
   if (verbose)
   {
     debug_cloud.translate(offset);
-    debug_cloud.save("debug.ply");
+    debug_cloud.save("debug.las");
   }
 
   // now trace from root tree nodes upwards, getting node centroids

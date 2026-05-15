@@ -14,7 +14,7 @@ namespace ray
 bool decimateSpatial(const std::string &file_stub, double vox_width)
 {
   ray::CloudWriter writer;
-  if (!writer.begin(file_stub + "_decimated.ply"))
+  if (!writer.begin(file_stub + "_decimated.las"))
     return false;
 
   // By maintaining these buffers below, we avoid almost all memory fragmentation
@@ -49,7 +49,7 @@ bool decimateSpatial(const std::string &file_stub, double vox_width)
 bool decimateTemporal(const std::string &file_stub, int num_rays)
 {
   ray::CloudWriter writer;
-  if (!writer.begin(file_stub + "_decimated.ply"))
+  if (!writer.begin(file_stub + "_decimated.las"))
     return false;
 
   // By maintaining these buffers below, we avoid almost all memory fragmentation
@@ -79,7 +79,7 @@ bool decimateTemporal(const std::string &file_stub, int num_rays)
 bool decimateSpatioTemporal(const std::string &file_stub, double vox_width, int num_rays)
 {
   ray::CloudWriter writer;
-  if (!writer.begin(file_stub + "_decimated.ply"))
+  if (!writer.begin(file_stub + "_decimated.las"))
     return false;
 
   // By maintaining these buffers below, we avoid almost all memory fragmentation
@@ -168,7 +168,7 @@ bool decimateSpatioTemporal(const std::string &file_stub, double vox_width, int 
 bool decimateRaysSpatial(const std::string &file_stub, double vox_width)
 {
   ray::CloudWriter writer;
-  if (!writer.begin(file_stub + "_decimated.ply"))
+  if (!writer.begin(file_stub + "_decimated.las"))
     return false;
 
   // By maintaining these buffers below, we avoid almost all memory fragmentation
@@ -211,7 +211,7 @@ bool decimateRaysSpatial(const std::string &file_stub, double vox_width)
 bool decimateAngular(const std::string &file_stub, double radius_per_length)
 {
   ray::CloudWriter writer;
-  if (!writer.begin(file_stub + "_decimated.ply"))
+  if (!writer.begin(file_stub + "_decimated.las"))
     return false;
 
   ray::Cloud chunk;

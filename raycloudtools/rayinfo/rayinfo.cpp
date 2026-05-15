@@ -4,6 +4,7 @@
 //
 // Author: Thomas Lowe
 #include "raylib/raycloud.h"
+#include "raylib/raylaz.h"
 #include "raylib/rayparse.h"
 #include "raylib/raycuboid.h"
 #include "raylib/rayply.h"
@@ -141,7 +142,18 @@ int rayInfo(int argc, char *argv[])
       }
     }
   };
-  if (!ray::readPly(cloud.name(), true, get_info, 0))
+  const std::string ext = ray::getFileNameExtension(cloud.name());
+  bool read_ok;
+  if (ext == "las" || ext == "laz")
+  {
+    size_t num_bounded;
+    read_ok = ray::readLas(cloud.name(), get_info, num_bounded, 1.0, nullptr);
+  }
+  else
+  {
+    read_ok = ray::readPly(cloud.name(), true, get_info, 0);
+  }
+  if (!read_ok)
   {
     usage();
   }
