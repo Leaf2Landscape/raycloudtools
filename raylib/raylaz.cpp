@@ -296,6 +296,7 @@ bool RAYLIB_EXPORT writeLas(std::string file_name, const std::vector<Eigen::Vect
 
   header->version_major = 1;
   header->version_minor = 4;
+  header->header_size = 375;  // LAS 1.4 header is 375 bytes
   header->point_data_format = 6;  // LAS 1.4: GPS time only
   const double scale = 1e-4;
   header->x_scale_factor = scale;
@@ -365,6 +366,7 @@ LasWriter::LasWriter(const std::string &file_name)
 
   header_->version_major = 1;
   header_->version_minor = 4;
+  header_->header_size = 375;  // LAS 1.4 header is 375 bytes
   header_->point_data_format = 6;  // LAS 1.4: GPS time only
   const double scale = 1e-4;
   header_->x_scale_factor = scale;
@@ -503,6 +505,7 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
 
   header->version_major = 1;
   header->version_minor = 4;
+  header->header_size = 375;  // LAS 1.4 header is 375 bytes
   header->point_data_format = 7;  // LAS 1.4: GPS time + RGB (equivalent of format 3)
   const double scale = 1e-4;
   header->x_scale_factor = scale;
