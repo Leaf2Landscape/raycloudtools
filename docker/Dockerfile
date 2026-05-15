@@ -57,7 +57,7 @@ RUN git clone https://github.com/ethz-asl/libnabo.git && \
     cd libnabo && \
     git checkout tags/1.0.7 && \
     mkdir build && cd build && \
-    cmake .. -DCMAKE_BUILD_TYPE=Release && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && \
     make -j$(nproc) && \
     make install && \
     cd ../.. && rm -rf libnabo
@@ -91,7 +91,8 @@ RUN git clone https://github.com/Leaf2Landscape/treetools.git && \
         -DPROJ_LIBRARY=/usr/lib/x86_64-linux-gnu/libproj.so \
         -DWITH_TIFF=ON \
         -DTREE_BUILD_TESTS=ON \
-        -DCMAKE_BUILD_TYPE=Release && \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && \
     make -j$(nproc) && \
     make install && \
     cd ../.. && \

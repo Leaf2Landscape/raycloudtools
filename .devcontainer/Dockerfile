@@ -51,7 +51,7 @@ RUN git clone https://github.com/ethz-asl/libnabo.git && \
     cd libnabo && \
     git checkout tags/1.0.7 && \
     mkdir build && cd build && \
-    cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo && \
+    cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && \
     make -j$(nproc) && \
     make install && \
     cd ../.. && rm -rf libnabo
