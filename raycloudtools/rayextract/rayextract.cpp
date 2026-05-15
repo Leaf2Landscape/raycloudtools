@@ -284,7 +284,7 @@ int rayExtract(int argc, char *argv[])
         trunks.push_back(std::pair<Eigen::Vector3d, double>(tree.segments()[0].tip, tree.segments()[0].radius));
       }
     }
-    ray::ForestStructure results = forest.extract(cloud_file.nameStub(), mesh, trunks, width.value());
+    ray::ForestStructure results = forest.extract(cloud_file.name(), mesh, trunks, width.value());
     // save the results, which is a location, radius and height per tree
     results.save(cloud_file.nameStub() + "_forest.txt");
   }

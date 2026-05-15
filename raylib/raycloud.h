@@ -38,6 +38,7 @@ public:
   std::vector<Eigen::Vector3d> ends;
   std::vector<double> times;
   std::vector<RGBA> colours;
+  std::vector<int32_t> tree_ids;  ///< optional per-point tree ID (populated by rayextract trees)
 
   void clear();
   /// reserve the cloud's vectors

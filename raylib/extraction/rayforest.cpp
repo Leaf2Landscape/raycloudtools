@@ -79,13 +79,15 @@ bool Forest::findSpace(const TreeNode &node, Eigen::Vector3d &tip)
 }
 
 // extract the ray cloud canopy to a height field, then call the heightfield based forest extraction
-ray::ForestStructure Forest::extract(const std::string &cloud_name_stub, Mesh &mesh,
+ray::ForestStructure Forest::extract(const std::string &cloud_file, Mesh &mesh,
                                      const std::vector<std::pair<Eigen::Vector3d, double>> &trunks, double voxel_width)
 {
+  cloud_file_ = cloud_file;
+  const std::string cloud_name_stub = cloud_file.substr(0, cloud_file.rfind('.'));
   trunks_ = trunks;
   // firstly, get the bounds of the ray cloud
   Cloud::Info info;
-  if (!Cloud::getInfo(cloud_name_stub + ".ply", info))
+  if (!Cloud::getInfo(cloud_file, info))
   {
     return ray::ForestStructure();
   }
@@ -113,7 +115,7 @@ ray::ForestStructure Forest::extract(const std::string &cloud_name_stub, Mesh &m
       h = std::max(h, ends[i][2]);
     }
   };
-  if (!ray::Cloud::read(cloud_name_stub + ".ply", fillHeightField))
+  if (!ray::Cloud::read(cloud_file, fillHeightField))
   {
     return ray::ForestStructure();
   }
@@ -140,7 +142,7 @@ ray::ForestStructure Forest::extract(const std::string &cloud_name_stub, Mesh &m
   {
     grid2D.init(min_bounds_, max_bounds_, voxel_width);
     // walk the rays to fill densities based on walking the rays through the grid
-    grid2D.fillDensities(cloud_name_stub + ".ply", lows, 1.0, 1.5);
+    grid2D.fillDensities(cloud_file, lows, 1.0, 1.5);
     grid2D.save(cloud_name_stub + "_occupied.dat");
   }
   if (grid2D.dims()[0] != lows.rows() || grid2D.dims()[1] != lows.cols())

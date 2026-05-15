@@ -25,13 +25,14 @@ void Cloud::clear()
   ends.clear();
   times.clear();
   colours.clear();
+  tree_ids.clear();
 }
 
 void Cloud::save(const std::string &file_name) const
 {
   const std::string ext = getFileNameExtension(file_name);
   if (ext == "las" || ext == "laz")
-    writeLasRayCloud(file_name, starts, ends, times, colours);
+    writeLasRayCloud(file_name, starts, ends, times, colours, tree_ids);
   else
     writePlyRayCloud(file_name, starts, ends, times, colours);
 }
@@ -50,6 +51,7 @@ bool Cloud::load(const std::string &file_name, bool check_extension, int min_num
 
 bool Cloud::loadLas(const std::string &file, int min_num_rays)
 {
+  std::vector<int32_t> ids;
   auto apply = [&](std::vector<Eigen::Vector3d> &start_pts, std::vector<Eigen::Vector3d> &end_pts,
                    std::vector<double> &time_pts, std::vector<RGBA> &colour_pts) {
     starts.insert(starts.end(), start_pts.begin(), start_pts.end());
@@ -58,7 +60,9 @@ bool Cloud::loadLas(const std::string &file, int min_num_rays)
     colours.insert(colours.end(), colour_pts.begin(), colour_pts.end());
   };
   size_t num_bounded;
-  bool res = readLas(file, apply, num_bounded, 1.0, nullptr);
+  bool res = readLas(file, apply, num_bounded, 1.0, nullptr, 1000000, &ids);
+  if (!ids.empty())
+    tree_ids = std::move(ids);
   if ((int)ends.size() < min_num_rays)
     return false;
   return res;

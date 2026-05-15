@@ -105,10 +105,10 @@ void OccupancyGrid2D::draw(const std::string &filename)
 }
 
 /// colour the ray cloud according to the plan-view image stored in pixels
-void segmentCloud(const std::string &cloud_name_stub, const ColourField &pixels, const Eigen::Vector3d &min_bounds,
-                  double voxel_width)
+void segmentCloud(const std::string &cloud_name_stub, const std::string &cloud_file, const ColourField &pixels,
+                  const Eigen::Vector3d &min_bounds, double voxel_width)
 {
-  const std::string filename = cloud_name_stub + ".ply";
+  const std::string filename = cloud_file;
   ray::CloudWriter writer;
   if (!writer.begin(cloud_name_stub + "_segmented.las"))
     return;
@@ -175,7 +175,7 @@ void Forest::drawFinalSegmentation(const std::string &cloud_name_stub, std::vect
   }
   stbi_flip_vertically_on_write(1);
 
-  segmentCloud(cloud_name_stub, pixels, min_bounds_, voxel_width_);
+  segmentCloud(cloud_name_stub, cloud_file_, pixels, min_bounds_, voxel_width_);
 
   std::string output_file = cloud_name_stub + "_segmented.png";
 

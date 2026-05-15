@@ -33,7 +33,7 @@ public:
     , drop_ratio_(0.1)
   {}
   /// Extract tree locations from a specified ray cloud, ground mesh and an optional set of identified trunks
-  ForestStructure extract(const std::string &cloud_name_stub, Mesh &mesh,
+  ForestStructure extract(const std::string &cloud_file, Mesh &mesh,
                           const std::vector<std::pair<Eigen::Vector3d, double>> &trunks, double voxel_width);
   /// Extract tree locations directly from 2D fields: a height field of the canopy (highs) the ground (lows) and the
   /// free space (space).
@@ -79,6 +79,7 @@ private:
   std::vector<std::pair<Eigen::Vector3d, double>> trunks_;
   Eigen::Vector3d min_bounds_, max_bounds_;
   Eigen::ArrayXXi indexfield_;
+  std::string cloud_file_;
 };
 
 }  // namespace ray

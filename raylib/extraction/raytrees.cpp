@@ -1095,6 +1095,8 @@ void Trees::segmentCloud(Cloud &cloud, std::vector<int> &root_segs, const std::v
     contiguous_section_ids_[sec] = num_trees++;
   }
 
+  cloud.tree_ids.assign(cloud.ends.size(), -1);
+
   int j = -1;
   for (size_t i = 0; i < cloud.ends.size(); i++)
   {
@@ -1142,6 +1144,7 @@ void Trees::segmentCloud(Cloud &cloud, std::vector<int> &root_segs, const std::v
         continue;
       }
       convertIntToColour(contiguous_section_ids_[seg], colour);
+      cloud.tree_ids[i] = contiguous_section_ids_[seg];
     }
     else
     {
@@ -1173,6 +1176,11 @@ void Trees::removeOutOfBoundRays(Cloud &cloud, const Eigen::Vector3d &min_bound,
       cloud.colours.pop_back();
       cloud.times[i] = cloud.times.back();
       cloud.times.pop_back();
+      if (!cloud.tree_ids.empty())
+      {
+        cloud.tree_ids[i] = cloud.tree_ids.back();
+        cloud.tree_ids.pop_back();
+      }
     }
   }
 }

@@ -21,7 +21,8 @@ bool readLas(const std::string &file_name,
              std::function<void(std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                                 std::vector<double> &times, std::vector<RGBA> &colours)>
                apply,
-             size_t &num_bounded, double max_intensity, Eigen::Vector3d *offset_to_remove, size_t chunk_size)
+             size_t &num_bounded, double max_intensity, Eigen::Vector3d *offset_to_remove, size_t chunk_size,
+             std::vector<int32_t> *tree_ids_out)
 {
 #if RAYLIB_WITH_LAS
   std::cout << "readLas: filename: " << file_name << std::endl;
@@ -129,6 +130,12 @@ bool readLas(const std::string &file_name,
       memcpy(&sy, point->extra_bytes + 4, 4);
       memcpy(&sz, point->extra_bytes + 8, 4);
       starts.push_back({ position[0] + sx, position[1] + sy, position[2] + sz });
+      if (tree_ids_out && point->num_extra_bytes >= 16)
+      {
+        int32_t tid;
+        memcpy(&tid, point->extra_bytes + 12, 4);
+        tree_ids_out->push_back(tid);
+      }
     }
     else
     {
@@ -193,6 +200,7 @@ bool readLas(const std::string &file_name,
   RAYLIB_UNUSED(num_bounded);
   RAYLIB_UNUSED(chunk_size);
   RAYLIB_UNUSED(max_intensity);
+  RAYLIB_UNUSED(tree_ids_out);
   std::cerr << "readLas: cannot read file as WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true" << std::endl;
   return false;
 #endif  // RAYLIB_WITH_LAS
@@ -407,11 +415,11 @@ bool LasWriter::writeChunk(const std::vector<Eigen::Vector3d> &points, const std
 
 bool RAYLIB_EXPORT writeLasRayCloud(const std::string &file_name, const std::vector<Eigen::Vector3d> &starts,
                                     const std::vector<Eigen::Vector3d> &ends, const std::vector<double> &times,
-                                    const std::vector<RGBA> &colours)
+                                    const std::vector<RGBA> &colours, const std::vector<int32_t> &tree_ids)
 {
 #if RAYLIB_WITH_LAS
-  LasRayCloudWriter writer(file_name);
-  return writer.writeChunk(starts, ends, times, colours);
+  LasRayCloudWriter writer(file_name, !tree_ids.empty());
+  return writer.writeChunk(starts, ends, times, colours, tree_ids);
 #else   // RAYLIB_WITH_LAS
   RAYLIB_UNUSED(file_name);
   RAYLIB_UNUSED(starts);
@@ -424,9 +432,10 @@ bool RAYLIB_EXPORT writeLasRayCloud(const std::string &file_name, const std::vec
 }
 
 #if RAYLIB_WITH_LAS
-LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name)
+LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tree_id)
   : file_name_(file_name)
   , points_written_(0)
+  , with_tree_id_(with_tree_id)
   , writer_handle_(nullptr)
   , point_(nullptr)
 {
@@ -453,9 +462,14 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name)
 
   // Add three float32 extra attributes for ray start offset (start - end).
   // LASzip API type 8 = F32. Scale/offset unused for floating-point types.
-  if (laszip_add_attribute(writer_handle_, 8, "sx", "ray start x offset", 1.0, 0.0) ||
-      laszip_add_attribute(writer_handle_, 8, "sy", "ray start y offset", 1.0, 0.0) ||
-      laszip_add_attribute(writer_handle_, 8, "sz", "ray start z offset", 1.0, 0.0))
+  // Optionally add a fourth int32 attribute for the per-point tree ID.
+  // LASzip API type 5 = INT32.
+  bool attr_err =
+    laszip_add_attribute(writer_handle_, 8, "sx", "ray start x offset", 1.0, 0.0) ||
+    laszip_add_attribute(writer_handle_, 8, "sy", "ray start y offset", 1.0, 0.0) ||
+    laszip_add_attribute(writer_handle_, 8, "sz", "ray start z offset", 1.0, 0.0) ||
+    (with_tree_id_ && laszip_add_attribute(writer_handle_, 5, "tree_id", "per-point tree ID", 1.0, 0.0));
+  if (attr_err)
   {
     laszip_CHAR *error;
     laszip_get_error(writer_handle_, &error);
@@ -465,10 +479,11 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name)
     return;
   }
 
-  // Explicitly set point type 3 (GPS time + RGB) and total record size (34 base + 12 extra bytes).
+  // Explicitly set point type 3 (GPS time + RGB) and total record size.
   // laszip_add_attribute computes the record length using the default format 1 base (28), so we
-  // must override it here to the correct format 3 base (34) + 12 extra bytes = 46.
-  if (laszip_set_point_type_and_size(writer_handle_, 3, 34 + 12))
+  // must override it here to the correct format 3 base (34) + extra bytes.
+  const laszip_U16 record_size = static_cast<laszip_U16>(34 + 12 + (with_tree_id_ ? 4 : 0));
+  if (laszip_set_point_type_and_size(writer_handle_, 3, record_size))
   {
     laszip_CHAR *error;
     laszip_get_error(writer_handle_, &error);
@@ -505,10 +520,12 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name)
   laszip_get_point_pointer(writer_handle_, &point_);
 }
 #else   // RAYLIB_WITH_LAS
-LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name)
+LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tree_id)
   : file_name_(file_name)
+  , with_tree_id_(with_tree_id)
 {
   RAYLIB_UNUSED(file_name);
+  RAYLIB_UNUSED(with_tree_id);
   std::cerr << "LasRayCloudWriter: WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true" << std::endl;
 }
 #endif  // RAYLIB_WITH_LAS
@@ -541,7 +558,7 @@ LasRayCloudWriter::~LasRayCloudWriter()
 
 bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
                                    const std::vector<Eigen::Vector3d> &ends, const std::vector<double> &times,
-                                   const std::vector<RGBA> &colours)
+                                   const std::vector<RGBA> &colours, const std::vector<int32_t> &tree_ids)
 {
 #if RAYLIB_WITH_LAS
   if (ends.empty())
@@ -567,6 +584,11 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
     memcpy(point_->extra_bytes, &sx, 4);
     memcpy(point_->extra_bytes + 4, &sy, 4);
     memcpy(point_->extra_bytes + 8, &sz, 4);
+    if (with_tree_id_)
+    {
+      const int32_t tid = (i < tree_ids.size()) ? tree_ids[i] : -1;
+      memcpy(point_->extra_bytes + 12, &tid, 4);
+    }
     laszip_write_point(writer_handle_);
   }
   points_written_ += ends.size();
@@ -576,6 +598,7 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
   RAYLIB_UNUSED(ends);
   RAYLIB_UNUSED(times);
   RAYLIB_UNUSED(colours);
+  RAYLIB_UNUSED(tree_ids);
   std::cerr << "LasRayCloudWriter: WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true" << std::endl;
   return false;
 #endif  // RAYLIB_WITH_LAS
