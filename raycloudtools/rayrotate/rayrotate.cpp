@@ -35,7 +35,7 @@ int rayRotate(int argc, char *argv[])
   rot /= angle;
   Eigen::Quaterniond rotation(Eigen::AngleAxisd(angle * ray::kPi / 180.0, rot));
 
-  const std::string temp_name = cloud_file.name() + "~";  // tilde is a common suffix for temporary files
+  const std::string temp_name = cloud_file.nameStub() + "~." + ray::getFileNameExtension(cloud_file.name());
 
   auto rotate = [&](Eigen::Vector3d &start, Eigen::Vector3d &end, double &, ray::RGBA &) {
     start = rotation * start;
