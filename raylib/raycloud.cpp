@@ -27,13 +27,14 @@ void Cloud::clear()
   times.clear();
   colours.clear();
   tree_ids.clear();
+  passthrough.clear();
 }
 
 void Cloud::save(const std::string &file_name) const
 {
   const std::string ext = getFileNameExtension(file_name);
   if (ext == "las" || ext == "laz")
-    writeLasRayCloud(file_name, starts, ends, times, colours, tree_ids);
+    writeLasRayCloud(file_name, starts, ends, times, colours, tree_ids, passthrough);
   else
     writePlyRayCloud(file_name, starts, ends, times, colours);
 }
@@ -53,6 +54,7 @@ bool Cloud::load(const std::string &file_name, bool check_extension, int min_num
 bool Cloud::loadLas(const std::string &file, int min_num_rays)
 {
   std::vector<int32_t> ids;
+  std::vector<uint8_t> pass;
   auto apply = [&](std::vector<Eigen::Vector3d> &start_pts, std::vector<Eigen::Vector3d> &end_pts,
                    std::vector<double> &time_pts, std::vector<RGBA> &colour_pts) {
     starts.insert(starts.end(), start_pts.begin(), start_pts.end());
@@ -61,9 +63,11 @@ bool Cloud::loadLas(const std::string &file, int min_num_rays)
     colours.insert(colours.end(), colour_pts.begin(), colour_pts.end());
   };
   size_t num_bounded;
-  bool res = readLas(file, apply, num_bounded, 1.0, nullptr, 1000000, &ids);
+  bool res = readLas(file, apply, num_bounded, 1.0, nullptr, 1000000, &ids, &pass);
   if (!ids.empty())
     tree_ids = std::move(ids);
+  if (!pass.empty())
+    passthrough = std::move(pass);
   if ((int)ends.size() < min_num_rays)
     return false;
   return res;
@@ -176,11 +180,15 @@ void Cloud::removeUnboundedRays()
     ends[i] = ends[valids[i]];
     times[i] = times[valids[i]];
     colours[i] = colours[valids[i]];
+    if (!passthrough.empty())
+      memcpy(passthrough.data() + i * 6, passthrough.data() + valids[i] * 6, 6);
   }
   starts.resize(valids.size());
   ends.resize(valids.size());
   times.resize(valids.size());
   colours.resize(valids.size());
+  if (!passthrough.empty())
+    passthrough.resize(valids.size() * 6);
 }
 
 void Cloud::decimate(double voxel_width, std::set<Eigen::Vector3i, Vector3iLess> &voxel_set)
@@ -194,11 +202,15 @@ void Cloud::decimate(double voxel_width, std::set<Eigen::Vector3i, Vector3iLess>
     ends[i] = ends[id];
     colours[i] = colours[id];
     times[i] = times[id];
+    if (!passthrough.empty())
+      memcpy(passthrough.data() + i * 6, passthrough.data() + id * 6, 6);
   }
   starts.resize(subsample.size());
   ends.resize(subsample.size());
   colours.resize(subsample.size());
   times.resize(subsample.size());
+  if (!passthrough.empty())
+    passthrough.resize(subsample.size() * 6);
 }
 
 void Cloud::eigenSolve(const std::vector<int> &ray_ids, const Eigen::MatrixXi &indices, int index, int num_neighbours,
@@ -485,6 +497,13 @@ void Cloud::addRay(const Cloud &other_cloud, size_t index)
   ends.push_back(other_cloud.ends[index]);
   times.push_back(other_cloud.times[index]);
   colours.push_back(other_cloud.colours[index]);
+  if (!other_cloud.tree_ids.empty())
+    tree_ids.push_back(other_cloud.tree_ids[index]);
+  if (other_cloud.passthrough.size() >= (index + 1) * 6)
+  {
+    const uint8_t *src = other_cloud.passthrough.data() + index * 6;
+    passthrough.insert(passthrough.end(), src, src + 6);
+  }
 }
 
 void Cloud::resize(size_t size)

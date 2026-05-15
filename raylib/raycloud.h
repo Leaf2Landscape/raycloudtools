@@ -38,7 +38,15 @@ public:
   std::vector<Eigen::Vector3d> ends;
   std::vector<double> times;
   std::vector<RGBA> colours;
-  std::vector<int32_t> tree_ids;  ///< optional per-point tree ID (populated by rayextract trees)
+  std::vector<int32_t> tree_ids;   ///< optional per-point tree ID (populated by rayextract trees)
+  /// Optional flat array of non-raycloud LAS fields, 6 bytes per point:
+  ///   [0] return_number[0:2] | num_returns[3:5] | scan_dir[6] | edge[7]
+  ///   [1] classification[0:4] | synthetic[5] | keypoint[6] | withheld[7]
+  ///   [2] scan_angle_rank (int8 reinterpreted as uint8)
+  ///   [3] user_data
+  ///   [4..5] point_source_ID (little-endian)
+  /// Empty unless loaded from a LAS/LAZ file.
+  std::vector<uint8_t> passthrough;
 
   void clear();
   /// reserve the cloud's vectors

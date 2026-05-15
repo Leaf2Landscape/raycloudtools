@@ -22,7 +22,7 @@ bool readLas(const std::string &file_name,
                                 std::vector<double> &times, std::vector<RGBA> &colours)>
                apply,
              size_t &num_bounded, double max_intensity, Eigen::Vector3d *offset_to_remove, size_t chunk_size,
-             std::vector<int32_t> *tree_ids_out)
+             std::vector<int32_t> *tree_ids_out, std::vector<uint8_t> *passthrough_out)
 {
 #if RAYLIB_WITH_LAS
   std::cout << "readLas: filename: " << file_name << std::endl;
@@ -143,6 +143,25 @@ bool readLas(const std::string &file_name,
       starts.push_back(position);
     }
 
+    // Pack the six standard LAS fields we don't use as raycloud fields into passthrough.
+    if (passthrough_out)
+    {
+      const uint8_t rb = static_cast<uint8_t>(point->return_number)
+                       | static_cast<uint8_t>(point->number_of_returns << 3)
+                       | static_cast<uint8_t>(point->scan_direction_flag << 6)
+                       | static_cast<uint8_t>(point->edge_of_flight_line << 7);
+      const uint8_t cb = static_cast<uint8_t>(point->classification)
+                       | static_cast<uint8_t>(point->synthetic_flag << 5)
+                       | static_cast<uint8_t>(point->keypoint_flag << 6)
+                       | static_cast<uint8_t>(point->withheld_flag << 7);
+      passthrough_out->push_back(rb);
+      passthrough_out->push_back(cb);
+      passthrough_out->push_back(static_cast<uint8_t>(point->scan_angle_rank));
+      passthrough_out->push_back(point->user_data);
+      passthrough_out->push_back(static_cast<uint8_t>(point->point_source_ID & 0xFFu));
+      passthrough_out->push_back(static_cast<uint8_t>(point->point_source_ID >> 8));
+    }
+
     if (using_colour)
     {
       RGBA col;
@@ -202,6 +221,7 @@ bool readLas(const std::string &file_name,
   RAYLIB_UNUSED(chunk_size);
   RAYLIB_UNUSED(max_intensity);
   RAYLIB_UNUSED(tree_ids_out);
+  RAYLIB_UNUSED(passthrough_out);
   std::cerr << "readLas: cannot read file as WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true" << std::endl;
   return false;
 #endif  // RAYLIB_WITH_LAS
@@ -416,11 +436,12 @@ bool LasWriter::writeChunk(const std::vector<Eigen::Vector3d> &points, const std
 
 bool RAYLIB_EXPORT writeLasRayCloud(const std::string &file_name, const std::vector<Eigen::Vector3d> &starts,
                                     const std::vector<Eigen::Vector3d> &ends, const std::vector<double> &times,
-                                    const std::vector<RGBA> &colours, const std::vector<int32_t> &tree_ids)
+                                    const std::vector<RGBA> &colours, const std::vector<int32_t> &tree_ids,
+                                    const std::vector<uint8_t> &passthrough)
 {
 #if RAYLIB_WITH_LAS
   LasRayCloudWriter writer(file_name, !tree_ids.empty());
-  return writer.writeChunk(starts, ends, times, colours, tree_ids);
+  return writer.writeChunk(starts, ends, times, colours, tree_ids, passthrough);
 #else   // RAYLIB_WITH_LAS
   RAYLIB_UNUSED(file_name);
   RAYLIB_UNUSED(starts);
@@ -559,7 +580,8 @@ LasRayCloudWriter::~LasRayCloudWriter()
 
 bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
                                    const std::vector<Eigen::Vector3d> &ends, const std::vector<double> &times,
-                                   const std::vector<RGBA> &colours, const std::vector<int32_t> &tree_ids)
+                                   const std::vector<RGBA> &colours, const std::vector<int32_t> &tree_ids,
+                                   const std::vector<uint8_t> &passthrough)
 {
 #if RAYLIB_WITH_LAS
   if (ends.empty())
@@ -578,6 +600,22 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
     point_->rgb[0] = static_cast<laszip_U16>(colours[i].red) * 257u;
     point_->rgb[1] = static_cast<laszip_U16>(colours[i].green) * 257u;
     point_->rgb[2] = static_cast<laszip_U16>(colours[i].blue) * 257u;
+    // Restore preserved standard LAS fields if available.
+    if (passthrough.size() >= (i + 1) * 6)
+    {
+      const uint8_t *p = passthrough.data() + i * 6;
+      point_->return_number        = p[0] & 0x7u;
+      point_->number_of_returns    = (p[0] >> 3) & 0x7u;
+      point_->scan_direction_flag  = (p[0] >> 6) & 0x1u;
+      point_->edge_of_flight_line  = (p[0] >> 7) & 0x1u;
+      point_->classification       = p[1] & 0x1Fu;
+      point_->synthetic_flag       = (p[1] >> 5) & 0x1u;
+      point_->keypoint_flag        = (p[1] >> 6) & 0x1u;
+      point_->withheld_flag        = (p[1] >> 7) & 0x1u;
+      point_->scan_angle_rank      = static_cast<laszip_I8>(p[2]);
+      point_->user_data            = p[3];
+      point_->point_source_ID      = static_cast<laszip_U16>(p[4]) | (static_cast<laszip_U16>(p[5]) << 8);
+    }
     // Store start - end as three float32 extra bytes so starts can be reconstructed.
     const float sx = static_cast<float>(starts[i][0] - ends[i][0]);
     const float sy = static_cast<float>(starts[i][1] - ends[i][1]);
@@ -600,6 +638,7 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
   RAYLIB_UNUSED(times);
   RAYLIB_UNUSED(colours);
   RAYLIB_UNUSED(tree_ids);
+  RAYLIB_UNUSED(passthrough);
   std::cerr << "LasRayCloudWriter: WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true" << std::endl;
   return false;
 #endif  // RAYLIB_WITH_LAS

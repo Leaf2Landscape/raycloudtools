@@ -28,7 +28,8 @@ bool RAYLIB_EXPORT readLas(const std::string &file_name,
                                               std::vector<double> &times, std::vector<RGBA> &colours)>
                              apply,
                            size_t &num_bounded, double max_intensity, Eigen::Vector3d *offset_to_remove,
-                           size_t chunk_size = 1000000, std::vector<int32_t> *tree_ids_out = nullptr);
+                           size_t chunk_size = 1000000, std::vector<int32_t> *tree_ids_out = nullptr,
+                           std::vector<uint8_t> *passthrough_out = nullptr);
 
 
 /// Write to a laz or las file. The intensity is the only part that is extracted from the @c colours argument.
@@ -41,7 +42,8 @@ bool RAYLIB_EXPORT writeLas(std::string file_name, const std::vector<Eigen::Vect
 bool RAYLIB_EXPORT writeLasRayCloud(const std::string &file_name, const std::vector<Eigen::Vector3d> &starts,
                                     const std::vector<Eigen::Vector3d> &ends, const std::vector<double> &times,
                                     const std::vector<RGBA> &colours,
-                                    const std::vector<int32_t> &tree_ids = {});
+                                    const std::vector<int32_t> &tree_ids = {},
+                                    const std::vector<uint8_t> &passthrough = {});
 
 /// Class for chunked writing of las/laz files.
 class RAYLIB_EXPORT LasWriter
@@ -76,7 +78,8 @@ public:
   ~LasRayCloudWriter();
   bool writeChunk(const std::vector<Eigen::Vector3d> &starts, const std::vector<Eigen::Vector3d> &ends,
                   const std::vector<double> &times, const std::vector<RGBA> &colours,
-                  const std::vector<int32_t> &tree_ids = {});
+                  const std::vector<int32_t> &tree_ids = {},
+                  const std::vector<uint8_t> &passthrough = {});
   unsigned long pointCount() const { return points_written_; }
 
 private:
