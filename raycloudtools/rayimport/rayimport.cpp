@@ -31,7 +31,7 @@ void usage(int exit_code = 1)
   std::cout << "                                        --remove_start_pos  - translate so first point is at 0,0,0" << std::endl;
   std::cout << "rayimport pointcloudfile unbound transformfile - load unbound data (pulses that missed) from RIEGL .rxp file" << std::endl;
   std::cout << "                                               transformfile is a text file containing a 4x4 transformation matrix" << std::endl;
-  std::cout << "The output is a .las or .laz file of the same name (or with suffix _raycloud if the input was a .ply file)." << std::endl;
+  std::cout << "The output is a _raycloud.las/.laz file (preserving .laz if the input is .laz)." << std::endl;
   // clang-format on
   exit(exit_code);
 }
@@ -93,10 +93,8 @@ int rayImport(int argc, char *argv[])
       usage();
   }
 
-  std::string save_file = cloud_file.nameStub();
+  std::string save_file = cloud_file.nameStub() + "_raycloud";
   const std::string in_ext = cloud_file.nameExt();
-  if (in_ext == "ply")
-    save_file += "_raycloud";
   const std::string save_ext = (in_ext == "laz") ? "laz" : "las";
   size_t num_bounded;
   ray::CloudWriter writer;

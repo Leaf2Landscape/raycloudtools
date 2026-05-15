@@ -306,6 +306,7 @@ bool RAYLIB_EXPORT writeLas(std::string file_name, const std::vector<Eigen::Vect
   header->y_offset = 0.0;
   header->z_offset = 0.0;
   header->extended_number_of_point_records = static_cast<laszip_U64>(points.size());
+  header->offset_to_point_data = 375;  // LAS 1.4 header, no VLRs
 
   const bool is_laz = file_name.find(".laz") != std::string::npos;
   std::cout << "Saving points to " << file_name << std::endl;
@@ -375,6 +376,7 @@ LasWriter::LasWriter(const std::string &file_name)
   header_->x_offset = 0.0;
   header_->y_offset = 0.0;
   header_->z_offset = 0.0;
+  header_->offset_to_point_data = 375;  // LAS 1.4 header, no VLRs
 
   const bool is_laz = file_name_.find(".laz") != std::string::npos;
   std::cout << "Saving points to " << file_name_ << std::endl;
@@ -557,6 +559,12 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
     writer_handle_ = nullptr;
     return;
   }
+
+  // LASzip internally computed offset_to_point_data using the LAS 1.2 default header
+  // size (227) when VLRs were added. Correct it for the LAS 1.4 header (375 bytes).
+  laszip_header_struct *hdr;
+  laszip_get_header_pointer(writer_handle_, &hdr);
+  hdr->offset_to_point_data += (375 - 227);
 
   const bool is_laz = file_name_.find(".laz") != std::string::npos;
   std::cout << "Saving ray cloud to " << file_name_ << std::endl;
