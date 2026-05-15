@@ -7,3 +7,12 @@ treetools*/
 data*/
 3rd-party/rivlib*/
 .cache/*
+# Test data / tool output files
+*.las
+*.laz
+*.ply
+*.dat
+*.png
+!pics/*.png
+forest_*.txt
+room_*.txt
