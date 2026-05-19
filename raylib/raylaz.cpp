@@ -192,13 +192,14 @@ bool readLas(const std::string &file_name,
       starts.push_back(position);
     }
 
-    // Pack 8 bytes of LAS 1.4 extended fields per point into passthrough.
+    // Pack 10 bytes of LAS fields per point into passthrough, followed by sensor extras.
     // Layout: [0] ext_return[0:3]|ext_num_returns[4:7]
     //         [1] class_flags[0:3]|scanner_chan[4:5]|scan_dir[6]|edge[7]
     //         [2] extended_classification
     //         [3] user_data
     //         [4-5] extended_scan_angle (int16 LE, 0.006 deg units)
     //         [6-7] point_source_ID (uint16 LE)
+    //         [8-9] original intensity (uint16 LE)
     if (passthrough_out)
     {
       uint8_t b0, b1, b2;
@@ -236,6 +237,9 @@ bool readLas(const std::string &file_name,
       passthrough_out->push_back(static_cast<uint8_t>(static_cast<uint16_t>(ext_angle) >> 8));
       passthrough_out->push_back(static_cast<uint8_t>(point->point_source_ID & 0xFFu));
       passthrough_out->push_back(static_cast<uint8_t>(point->point_source_ID >> 8));
+      // Original intensity (uint16 LE) — preserved so the output keeps the sensor value.
+      passthrough_out->push_back(static_cast<uint8_t>(point->intensity & 0xFFu));
+      passthrough_out->push_back(static_cast<uint8_t>(point->intensity >> 8));
       // Append original sensor extra bytes (after skipping our raycloud-owned attributes).
       if (local_orig_extra > 0 && point->num_extra_bytes >= local_skip_size + local_orig_extra)
         passthrough_out->insert(passthrough_out->end(),
@@ -259,13 +263,20 @@ bool readLas(const std::string &file_name,
     uint8_t intensity;
     if (is_raycloud)
     {
-      // Alpha is stored directly in the intensity field (0-255).
-      intensity = static_cast<uint8_t>(point->intensity);
+      // Alpha is stored in extra_bytes at position 12 (or 16 with tree_id).
+      // Prefer extra_bytes so the intensity field is free to carry the original sensor value.
+      const uint16_t alpha_pos = has_tree_id_attr ? 16u : 12u;
+      intensity = (point->num_extra_bytes > alpha_pos)
+                    ? point->extra_bytes[alpha_pos]
+                    : static_cast<uint8_t>(point->intensity);  // fallback for old files
     }
     else
     {
       const double normalised = (max_intensity > 0) ? (255.0 * point->intensity) / max_intensity : 255.0;
       intensity = static_cast<uint8_t>(std::min(normalised, 255.0));
+      // Ensure any non-zero raw intensity maps to at least alpha=1 (bounded ray).
+      if (intensity == 0 && point->intensity > 0)
+        intensity = 1;
     }
     if (intensity > 0)
       num_bounded++;
@@ -628,7 +639,7 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
   , points_written_(0)
   , with_tree_id_(with_tree_id)
   , orig_extra_size_(0)
-  , passthrough_stride_(8)
+  , passthrough_stride_(10)
   , writer_handle_(nullptr)
   , point_(nullptr)
 {
@@ -692,7 +703,7 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
     laszip_add_attribute(writer_handle_, static_cast<laszip_U32>(dtype - 1), name, desc, scale_v, offset_v);
     orig_extra_size_ += kTypeSize[dtype];
   }
-  passthrough_stride_ = static_cast<uint16_t>(8 + orig_extra_size_);
+  passthrough_stride_ = static_cast<uint16_t>(10 + orig_extra_size_);
 
   // LAS 1.4 format 7 base = 36 bytes.
   const laszip_U16 record_size =
@@ -803,8 +814,8 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
     point_->rgb[0] = static_cast<laszip_U16>(colours[i].red) * 257u;
     point_->rgb[1] = static_cast<laszip_U16>(colours[i].green) * 257u;
     point_->rgb[2] = static_cast<laszip_U16>(colours[i].blue) * 257u;
-    // Restore LAS 1.4 extended fields from passthrough if available.
-    // First 8 bytes: standard LAS fields. Bytes [8..] are original sensor extra bytes.
+    // Restore LAS fields from passthrough if available.
+    // Layout: [0-7] standard LAS fields, [8-9] original intensity (uint16 LE), [10..] sensor extras.
     if (passthrough.size() >= (i + 1) * passthrough_stride_)
     {
       const uint8_t *p = passthrough.data() + i * passthrough_stride_;
@@ -820,11 +831,13 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
       std::memcpy(&ext_angle, p + 4, 2);
       point_->extended_scan_angle  = ext_angle;
       point_->point_source_ID      = static_cast<laszip_U16>(p[6]) | (static_cast<laszip_U16>(p[7]) << 8);
-      // Original sensor extra bytes follow the standard 8 bytes.
+      // Restore original intensity from p[8..9], overriding the alpha default set above.
+      std::memcpy(&point_->intensity, p + 8, 2);
+      // Original sensor extra bytes at p[10..].
       if (orig_extra_size_ > 0)
       {
         const uint16_t orig_start = static_cast<uint16_t>(with_tree_id_ ? 17 : 13);
-        std::memcpy(point_->extra_bytes + orig_start, p + 8, orig_extra_size_);
+        std::memcpy(point_->extra_bytes + orig_start, p + 10, orig_extra_size_);
       }
     }
     // Store start - end as three float32 extra bytes so starts can be reconstructed.

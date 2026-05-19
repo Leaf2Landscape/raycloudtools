@@ -22,7 +22,7 @@ static bool beginWriter(CloudWriter &writer, const std::string &out_file,
   uint16_t orig_extra = 0;
   if (ext == "las" || ext == "laz")
     readLasExtraBytesVlr(in_file, orig_extra, extra_bytes_vlr_out);
-  pass_stride_out = static_cast<uint16_t>(8 + orig_extra);
+  pass_stride_out = static_cast<uint16_t>(10 + orig_extra);
   return writer.begin(out_file, extra_bytes_vlr_out);
 }
 

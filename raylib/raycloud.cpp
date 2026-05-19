@@ -73,7 +73,7 @@ bool Cloud::loadLas(const std::string &file, int min_num_rays)
   if (!pass.empty())
   {
     passthrough = std::move(pass);
-    extra_bytes_size = 8 + orig_extra;
+    extra_bytes_size = 10 + orig_extra;
     extra_bytes_vlr = std::move(orig_vlr);
   }
   if ((int)ends.size() < min_num_rays)
