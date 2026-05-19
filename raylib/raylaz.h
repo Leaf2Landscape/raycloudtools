@@ -105,7 +105,7 @@ private:
   uint64_t points_written_ = 0;
   bool with_tree_id_ = false;
   uint16_t orig_extra_size_ = 0;   ///< per-point original sensor extra bytes
-  uint16_t passthrough_stride_ = 8; ///< 8 + orig_extra_size_
+  uint16_t passthrough_stride_ = 10; ///< 10 + orig_extra_size_
 #if RAYLIB_WITH_LAS
   laszip_POINTER writer_handle_;
   laszip_point_struct *point_;
