@@ -261,7 +261,9 @@ int rayDiff(int argc, char *argv[])
       j++;
     }
   }
-  cloud1.save(cloud1_name.nameStub() + "_diff.las");
+  const std::string ext1 = ray::getFileNameExtension(cloud1_name.name());
+  const std::string ext2 = ray::getFileNameExtension(cloud2_name.name());
+  cloud1.save(cloud1_name.nameStub() + "_diff." + ext1);
   j = 0;
   for (int i = 0; i<(int)cloud2.ends.size(); i++)
   {
@@ -277,11 +279,11 @@ int rayDiff(int argc, char *argv[])
       j++;
     }
   }
-  cloud2.save(cloud2_name.nameStub() + "_diff.las");
+  cloud2.save(cloud2_name.nameStub() + "_diff." + ext2);
 
   if (visualise.isSet())
   {
-    std::string command = std::string(VISUALISE_TOOL) + std::string(" ") + cloud1_name.nameStub() + "_diff.ply " + cloud2_name.nameStub() + "_diff.las";
+    std::string command = std::string(VISUALISE_TOOL) + std::string(" ") + cloud1_name.nameStub() + "_diff." + ext1 + " " + cloud2_name.nameStub() + "_diff." + ext2;
     system(command.c_str());  
   }
   return (int)similarity;

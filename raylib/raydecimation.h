@@ -15,27 +15,27 @@ namespace ray
 {
 /// @brief subsample to 1 point per @c vox_width wide voxel in metres
 /// This is a spatially even subsampling, but also emphasises outlier as a side-effect
-bool RAYLIB_EXPORT decimateSpatial(const std::string &file_stub, double vox_width);
+bool RAYLIB_EXPORT decimateSpatial(const std::string &file_name, double vox_width);
 
 /// @brief subsample to every @c num_rays rays
 /// This is an unbiased subsampling, but will be over-sampled in stationary areas as a side-effect
-/// Note that while this is called temporal decimation, it decimates evenly in file order, which isn't 
+/// Note that while this is called temporal decimation, it decimates evenly in file order, which isn't
 /// necessarily temporal order. Though it typically is stored that way on single scans.
-bool RAYLIB_EXPORT decimateTemporal(const std::string &file_stub, int num_rays);
+bool RAYLIB_EXPORT decimateTemporal(const std::string &file_name, int num_rays);
 
 /// @brief subsample to @c num_rays rays (temporally decimated) for each @c vox_width wide voxel
 /// This allows a more even distribution of points while maintaining details better than pure spatial decimation
-bool RAYLIB_EXPORT decimateSpatioTemporal(const std::string &file_stub, double vox_width, int num_rays);
+bool RAYLIB_EXPORT decimateSpatioTemporal(const std::string &file_name, double vox_width, int num_rays);
 
 /// @brief Maintains a maximum number of rays intersecting each voxel. This has some ambiguity, but is a useful routine
 /// as it maintains the integrity of the full ray cloud including free space, so is better for combine operations
-/// By contrast, standard spatial decimation removes free space whenever the end points coincide 
-bool RAYLIB_EXPORT decimateRaysSpatial(const std::string &file_stub, double vox_width);
+/// By contrast, standard spatial decimation removes free space whenever the end points coincide
+bool RAYLIB_EXPORT decimateRaysSpatial(const std::string &file_name, double vox_width);
 
 
-/// @brief decimate to no more than 1 point per voxel of width @c radius_per_length x ray length. 
+/// @brief decimate to no more than 1 point per voxel of width @c radius_per_length x ray length.
 /// This is used when error is proportional to ray length, prioritising closer measurements and leaving distant areas sparse
-bool RAYLIB_EXPORT decimateAngular(const std::string &file_stub, double radius_per_length);
+bool RAYLIB_EXPORT decimateAngular(const std::string &file_name, double radius_per_length);
 
 
 struct Subsampler

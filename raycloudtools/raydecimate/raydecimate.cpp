@@ -63,23 +63,23 @@ int rayDecimate(int argc, char *argv[])
   bool res = false;
   if (double_format_points)
   {
-    res = ray::decimateSpatioTemporal(cloud_file.nameStub(), vox_width.value(), num_rays.value());
+    res = ray::decimateSpatioTemporal(cloud_file.name(), vox_width.value(), num_rays.value());
   }
   else if (quantity.selectedKey() == "cm/ray")
   {
-    res = ray::decimateRaysSpatial(cloud_file.nameStub(), width_for_ray.value());
+    res = ray::decimateRaysSpatial(cloud_file.name(), width_for_ray.value());
   }
   else if (quantity.selectedKey() == "cm")
   {
-    res = ray::decimateSpatial(cloud_file.nameStub(), vox_width.value());
+    res = ray::decimateSpatial(cloud_file.name(), vox_width.value());
   }
   else if (quantity.selectedKey() == "rays")
   {
-    res = ray::decimateTemporal(cloud_file.nameStub(), num_rays.value());
+    res = ray::decimateTemporal(cloud_file.name(), num_rays.value());
   }
   else if (quantity.selectedKey() == "cm/m")
   {
-    res = ray::decimateAngular(cloud_file.nameStub(), radius_per_length.value());
+    res = ray::decimateAngular(cloud_file.name(), radius_per_length.value());
   }
   if (!res)
     usage();

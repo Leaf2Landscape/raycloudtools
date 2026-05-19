@@ -9,7 +9,7 @@
 
 namespace ray
 {
-bool CloudWriter::begin(const std::string &file_name)
+bool CloudWriter::begin(const std::string &file_name, const std::vector<uint8_t> &extra_bytes_vlr)
 {
   if (file_name.empty())
   {
@@ -22,7 +22,7 @@ bool CloudWriter::begin(const std::string &file_name)
 
   if (use_las_)
   {
-    las_writer_ = new LasRayCloudWriter(file_name_);
+    las_writer_ = new LasRayCloudWriter(file_name_, false, extra_bytes_vlr);
     return true;
   }
 
@@ -65,13 +65,14 @@ bool CloudWriter::writeChunk(const Cloud &chunk)
 }
 
 bool CloudWriter::writeChunk(std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                             std::vector<double> &times, std::vector<RGBA> &colours)
+                             std::vector<double> &times, std::vector<RGBA> &colours,
+                             const std::vector<uint8_t> &passthrough)
 {
   if (use_las_)
   {
     if (!las_writer_)
       return false;
-    return las_writer_->writeChunk(starts, ends, times, colours);
+    return las_writer_->writeChunk(starts, ends, times, colours, {}, passthrough);
   }
   return writeRayCloudChunk(ofs_, buffer_, starts, ends, times, colours, has_warned_);
 }

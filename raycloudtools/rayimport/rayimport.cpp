@@ -31,7 +31,7 @@ void usage(int exit_code = 1)
   std::cout << "                                        --remove_start_pos  - translate so first point is at 0,0,0" << std::endl;
   std::cout << "rayimport pointcloudfile unbound transformfile - load unbound data (pulses that missed) from RIEGL .rxp file" << std::endl;
   std::cout << "                                               transformfile is a text file containing a 4x4 transformation matrix" << std::endl;
-  std::cout << "The output is a .las file of the same name (or with suffix _raycloud if the input was a .ply file)." << std::endl;
+  std::cout << "The output is a _raycloud.las/.laz file (preserving .laz if the input is .laz)." << std::endl;
   // clang-format on
   exit(exit_code);
 }
@@ -93,16 +93,28 @@ int rayImport(int argc, char *argv[])
       usage();
   }
 
-  std::string save_file = cloud_file.nameStub();
-  if (cloud_file.nameExt() == "ply")
-    save_file += "_raycloud";
+  std::string save_file = cloud_file.nameStub() + "_raycloud";
+  const std::string in_ext = cloud_file.nameExt();
+  const std::string save_ext = (in_ext == "laz") ? "laz" : "las";
   size_t num_bounded;
+
+  // Pre-read original sensor extra-byte attributes from the input LAS/LAZ header so the writer
+  // can register and preserve them before opening the output file.
+  std::vector<uint8_t> input_extra_bytes_vlr;
+  if (in_ext == "laz" || in_ext == "las")
+  {
+    uint16_t orig_extra = 0;
+    ray::readLasExtraBytesVlr(cloud_file.name(), orig_extra, input_extra_bytes_vlr);
+  }
+
   ray::CloudWriter writer;
-  if (!writer.begin(save_file + ".las"))
+  if (!writer.begin(save_file + "." + save_ext, input_extra_bytes_vlr))
     usage();
   Eigen::Vector3d start_pos(0, 0, 0);
   double min_time = std::numeric_limits<double>::max();
   double max_time = std::numeric_limits<double>::lowest();
+  std::vector<uint8_t> all_passthrough;
+  size_t prev_pass_size = 0;
   auto add_chunk = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                        std::vector<double> &times, std::vector<ray::RGBA> &colours) {
     if (start_pos.squaredNorm() == 0.0)
@@ -178,7 +190,9 @@ int rayImport(int argc, char *argv[])
         c.alpha = uint8_t(0);
       }
     }
-    if (!writer.writeChunk(starts, ends, times, colours))
+    std::vector<uint8_t> chunk_pass(all_passthrough.begin() + prev_pass_size, all_passthrough.end());
+    prev_pass_size = all_passthrough.size();
+    if (!writer.writeChunk(starts, ends, times, colours, chunk_pass))
       usage();
   };
 
@@ -218,7 +232,8 @@ int rayImport(int argc, char *argv[])
   }
   else if (cloud_file.nameExt() == "laz" || cloud_file.nameExt() == "las")
   {
-    if (!ray::readLas(cloud_file.name(), add_chunk, num_bounded, maximum_intensity, offset))
+    if (!ray::readLas(cloud_file.name(), add_chunk, num_bounded, maximum_intensity, offset, 1000000, nullptr,
+                      &all_passthrough))
     {
       usage();
     }

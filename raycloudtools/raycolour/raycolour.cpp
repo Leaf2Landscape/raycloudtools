@@ -7,6 +7,7 @@
 #include "raylib/raycloud.h"
 #include "raylib/raycloudwriter.h"
 #include "raylib/rayparse.h"
+#include "raylib/raylaz.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "raylib/imageread.h"
 
@@ -54,7 +55,8 @@ void spectrumRGB(double value, ray::RGBA &colour)
 }
 
 /// Function to colour the cloud from a horizontal projection of a supplied image, stretching to match the cloud bounds.
-void colourFromImage(const std::string &cloud_file, const std::string &image_file, ray::CloudWriter &writer)
+void colourFromImage(const std::string &cloud_file, const std::string &image_file, ray::CloudWriter &writer,
+                     std::vector<uint8_t> &passthrough_buf)
 {
   ray::Cloud::Info info;
   if (!ray::Cloud::getInfo(cloud_file, info))
@@ -74,7 +76,8 @@ void colourFromImage(const std::string &cloud_file, const std::string &image_fil
               << ", stretching to fit) " << std::endl;
   }
 
-  auto colour_from_image = [&bounds, &writer, &image_data, width_x, width_y, width, height, num_channels](
+  auto colour_from_image = [&bounds, &writer, &image_data, width_x, width_y, width, height, num_channels,
+                             &passthrough_buf](
                              std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                              std::vector<double> &times, std::vector<ray::RGBA> &colours) {
     for (size_t i = 0; i < ends.size(); i++)
@@ -86,10 +89,19 @@ void colourFromImage(const std::string &cloud_file, const std::string &image_fil
       colours[i].green = image_data[index + 1];
       colours[i].blue = image_data[index + 2];
     }
-    writer.writeChunk(starts, ends, times, colours);
+    std::vector<uint8_t> chunk_pass(passthrough_buf);
+    passthrough_buf.clear();
+    writer.writeChunk(starts, ends, times, colours, chunk_pass);
   };
 
-  if (!ray::Cloud::read(cloud_file, colour_from_image))
+  const std::string ext = ray::getFileNameExtension(cloud_file);
+  if (ext == "las" || ext == "laz")
+  {
+    size_t num_bounded;
+    if (!ray::readLas(cloud_file, colour_from_image, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf))
+      usage();
+  }
+  else if (!ray::Cloud::read(cloud_file, colour_from_image))
     usage();
 
   stbi_image_free(image_data);
@@ -112,17 +124,25 @@ int rayColour(int argc, char *argv[])
     usage();
 
   std::string in_file = cloud_file.name();
-  const std::string out_file = cloud_file.nameStub() + "_coloured.las";
+  const std::string out_file = cloud_file.nameStub() + "_coloured." + ray::getFileNameExtension(cloud_file.name());
   const std::string type = colour_type.selectedKey();
   uint8_t split_alpha = 100;
 
   if (type != "shape" && type != "normal" && type != "branches")  // chunk loading possible for simple cases
   {
+    const std::string ext = ray::getFileNameExtension(cloud_file.name());
+    uint16_t orig_extra = 0;
+    std::vector<uint8_t> extra_bytes_vlr;
+    if (ext == "las" || ext == "laz")
+      ray::readLasExtraBytesVlr(cloud_file.name(), orig_extra, extra_bytes_vlr);
+
     ray::CloudWriter writer;
-    if (!writer.begin(out_file))
+    if (!writer.begin(out_file, extra_bytes_vlr))
       usage();
 
-    auto colour_rays = [flat_colour, flat_alpha, &type, &col, &alpha, &writer, &split_alpha](
+    std::vector<uint8_t> passthrough_buf;
+
+    auto colour_rays = [flat_colour, flat_alpha, &type, &col, &alpha, &writer, &split_alpha, &passthrough_buf](
                          std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                          std::vector<double> &times, std::vector<ray::RGBA> &colours) {
       if (flat_colour)
@@ -172,12 +192,20 @@ int rayColour(int argc, char *argv[])
         else
           usage();
       }
-      writer.writeChunk(starts, ends, times, colours);
+      std::vector<uint8_t> chunk_pass(passthrough_buf);
+      passthrough_buf.clear();
+      writer.writeChunk(starts, ends, times, colours, chunk_pass);
     };
 
     if (image_format)
     {
-      colourFromImage(cloud_file.name(), image_file.name(), writer);
+      colourFromImage(cloud_file.name(), image_file.name(), writer, passthrough_buf);
+    }
+    else if (ext == "las" || ext == "laz")
+    {
+      size_t num_bounded;
+      if (!ray::readLas(cloud_file.name(), colour_rays, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf))
+        usage();
     }
     else if (!ray::Cloud::read(cloud_file.name(), colour_rays))
     {
