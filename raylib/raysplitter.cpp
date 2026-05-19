@@ -12,6 +12,7 @@
 #include "raycuboid.h"
 #include "extraction/raytrees.h"
 #include "rayparse.h"
+#include "raylaz.h"
 
 namespace ray
 {
@@ -20,35 +21,65 @@ namespace ray
 bool split(const std::string &file_name, const std::string &in_name, const std::string &out_name,
            std::function<bool(const Cloud &cloud, int i)> is_outside)
 {
+  const std::string ext = getFileNameExtension(file_name);
+  const bool is_las = (ext == "las" || ext == "laz");
+
+  std::vector<uint8_t> extra_bytes_vlr;
+  if (is_las)
+  {
+    uint16_t orig_extra = 0;
+    readLasExtraBytesVlr(file_name, orig_extra, extra_bytes_vlr);
+  }
+
   Cloud cloud_buffer;
   CloudWriter in_writer, out_writer;
-  if (!in_writer.begin(in_name))
+  if (!in_writer.begin(in_name, extra_bytes_vlr))
     return false;
-  if (!out_writer.begin(out_name))
+  if (!out_writer.begin(out_name, extra_bytes_vlr))
     return false;
   Cloud in_chunk, out_chunk;
 
-  /// move each ray into either the in_chunk or out_chunk, depending on the condition function is_outside
-  auto per_chunk = [&cloud_buffer, &in_writer, &out_writer, &in_chunk, &out_chunk, &is_outside](
-                     std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                     std::vector<double> &times, std::vector<RGBA> &colours) {
-    // I move these into the cloud buffer, so that they can be indexed easily in is_outside (by index).
-    cloud_buffer.starts = starts;
-    cloud_buffer.ends = ends;
-    cloud_buffer.times = times;
+  std::vector<uint8_t> passthrough_buf;
+
+  // Move each ray into either the in_chunk or out_chunk, depending on the condition is_outside.
+  // Passthrough (extra sensor bytes) is routed per-point via Cloud::addRay(const Cloud&, size_t).
+  auto per_chunk = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
+                       std::vector<double> &times, std::vector<RGBA> &colours) {
+    cloud_buffer.starts  = starts;
+    cloud_buffer.ends    = ends;
+    cloud_buffer.times   = times;
     cloud_buffer.colours = colours;
+    if (!passthrough_buf.empty())
+    {
+      cloud_buffer.passthrough   = std::move(passthrough_buf);
+      passthrough_buf.clear();
+      cloud_buffer.extra_bytes_size = static_cast<uint16_t>(cloud_buffer.passthrough.size() / starts.size());
+      cloud_buffer.extra_bytes_vlr  = extra_bytes_vlr;
+    }
 
     for (int i = 0; i < (int)cloud_buffer.ends.size(); i++)
     {
-      Cloud &cloud = is_outside(cloud_buffer, i) ? out_chunk : in_chunk;
-      cloud.addRay(cloud_buffer.starts[i], cloud_buffer.ends[i], cloud_buffer.times[i], cloud_buffer.colours[i]);
+      Cloud &chunk = is_outside(cloud_buffer, i) ? out_chunk : in_chunk;
+      chunk.addRay(cloud_buffer, static_cast<size_t>(i));
     }
     in_writer.writeChunk(in_chunk);
     out_writer.writeChunk(out_chunk);
     in_chunk.clear();
     out_chunk.clear();
+    cloud_buffer.passthrough.clear();
   };
-  if (!Cloud::read(file_name, per_chunk))
+
+  bool res;
+  if (is_las)
+  {
+    size_t num_bounded;
+    res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf);
+  }
+  else
+  {
+    res = Cloud::read(file_name, per_chunk);
+  }
+  if (!res)
     return false;
   in_writer.end();
   out_writer.end();
@@ -59,16 +90,50 @@ bool split(const std::string &file_name, const std::string &in_name, const std::
 bool splitPlane(const std::string &file_name, const std::string &in_name, const std::string &out_name,
                 const Eigen::Vector3d &plane)
 {
+  const std::string ext = getFileNameExtension(file_name);
+  const bool is_las = (ext == "las" || ext == "laz");
+
+  std::vector<uint8_t> extra_bytes_vlr;
+  if (is_las)
+  {
+    uint16_t orig_extra = 0;
+    readLasExtraBytesVlr(file_name, orig_extra, extra_bytes_vlr);
+  }
+
   CloudWriter inside_writer, outside_writer;
-  if (!inside_writer.begin(in_name))
+  if (!inside_writer.begin(in_name, extra_bytes_vlr))
     return false;
-  if (!outside_writer.begin(out_name))
+  if (!outside_writer.begin(out_name, extra_bytes_vlr))
     return false;
   Cloud in_chunk, out_chunk;
+  Cloud cloud_buffer;
+  std::vector<uint8_t> passthrough_buf;
 
-  // the split operation
+  auto copy_pass = [&](Cloud &dst, size_t src_i) {
+    const uint16_t stride = cloud_buffer.extra_bytes_size;
+    if (stride > 0 && cloud_buffer.passthrough.size() >= (src_i + 1) * stride)
+    {
+      const uint8_t *p = cloud_buffer.passthrough.data() + src_i * stride;
+      dst.passthrough.insert(dst.passthrough.end(), p, p + stride);
+      dst.extra_bytes_size = stride;
+      if (dst.extra_bytes_vlr.empty())
+        dst.extra_bytes_vlr = extra_bytes_vlr;
+    }
+  };
+
   auto per_chunk = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                        std::vector<double> &times, std::vector<RGBA> &colours) {
+    cloud_buffer.starts  = starts;
+    cloud_buffer.ends    = ends;
+    cloud_buffer.times   = times;
+    cloud_buffer.colours = colours;
+    if (!passthrough_buf.empty())
+    {
+      cloud_buffer.passthrough      = std::move(passthrough_buf);
+      passthrough_buf.clear();
+      cloud_buffer.extra_bytes_size = static_cast<uint16_t>(cloud_buffer.passthrough.size() / starts.size());
+      cloud_buffer.extra_bytes_vlr  = extra_bytes_vlr;
+    }
     const Eigen::Vector3d plane_vec = plane / plane.dot(plane);
     for (size_t i = 0; i < ends.size(); i++)
     {
@@ -77,7 +142,7 @@ bool splitPlane(const std::string &file_name, const std::string &in_name, const 
       if (d1 * d2 > 0.0)  // start and end are on the same side of the plane, so don't split...
       {
         Cloud &chunk = d1 > 0.0 ? out_chunk : in_chunk;
-        chunk.addRay(starts[i], ends[i], times[i], colours[i]);
+        chunk.addRay(cloud_buffer, i);
       }
       else  // split the ray...
       {
@@ -87,12 +152,16 @@ bool splitPlane(const std::string &file_name, const std::string &in_name, const 
         if (d1 > 0.0)
         {
           out_chunk.addRay(starts[i], mid, times[i], col);
+          copy_pass(out_chunk, i);
           in_chunk.addRay(mid, ends[i], times[i], colours[i]);
+          copy_pass(in_chunk, i);
         }
         else
         {
           in_chunk.addRay(starts[i], mid, times[i], col);
+          copy_pass(in_chunk, i);
           out_chunk.addRay(mid, ends[i], times[i], colours[i]);
+          copy_pass(out_chunk, i);
         }
       }
     }
@@ -100,10 +169,21 @@ bool splitPlane(const std::string &file_name, const std::string &in_name, const 
     outside_writer.writeChunk(out_chunk);
     in_chunk.clear();
     out_chunk.clear();
+    cloud_buffer.passthrough.clear();
   };
-  if (!Cloud::read(file_name, per_chunk))
-    return false;
 
+  bool res;
+  if (is_las)
+  {
+    size_t num_bounded;
+    res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf);
+  }
+  else
+  {
+    res = Cloud::read(file_name, per_chunk);
+  }
+  if (!res)
+    return false;
   inside_writer.end();
   outside_writer.end();
   return true;
@@ -113,12 +193,24 @@ bool splitPlane(const std::string &file_name, const std::string &in_name, const 
 bool splitCapsule(const std::string &file_name, const std::string &in_name, const std::string &out_name,
                   const Eigen::Vector3d &end1, const Eigen::Vector3d &end2, double radius)
 {
+  const std::string ext = getFileNameExtension(file_name);
+  const bool is_las = (ext == "las" || ext == "laz");
+
+  std::vector<uint8_t> extra_bytes_vlr;
+  if (is_las)
+  {
+    uint16_t orig_extra = 0;
+    readLasExtraBytesVlr(file_name, orig_extra, extra_bytes_vlr);
+  }
+
   CloudWriter inside_writer, outside_writer;
-  if (!inside_writer.begin(in_name))
+  if (!inside_writer.begin(in_name, extra_bytes_vlr))
     return false;
-  if (!outside_writer.begin(out_name))
+  if (!outside_writer.begin(out_name, extra_bytes_vlr))
     return false;
   Cloud in_chunk, out_chunk;
+  Cloud cloud_buffer;
+  std::vector<uint8_t> passthrough_buf;
 
   Eigen::Vector3d dir = end2 - end1;
   double length = dir.norm();
@@ -127,9 +219,32 @@ bool splitCapsule(const std::string &file_name, const std::string &in_name, cons
     dir /= length;
   }
 
+  auto copy_pass = [&](Cloud &dst, size_t src_i) {
+    const uint16_t stride = cloud_buffer.extra_bytes_size;
+    if (stride > 0 && cloud_buffer.passthrough.size() >= (src_i + 1) * stride)
+    {
+      const uint8_t *p = cloud_buffer.passthrough.data() + src_i * stride;
+      dst.passthrough.insert(dst.passthrough.end(), p, p + stride);
+      dst.extra_bytes_size = stride;
+      if (dst.extra_bytes_vlr.empty())
+        dst.extra_bytes_vlr = extra_bytes_vlr;
+    }
+  };
+
   // splitting per chunk
-  auto per_chunk = [&end1, &end2, &dir, &length, &radius, &in_chunk, &out_chunk, &inside_writer, &outside_writer](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
+  auto per_chunk = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                        std::vector<double> &times, std::vector<RGBA> &colours) {
+    cloud_buffer.starts  = starts;
+    cloud_buffer.ends    = ends;
+    cloud_buffer.times   = times;
+    cloud_buffer.colours = colours;
+    if (!passthrough_buf.empty())
+    {
+      cloud_buffer.passthrough      = std::move(passthrough_buf);
+      passthrough_buf.clear();
+      cloud_buffer.extra_bytes_size = static_cast<uint16_t>(cloud_buffer.passthrough.size() / starts.size());
+      cloud_buffer.extra_bytes_vlr  = extra_bytes_vlr;
+    }
     for (size_t i = 0; i < ends.size(); i++)
     {
       Eigen::Vector3d start = starts[i];
@@ -151,6 +266,7 @@ bool splitCapsule(const std::string &file_name, const std::string &in_name, cons
         if (gap >= radius)
         {
           out_chunk.addRay(start, end, times[i], colours[i]);
+          copy_pass(out_chunk, i);
           continue; // if it doesn't hit the endless cylinder it won't hit the capsule
         }
         Eigen::Vector3d lateral_dir = ray - dir * ray.dot(dir);
@@ -200,36 +316,52 @@ bool splitCapsule(const std::string &file_name, const std::string &in_name, cons
       if (closest_d >= 1.0 || farthest_d <= 0.0)
       {
         out_chunk.addRay(start, end, times[i], colours[i]);
+        copy_pass(out_chunk, i);
         continue;
       }
       // first outside ray
       if (closest_d > 0.0)
       {
         out_chunk.addRay(start, start + ray*closest_d, times[i], black);
+        copy_pass(out_chunk, i);
       }
       // second outside ray
       if (farthest_d < 1.0)
       {
         out_chunk.addRay(start + ray * farthest_d, end, times[i], colours[i]);
+        copy_pass(out_chunk, i);
       }
       // inside ray
       if (farthest_d < 1.0)
       {
         in_chunk.addRay(start + ray * std::max(0.0, closest_d), start + ray*std::min(farthest_d, 1.0), times[i], black);
+        copy_pass(in_chunk, i);
       }
       else
       {
         in_chunk.addRay(start + ray * std::max(0.0, closest_d), end, times[i], colours[i]);
+        copy_pass(in_chunk, i);
       }
     }
     inside_writer.writeChunk(in_chunk);
     outside_writer.writeChunk(out_chunk);
     in_chunk.clear();
     out_chunk.clear();
+    cloud_buffer.passthrough.clear();
   };
-  if (!Cloud::read(file_name, per_chunk))
-    return false;
 
+  bool res;
+  if (is_las)
+  {
+    size_t num_bounded;
+    res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf);
+  }
+  else
+  {
+    res = Cloud::read(file_name, per_chunk);
+  }
+  if (!res)
+    return false;
   inside_writer.end();
   outside_writer.end();
   return true;
@@ -240,17 +372,51 @@ bool splitCapsule(const std::string &file_name, const std::string &in_name, cons
 bool splitBox(const std::string &file_name, const std::string &in_name, const std::string &out_name,
               const Eigen::Vector3d &centre, const Eigen::Vector3d &extents)
 {
+  const std::string ext = getFileNameExtension(file_name);
+  const bool is_las = (ext == "las" || ext == "laz");
+
+  std::vector<uint8_t> extra_bytes_vlr;
+  if (is_las)
+  {
+    uint16_t orig_extra = 0;
+    readLasExtraBytesVlr(file_name, orig_extra, extra_bytes_vlr);
+  }
+
   CloudWriter inside_writer, outside_writer;
-  if (!inside_writer.begin(in_name))
+  if (!inside_writer.begin(in_name, extra_bytes_vlr))
     return false;
-  if (!outside_writer.begin(out_name))
+  if (!outside_writer.begin(out_name, extra_bytes_vlr))
     return false;
   Cloud in_chunk, out_chunk;
+  Cloud cloud_buffer;
+  std::vector<uint8_t> passthrough_buf;
+
+  auto copy_pass = [&](Cloud &dst, size_t src_i) {
+    const uint16_t stride = cloud_buffer.extra_bytes_size;
+    if (stride > 0 && cloud_buffer.passthrough.size() >= (src_i + 1) * stride)
+    {
+      const uint8_t *p = cloud_buffer.passthrough.data() + src_i * stride;
+      dst.passthrough.insert(dst.passthrough.end(), p, p + stride);
+      dst.extra_bytes_size = stride;
+      if (dst.extra_bytes_vlr.empty())
+        dst.extra_bytes_vlr = extra_bytes_vlr;
+    }
+  };
 
   // splitting per chunk
   auto per_chunk = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                        std::vector<double> &times, std::vector<RGBA> &colours) {
-    // I move these into the cloud buffer, so that they can be indexed easily in fptr (by index).
+    cloud_buffer.starts  = starts;
+    cloud_buffer.ends    = ends;
+    cloud_buffer.times   = times;
+    cloud_buffer.colours = colours;
+    if (!passthrough_buf.empty())
+    {
+      cloud_buffer.passthrough      = std::move(passthrough_buf);
+      passthrough_buf.clear();
+      cloud_buffer.extra_bytes_size = static_cast<uint16_t>(cloud_buffer.passthrough.size() / starts.size());
+      cloud_buffer.extra_bytes_vlr  = extra_bytes_vlr;
+    }
     const Cuboid cuboid(centre - extents, centre + extents);
     for (size_t i = 0; i < ends.size(); i++)
     {
@@ -264,29 +430,44 @@ bool splitBox(const std::string &file_name, const std::string &in_name, const st
           col.red = col.green = col.blue = col.alpha = 0;
         }
         in_chunk.addRay(start, end, times[i], col);
+        copy_pass(in_chunk, i);
         if (start != starts[i])  // start part is clipped
         {
           col.red = col.green = col.blue = col.alpha = 0;
           out_chunk.addRay(starts[i], start, times[i], col);
+          copy_pass(out_chunk, i);
         }
         if (ends[i] != end)  // end part is clipped
         {
           out_chunk.addRay(end, ends[i], times[i], colours[i]);
+          copy_pass(out_chunk, i);
         }
       }
       else  // no intersection
       {
         out_chunk.addRay(starts[i], ends[i], times[i], colours[i]);
+        copy_pass(out_chunk, i);
       }
     }
     inside_writer.writeChunk(in_chunk);
     outside_writer.writeChunk(out_chunk);
     in_chunk.clear();
     out_chunk.clear();
+    cloud_buffer.passthrough.clear();
   };
-  if (!Cloud::read(file_name, per_chunk))
-    return false;
 
+  bool res;
+  if (is_las)
+  {
+    size_t num_bounded;
+    res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf);
+  }
+  else
+  {
+    res = Cloud::read(file_name, per_chunk);
+  }
+  if (!res)
+    return false;
   inside_writer.end();
   outside_writer.end();
   return true;
@@ -304,6 +485,16 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
 bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub, const Eigen::Vector4d &cell_width,
                double overlap)
 {
+  const std::string ext = getFileNameExtension(file_name);
+  const bool is_las = (ext == "las" || ext == "laz");
+
+  std::vector<uint8_t> extra_bytes_vlr;
+  if (is_las)
+  {
+    uint16_t orig_extra = 0;
+    readLasExtraBytesVlr(file_name, orig_extra, extra_bytes_vlr);
+  }
+
   overlap /= 2.0;  // it now means overlap relative to grid edge
   Cloud::Info info;
   Cloud::getInfo(file_name, info);
@@ -347,6 +538,7 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
     std::cout << "Warning: nominally more than " << max_open_files << " file pointers will be open at once." << std::endl;
     std::cout << "Diving the operation into " << 1+length/max_open_files << " passes" << std::endl;
   }
+  const std::string grid_ext = getFileNameExtension(file_name);
   for (int pass = 0; pass<length; pass+=max_open_files)
   {
     if (pass > 0)
@@ -355,13 +547,24 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
     }
     std::vector<CloudWriter> cells(max_open_files);
     std::vector<Cloud> chunks(max_open_files);
+    Cloud cloud_buffer;
+    std::vector<uint8_t> passthrough_buf;
 
     // splitting performed per chunk
-    const std::string grid_ext = getFileNameExtension(file_name);
-    auto per_chunk = [&min_index, &max_index, &width, min_time, &dimensions, &cells, &chunks, length, &cell_width,
-                      &cloud_name_stub, &overlap, &pass, &max_open_files, &grid_ext](std::vector<Eigen::Vector3d> &starts,
-                                                  std::vector<Eigen::Vector3d> &ends, std::vector<double> &times,
-                                                  std::vector<RGBA> &colours) {
+    auto per_chunk = [&](std::vector<Eigen::Vector3d> &starts,
+                         std::vector<Eigen::Vector3d> &ends, std::vector<double> &times,
+                         std::vector<RGBA> &colours) {
+      cloud_buffer.starts  = starts;
+      cloud_buffer.ends    = ends;
+      cloud_buffer.times   = times;
+      cloud_buffer.colours = colours;
+      if (!passthrough_buf.empty())
+      {
+        cloud_buffer.passthrough      = std::move(passthrough_buf);
+        passthrough_buf.clear();
+        cloud_buffer.extra_bytes_size = static_cast<uint16_t>(cloud_buffer.passthrough.size() / starts.size());
+        cloud_buffer.extra_bytes_vlr  = extra_bytes_vlr;
+      }
       for (size_t i = 0; i < ends.size(); i++)
       {
         // get set of cells that the ray may intersect
@@ -420,13 +623,23 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
                   if (cell_width[3] > 0.0)
                     name << "_" << t;
                   name << "." << grid_ext;
-                  cells[index].begin(name.str());
+                  cells[index].begin(name.str(), extra_bytes_vlr);
                 }
                 if (!cuboid.intersects(ends[i]))  // end point is outside, so mark an unbounded ray
                 {
                   col.red = col.green = col.blue = col.alpha = 0;
                 }
                 chunks[index].addRay(start, end, times[i], col);
+                // copy passthrough bytes from original ray
+                const uint16_t stride = cloud_buffer.extra_bytes_size;
+                if (stride > 0 && cloud_buffer.passthrough.size() >= (i + 1) * stride)
+                {
+                  const uint8_t *p = cloud_buffer.passthrough.data() + i * stride;
+                  chunks[index].passthrough.insert(chunks[index].passthrough.end(), p, p + stride);
+                  chunks[index].extra_bytes_size = stride;
+                  if (chunks[index].extra_bytes_vlr.empty())
+                    chunks[index].extra_bytes_vlr = extra_bytes_vlr;
+                }
               }
             }
           }
@@ -440,8 +653,20 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
           chunks[i].clear();
         }
       }
+      cloud_buffer.passthrough.clear();
     };
-    if (!Cloud::read(file_name, per_chunk))
+
+    bool res;
+    if (is_las)
+    {
+      size_t num_bounded;
+      res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf);
+    }
+    else
+    {
+      res = Cloud::read(file_name, per_chunk);
+    }
+    if (!res)
       return false;
 
     for (int i = 0; i < max_open_files; i++)
@@ -468,6 +693,16 @@ public:
 /// Special case for splitting based on a colour
 bool splitColour(const std::string &file_name, const std::string &cloud_name_stub, bool seg_colour)
 {
+  const std::string file_ext = getFileNameExtension(file_name);
+  const bool is_las = (file_ext == "las" || file_ext == "laz");
+
+  std::vector<uint8_t> extra_bytes_vlr;
+  if (is_las)
+  {
+    uint16_t orig_extra = 0;
+    readLasExtraBytesVlr(file_name, orig_extra, extra_bytes_vlr);
+  }
+
   std::map<RGBA, int, RGBALess> vox_map;
   // firstly, find out how many different colours there are
   int num_colours = 0;
@@ -496,8 +731,9 @@ bool splitColour(const std::string &file_name, const std::string &cloud_name_stu
   {
     std::cout << "Warning: cloud has more unique colours than allowed for simultaneous files " << max_files_at_once << " so using multiple passes." << std::endl;
   }
-  
+
   int chunk_size = std::min(num_colours, max_files_at_once);
+  const std::string colour_ext = getFileNameExtension(file_name);
 
   for (int batch = 0; batch < num_colours; batch+=max_files_at_once)
   {
@@ -507,6 +743,8 @@ bool splitColour(const std::string &file_name, const std::string &cloud_name_stu
     }
     std::vector<CloudWriter> cells(chunk_size);
     std::vector<Cloud> chunks(chunk_size);
+    Cloud cloud_buffer;
+    std::vector<uint8_t> passthrough_buf;
 
     int batch_max = std::min(num_colours, batch + max_files_at_once);
     if (num_colours > max_files_at_once)
@@ -514,10 +752,19 @@ bool splitColour(const std::string &file_name, const std::string &cloud_name_stu
       std::cout << "batch processing colours " << batch << ", to " << batch_max << std::endl;
     }
     // splitting performed per chunk
-    const std::string colour_ext = getFileNameExtension(file_name);
-    auto per_chunk = [&vox_map, &batch, &max_files_at_once, &chunk_size, &cells, &chunks, &cloud_name_stub, &num_colours, seg_colour, &colour_ext](
-                      std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                      std::vector<double> &times, std::vector<RGBA> &colours) {
+    auto per_chunk = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
+                         std::vector<double> &times, std::vector<RGBA> &colours) {
+      cloud_buffer.starts  = starts;
+      cloud_buffer.ends    = ends;
+      cloud_buffer.times   = times;
+      cloud_buffer.colours = colours;
+      if (!passthrough_buf.empty())
+      {
+        cloud_buffer.passthrough      = std::move(passthrough_buf);
+        passthrough_buf.clear();
+        cloud_buffer.extra_bytes_size = static_cast<uint16_t>(cloud_buffer.passthrough.size() / starts.size());
+        cloud_buffer.extra_bytes_vlr  = extra_bytes_vlr;
+      }
       for (size_t i = 0; i < ends.size(); i++)
       {
         RGBA colour = colours[i];
@@ -541,9 +788,9 @@ bool splitColour(const std::string &file_name, const std::string &cloud_name_stu
             {
               name << cloud_name_stub << "_" << (int)colour.red << "_" << (int)colour.green << "_" << (int)colour.blue << "." << colour_ext;
             }
-            cells[index].begin(name.str());
+            cells[index].begin(name.str(), extra_bytes_vlr);
           }
-          chunks[index].addRay(starts[i], ends[i], times[i], colours[i]);
+          chunks[index].addRay(cloud_buffer, i);
         }
       }
       for (int i = 0; i < chunk_size; i++)
@@ -554,8 +801,20 @@ bool splitColour(const std::string &file_name, const std::string &cloud_name_stu
           chunks[i].clear();
         }
       }
+      cloud_buffer.passthrough.clear();
     };
-    if (!Cloud::read(file_name, per_chunk))
+
+    bool res;
+    if (is_las)
+    {
+      size_t num_bounded;
+      res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf);
+    }
+    else
+    {
+      res = Cloud::read(file_name, per_chunk);
+    }
+    if (!res)
       return false;
 
     for (int i = 0; i < chunk_size; i++)

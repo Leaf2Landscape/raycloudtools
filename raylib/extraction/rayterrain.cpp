@@ -237,6 +237,8 @@ void Terrain::growUpwards(const std::vector<Eigen::Vector3d> &positions, double 
   // then find pareto the lower bound of the points
   getParetoFront(points, front);
   std::cout << "number of pareto front points: " << front.size() << std::endl;
+  if (front.empty())
+    return;
 
   // then convert it into a mesh
   std::vector<Eigen::Vector3d> vecs(front.size());
@@ -278,6 +280,9 @@ void Terrain::growUpwardsFast(const std::vector<Eigen::Vector3d> &ends, double p
                               const Eigen::Vector3d &min_bound, const Eigen::Vector3d &max_bound, double gradient)
 {
 #if RAYLIB_WITH_QHULL
+  if (ends.empty())
+    return;
+
   // the speed up is one of removing lots of 'above ground' points before running the growUpwards function
   // thereby making the problem size smaller.
 
@@ -358,16 +363,19 @@ void Terrain::extract(const Cloud &cloud, const Eigen::Vector3d &offset, const s
 #if RAYLIB_WITH_QHULL
   // preprocessing to make the cloud smaller.
   Eigen::Vector3d min_bound, max_bound;
-  cloud.calcBounds(&min_bound, &max_bound);
+  if (!cloud.calcBounds(&min_bound, &max_bound))
+  {
+    std::cerr << "Error: ray cloud has no bounded rays. Cannot extract terrain." << std::endl;
+    std::cerr << "If your sensor has no intensity data, re-import with --max_intensity 0 to mark all rays as bounded." << std::endl;
+    return;
+  }
   const double spacing = cloud.estimatePointSpacing();
   const double pixel_width = 2.0 * spacing;
   std::vector<Eigen::Vector3d> ends;
   for (size_t i = 0; i < cloud.ends.size(); i++)
   {
     if (cloud.rayBounded(i))
-    {
       ends.push_back(cloud.ends[i]);
-    }
   }
   growUpwardsFast(ends, pixel_width, min_bound, max_bound, gradient);
   mesh_.reduce();  // remove disconnected vertices in the mesh

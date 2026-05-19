@@ -11,6 +11,7 @@
 #include "raylib/rayprogressthread.h"
 #include "raylib/raythreads.h"
 #include "raylib/raycloudwriter.h"
+#include "raylib/raylaz.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -121,27 +122,44 @@ int rayCombine(int argc, char *argv[])
   std::string combined_file = output.isSet() ? output_file.name() : file_stub + "_combined." + combine_ext;
   if (concatenate_all)
   {
+    // Pre-read extra-byte VLR from the first input file so the writer can register them.
+    std::vector<uint8_t> extra_bytes_vlr;
+    const std::string first_file = cloud_files.files()[0].name();
+    const std::string first_ext = ray::getFileNameExtension(first_file);
+    if (first_ext == "las" || first_ext == "laz")
+    {
+      uint16_t orig_extra = 0;
+      ray::readLasExtraBytesVlr(first_file, orig_extra, extra_bytes_vlr);
+    }
+
     ray::CloudWriter writer;
-    if (!writer.begin(combined_file))
+    if (!writer.begin(combined_file, extra_bytes_vlr))
       usage();
 
-    // By maintaining these buffers below, we avoid almost all memory fragmentation
-    auto concatenate = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                        std::vector<double> &times, std::vector<ray::RGBA> &colours) 
-    {
-      ray::Cloud chunk;
-      chunk.starts = starts;
-      chunk.ends = ends;
-      chunk.colours = colours;
-      chunk.times = times;
-      writer.writeChunk(chunk);
-    };
     for (int i = 0; i < (int)cloud_files.files().size(); i++)
     {
-      if (!ray::Cloud::read(cloud_files.files()[i].name(), concatenate))
-        usage();
+      const std::string &fname = cloud_files.files()[i].name();
+      const std::string fext = ray::getFileNameExtension(fname);
+      std::vector<uint8_t> passthrough_buf;
+      auto concatenate = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
+                             std::vector<double> &times, std::vector<ray::RGBA> &colours) {
+        std::vector<uint8_t> chunk_pass(std::move(passthrough_buf));
+        passthrough_buf.clear();
+        writer.writeChunk(starts, ends, times, colours, chunk_pass);
+      };
+      if (fext == "las" || fext == "laz")
+      {
+        size_t num_bounded;
+        if (!ray::readLas(fname, concatenate, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf))
+          usage();
+      }
+      else
+      {
+        if (!ray::Cloud::read(fname, concatenate))
+          usage();
+      }
     }
-    writer.end();    
+    writer.end();
     return 0;
   }
 
