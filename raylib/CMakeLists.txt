@@ -109,6 +109,7 @@ set(SOURCES
   extraction/rayforest_watershed.cpp
   extraction/raysegment.cpp
   extraction/raydensegrid.cpp
+  extraction/raytreeslib.cpp
 )
 
 get_target_property(SIMPLE_FFT_INCLUDE_DIRS simple_fft INTERFACE_INCLUDE_DIRECTORIES)

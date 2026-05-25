@@ -9,6 +9,7 @@
 #include "raylib/extraction/rayleaves.h"
 #include "raylib/extraction/rayterrain.h"
 #include "raylib/extraction/raytrees.h"
+#include "raylib/extraction/raytreeslib.h"
 #include "raylib/extraction/raytrunks.h"
 #include "raylib/raycloud.h"
 #include "raylib/rayforestgen.h"
@@ -27,7 +28,8 @@ static std::string extract_type;
 void usage(int exit_code = 1)
 {
   const bool none = extract_type != "terrain" && extract_type != "trunks" && extract_type != "forest" &&
-                    extract_type != "trees" && extract_type != "leaves" && extract_type != "grid";
+                    extract_type != "trees" && extract_type != "segment" && extract_type != "reconstruct" &&
+                    extract_type != "leaves" && extract_type != "grid";
   // clang-format off
   std::cout << "Extract natural features into a text file or mesh file" << std::endl;
   std::cout << "usage:" << std::endl;
@@ -73,6 +75,22 @@ void usage(int exit_code = 1)
   //  std::cout << "                            --gap_ratio 0.016    - (-g) will split for lateral gaps at this multiple of branch length" << std::endl;
   //  std::cout << "                            --span_ratio 4.5     - (-s) will split when branch width spans this multiple of radius" << std::endl;
   }
+  if (extract_type == "segment" || none)
+  {
+    std::cout << "rayextract segment cloud.ply [--ground ground_mesh.ply]" << std::endl;
+    std::cout << "    -> cloud_segmented.las (tree_id, stem_id per point)" << std::endl;
+    std::cout << "    -> cloud_seeds.txt (per-stem trunk metadata)" << std::endl;
+    std::cout << "                            [all rayextract trees parameters also accepted]" << std::endl;
+  }
+  if (extract_type == "reconstruct" || none)
+  {
+    std::cout << "rayextract reconstruct cloud_segmented.las ground_mesh.ply" << std::endl;
+    std::cout << "    -> cloud_trees.txt" << std::endl;
+    std::cout << "    -> cloud_trees_mesh.ply" << std::endl;
+    std::cout << "    Reads tree_id (and optionally stem_id) from the segmented cloud; no seeds file needed." << std::endl;
+    std::cout << "                            --single_tree         - (-q) treat all points as one tree, ignoring any tree_id/colour labels (implies --largest_diameter)" << std::endl;
+    std::cout << "                            [all rayextract trees parameters also accepted]" << std::endl;
+  }
   if (extract_type == "leaves" || none)
   {
     std::cout << "rayextract leaves cloud.ply trees.txt           - reconstruct the leaf locations coming from the specified tree structures, and save to text file" << std::endl;
@@ -114,6 +132,7 @@ int rayExtract(int argc, char *argv[])
   ray::FileArgument cloud_file, mesh_file, trunks_file, trees_file, leaf_file;
   ray::TextArgument forest("forest"), trees("trees"), trunks("trunks"), terrain("terrain"), leaves("leaves"),
     grid("grid");
+  ray::TextArgument segment_cmd("segment"), reconstruct_cmd("reconstruct");
   ray::OptionalKeyValueArgument groundmesh_option("ground", 'g', &mesh_file);
   ray::OptionalKeyValueArgument trunks_option("trunks", 't', &trunks_file);
   ray::DoubleArgument gradient(0.001, 1000.0, 1.0), global_taper(0.0, 1.0), global_taper_factor(0.0, 1.0);
@@ -122,7 +141,7 @@ int rayExtract(int argc, char *argv[])
     stalks("stalks", 's'), use_rays("use_rays", 'u'), write_empty("write_empty", 'w'),
     alpha_weighted("alpha_weighting", 'p'), write_netcdf("write_netcdf", 'wn'), largest_diameter("largest_diameter", 'l'),
     save_paths("save_paths", 'sp'), extended_output("extended_output", 'x'), add_neighbour_priors("add_neighbour_priors", 'n'),
-    intensity_weight("intensity_weight", 'iw');
+    intensity_weight("intensity_weight", 'iw'), single_tree("single_tree", 'q');
   ray::DoubleArgument width(0.01, 10.0, 0.25), drop(0.001, 1.0), max_gradient(0.01, 5.0), min_gradient(0.01, 5.0);
   ray::IntArgument leaf_angle(1, 6);
   ray::DoubleArgument max_diameter(0.01, 100.0), distance_limit(0.01, 10.0), height_min(0.01, 1000.0),
@@ -170,7 +189,8 @@ int rayExtract(int argc, char *argv[])
                           { &max_diameter_option, &distance_limit_option, &height_min_option, &crop_length_option,
                             &girth_height_ratio_option, &cylinder_length_to_width_option, &gap_ratio_option,
                             &span_ratio_option, &gravity_factor_option, &segment_branches, &grid_width_option,
-                            &global_taper_option, &global_taper_factor_option, &use_rays, &alpha_weighted, &largest_diameter, &save_paths, &verbose });
+                            &global_taper_option, &global_taper_factor_option, &use_rays, &alpha_weighted,
+                            &largest_diameter, &save_paths, &verbose });
   bool extract_leaves = ray::parseCommandLine(
     argc, argv, { &leaves, &cloud_file, &trees_file },
     { &leaf_option, &leaf_area_option, &leaf_droop_option, &leaf_angle_option, &leaf_density_option, &stalks });
@@ -178,7 +198,23 @@ int rayExtract(int argc, char *argv[])
     argc, argv, { &grid, &cloud_file },
     { &voxel_size_option, &grid_bounds_min_option, &grid_bounds_max_option, &write_empty, &write_netcdf, &extended_output, &add_neighbour_priors, &intensity_weight, &verbose });
 
-  if (!extract_trunks && !extract_forest && !extract_terrain && !extract_trees && !extract_leaves && !extract_grid)
+  bool extract_segment = ray::parseCommandLine(
+    argc, argv, { &segment_cmd, &cloud_file },
+    { &groundmesh_option, &max_diameter_option, &distance_limit_option, &height_min_option,
+      &crop_length_option, &girth_height_ratio_option, &gravity_factor_option,
+      &segment_branches, &grid_width_option, &global_taper_option,
+      &global_taper_factor_option, &use_rays, &alpha_weighted,
+      &largest_diameter, &verbose });
+
+  bool extract_reconstruct = ray::parseCommandLine(
+    argc, argv, { &reconstruct_cmd, &cloud_file, &mesh_file },
+    { &max_diameter_option, &distance_limit_option,
+      &height_min_option, &crop_length_option, &girth_height_ratio_option,
+      &gravity_factor_option, &grid_width_option, &global_taper_option,
+      &global_taper_factor_option, &use_rays, &largest_diameter, &single_tree, &verbose });
+
+  if (!extract_trunks && !extract_forest && !extract_terrain && !extract_trees &&
+      !extract_segment && !extract_reconstruct && !extract_leaves && !extract_grid)
   {
     usage();
   }
@@ -269,30 +305,85 @@ int rayExtract(int argc, char *argv[])
     params.alpha_weighting = alpha_weighted.isSet();
     params.largest_diameter = largest_diameter.isSet();
 
-    ray::Trees trees(cloud, offset, mesh, params, verbose.isSet());
+    const std::string ext = ray::getFileNameExtension(cloud_file.name());
+    ray::trees(cloud, offset, mesh, params, verbose.isSet(),
+               cloud_file.nameStub(), ext, save_paths.isSet());
+  }
+  // segment subcommand: segment cloud into per-tree groups, output _segmented.las + _seeds.txt
+  else if (extract_segment)
+  {
+    ray::Cloud cloud;
+    const int min_num_rays = 40;
+    if (!cloud.load(cloud_file.name(), true, min_num_rays))
+      usage(true);
+    Eigen::Vector3d offset = cloud.removeStartPos();
 
-    // output the picewise cylindrical description of the trees
-    trees.save(cloud_file.nameStub() + "_trees.txt", offset, verbose.isSet());
-    
-    // optionally save shortest paths for visualization
-    if (save_paths.isSet())
+    ray::Mesh mesh;
+    if (groundmesh_option.isSet())
     {
-      trees.saveShortestPaths(cloud_file.nameStub() + "_shortest_paths.ply", offset);
+      if (!ray::readPlyMesh(mesh_file.name(), mesh))
+        usage(true);
+      mesh.translate(-offset);
     }
-    // we also save a segmented (one colour per tree) file, as this is a useful output
+    if (!groundmesh_option.isSet())
+      std::cerr << "rayextract segment: no --ground mesh provided; Dijkstra will have no ground seed points." << std::endl;
+
+    ray::TreesParams params;
+    if (max_diameter_option.isSet())    params.max_diameter = max_diameter.value();
+    if (distance_limit_option.isSet())  params.distance_limit = distance_limit.value();
+    if (height_min_option.isSet())      params.height_min = height_min.value();
+    if (crop_length_option.isSet())     params.crop_length = crop_length.value();
+    if (girth_height_ratio_option.isSet()) params.girth_height_ratio = girth_height_ratio.value();
+    if (gravity_factor_option.isSet())  params.gravity_factor = gravity_factor.value();
+    if (grid_width_option.isSet())      params.grid_width = grid_width.value();
+    if (global_taper_option.isSet())    params.global_taper = 0.5 * global_taper.value();
+    if (global_taper_factor_option.isSet()) params.global_taper_factor = global_taper_factor.value();
+    params.use_rays        = use_rays.isSet();
+    params.segment_branches = segment_branches.isSet();
+    params.alpha_weighting = alpha_weighted.isSet();
+    params.largest_diameter = largest_diameter.isSet();
+
+    ray::SegmentResult result = ray::segment(cloud, offset, mesh, params,
+                                             verbose.isSet(),
+                                             cloud_file.nameStub());
+    ray::saveSeeds(cloud_file.nameStub() + "_segmented_seeds.txt", result.seeds, offset);
     cloud.translate(offset);
-    cloud.save(cloud_file.nameStub() + "_segmented." + ray::getFileNameExtension(cloud_file.name()));
-    // let's also save the trees out as a mesh
-    // it is a bit inefficient to load from file just to convert it into the forest structure, but
-    // it works OK for now. Better would be for ray::Trees so store the result as a ray::ForestStructure
-    ray::ForestStructure forest;
-    if (!forest.load(cloud_file.nameStub() + "_trees.txt"))
+    cloud.save(cloud_file.nameStub() + "_segmented.las");
+  }
+  // reconstruct subcommand: reconstruct trees from pre-segmented cloud
+  else if (extract_reconstruct)
+  {
+    ray::Cloud cloud;
+    if (!cloud.load(cloud_file.name()))
+      usage(true);
+    Eigen::Vector3d offset = cloud.removeStartPos();
+
+    ray::Mesh mesh;
+    if (!ray::readPlyMesh(mesh_file.name(), mesh))
+      usage(true);
+    mesh.translate(-offset);
+
+    ray::TreesParams params;
+    if (max_diameter_option.isSet())    params.max_diameter = max_diameter.value();
+    if (distance_limit_option.isSet())  params.distance_limit = distance_limit.value();
+    if (height_min_option.isSet())      params.height_min = height_min.value();
+    if (crop_length_option.isSet())     params.crop_length = crop_length.value();
+    if (girth_height_ratio_option.isSet()) params.girth_height_ratio = girth_height_ratio.value();
+    if (gravity_factor_option.isSet())  params.gravity_factor = gravity_factor.value();
+    if (grid_width_option.isSet())      params.grid_width = grid_width.value();
+    if (global_taper_option.isSet())    params.global_taper = 0.5 * global_taper.value();
+    if (global_taper_factor_option.isSet()) params.global_taper_factor = global_taper_factor.value();
+    params.use_rays         = use_rays.isSet();
+    params.largest_diameter = largest_diameter.isSet();
+
+    if (single_tree.isSet())
     {
-      usage();
+      cloud.tree_ids.assign(cloud.ends.size(), 1);
+      cloud.stem_ids.clear();
+      params.largest_diameter = true;
     }
-    ray::Mesh tree_mesh;
-    forest.generateSmoothMesh(tree_mesh, -1, 1, 1, 1);
-    ray::writePlyMesh(cloud_file.nameStub() + "_trees_mesh.ply", tree_mesh, true);
+
+    ray::reconstruct(cloud, offset, mesh, params, verbose.isSet(), cloud_file.nameStub());
   }
   // extract the tree locations from a larger, aerial view of a forest
   else if (extract_forest)
