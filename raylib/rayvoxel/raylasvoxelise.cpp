@@ -299,7 +299,11 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
         BeamData beam;
         beam.beam_origin = pending_beam_origin;
         beam.gps_time    = pending_gps_time;
-        beam.returns     = std::move(pending_returns);
+        beam.num_returns = static_cast<uint8_t>(std::min(pending_returns.size(),
+                             static_cast<size_t>(kMaxReturnsPerBeam)));
+        for (uint8_t r = 0; r < beam.num_returns; ++r) {
+          beam.returns[r] = pending_returns[r];
+        }
         beam_queue.push(std::move(beam));
         pending_returns.clear();
       }
@@ -365,7 +369,11 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
         BeamData beam;
         beam.beam_origin = pending_beam_origin;
         beam.gps_time    = pending_gps_time;
-        beam.returns     = std::move(pending_returns);
+        beam.num_returns = static_cast<uint8_t>(std::min(pending_returns.size(),
+                             static_cast<size_t>(kMaxReturnsPerBeam)));
+        for (uint8_t r = 0; r < beam.num_returns; ++r) {
+          beam.returns[r] = pending_returns[r];
+        }
         processor.processBeam(beam);
         pending_returns.clear();
       }
@@ -624,7 +632,11 @@ bool OutOfCoreStrategy::createShards(const std::string& cloud_name, VoxelGrid& g
         BeamData beam;
         beam.beam_origin = pending_beam_origin;
         beam.gps_time    = pending_gps_time;
-        beam.returns     = std::move(pending_returns);
+        beam.num_returns = static_cast<uint8_t>(std::min(pending_returns.size(),
+                             static_cast<size_t>(kMaxReturnsPerBeam)));
+        for (uint8_t r = 0; r < beam.num_returns; ++r) {
+          beam.returns[r] = pending_returns[r];
+        }
         beam_queue.push(std::move(beam));
         pending_returns.clear();
       }

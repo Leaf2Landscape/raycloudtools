@@ -15,6 +15,7 @@
 #include "raylib/rayvoxel/raylasvoxelise.h" // For Voxel, VoxelCoord, etc.
 #include "raylib/raycuboid.h"
 #include "raylib/rayvoxel/raylasheightfield.h" // For HeightField
+#include <array>
 
 namespace ray
 {
@@ -32,13 +33,16 @@ namespace ray
     int32_t beam_id = -1;
   };
 
+  constexpr uint8_t kMaxReturnsPerBeam = 16;
+
   // A bundle of all returns sharing the same pulse (grouped by gps_time),
   // passed from the producer thread to the consumer threads.
   struct BeamData
   {
     Eigen::Vector3d beam_origin;
     double gps_time;
-    std::vector<PointData> returns;  // sorted by return_number ascending
+    std::array<PointData, kMaxReturnsPerBeam> returns;
+    uint8_t num_returns = 0;
   };
 
 

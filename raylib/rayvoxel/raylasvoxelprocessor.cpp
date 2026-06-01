@@ -171,15 +171,14 @@ void VoxelProcessor::processPoint(const PointData& p)
 
 void VoxelProcessor::processBeam(const BeamData& beam)
 {
-  if (beam.returns.empty()) return;
+  if (beam.num_returns == 0) return;
 
   std::vector<const PointData*> sorted;
-  sorted.reserve(beam.returns.size());
-  for (const auto& r : beam.returns) sorted.push_back(&r);
+  for (uint8_t r = 0; r < beam.num_returns; ++r) sorted.push_back(&beam.returns[r]);
   std::sort(sorted.begin(), sorted.end(),
     [](const PointData* a, const PointData* b){ return a->return_number < b->return_number; });
 
-  const int N = static_cast<int>(sorted.size());
+  const int N = static_cast<int>(beam.num_returns);
   const PointData& farthest = *sorted[N - 1];
   Eigen::Vector3d farthest_pos(farthest.x, farthest.y, farthest.z);
 
