@@ -666,11 +666,12 @@ bool RAYLIB_EXPORT writeLasRayCloud(const std::string &file_name, const std::vec
 
 #if RAYLIB_WITH_LAS
 LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tree_id, bool with_stem_id,
-                                     const std::vector<uint8_t> &extra_bytes_vlr)
+                                     const std::vector<uint8_t> &extra_bytes_vlr, bool with_beam_id)
   : file_name_(file_name)
   , points_written_(0)
   , with_tree_id_(with_tree_id)
   , with_stem_id_(with_stem_id)
+  , with_beam_id_(with_beam_id)
   , orig_extra_size_(0)
   , passthrough_stride_(10)
   , writer_handle_(nullptr)
@@ -707,6 +708,8 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
     attr_err = laszip_add_attribute(writer_handle_, 5, "tree_id", "per-point tree ID", 1.0, 0.0);
   if (!attr_err && with_stem_id_)
     attr_err = laszip_add_attribute(writer_handle_, 5, "stem_id", "per-point stem ID", 1.0, 0.0);
+  if (!attr_err && with_beam_id_)
+    attr_err = laszip_add_attribute(writer_handle_, 5, "beam_id", "per-pulse beam ID", 1.0, 0.0);
   if (!attr_err)
     attr_err = laszip_add_attribute(writer_handle_, 0, "alpha", "intensity 1-255", 1.0, 0.0);
   if (attr_err)
@@ -746,6 +749,7 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
   uint16_t extra = 12; // sx, sy, sz
   if (with_tree_id_) extra += 4;
   if (with_stem_id_) extra += 4;
+  if (with_beam_id_) extra += 4;
   extra += 1; // alpha
   extra += orig_extra_size_;
   const laszip_U16 record_size = static_cast<laszip_U16>(36 + extra);
@@ -792,15 +796,17 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
 }
 #else   // RAYLIB_WITH_LAS
 LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tree_id, bool with_stem_id,
-                                     const std::vector<uint8_t> &extra_bytes_vlr)
+                                     const std::vector<uint8_t> &extra_bytes_vlr, bool with_beam_id)
   : file_name_(file_name)
   , with_tree_id_(with_tree_id)
   , with_stem_id_(with_stem_id)
+  , with_beam_id_(with_beam_id)
 {
   RAYLIB_UNUSED(file_name);
   RAYLIB_UNUSED(with_tree_id);
   RAYLIB_UNUSED(with_stem_id);
   RAYLIB_UNUSED(extra_bytes_vlr);
+  RAYLIB_UNUSED(with_beam_id);
   std::cerr << "LasRayCloudWriter: WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true" << std::endl;
 }
 #endif  // RAYLIB_WITH_LAS
@@ -839,7 +845,8 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
                                    const std::vector<Eigen::Vector3d> &ends, const std::vector<double> &times,
                                    const std::vector<RGBA> &colours, const std::vector<int32_t> &tree_ids,
                                    const std::vector<int32_t> &stem_ids,
-                                   const std::vector<uint8_t> &passthrough)
+                                   const std::vector<uint8_t> &passthrough,
+                                   const std::vector<int32_t> &beam_ids)
 {
 #if RAYLIB_WITH_LAS
   if (ends.empty())
@@ -883,6 +890,7 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
         uint16_t orig_start = 13; // sx+sy+sz+alpha
         if (with_tree_id_) orig_start += 4;
         if (with_stem_id_) orig_start += 4;
+        if (with_beam_id_) orig_start += 4;
         std::memcpy(point_->extra_bytes + orig_start, p + 10, orig_extra_size_);
       }
     }
@@ -904,6 +912,11 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
       std::memcpy(point_->extra_bytes + off, &sid, 4);
       off += 4;
     }
+    if (with_beam_id_) {
+      const int32_t bid = (i < beam_ids.size()) ? beam_ids[i] : -1;
+      std::memcpy(point_->extra_bytes + off, &bid, 4);
+      off += 4;
+    }
     point_->extra_bytes[off] = colours[i].alpha;
     laszip_write_point(writer_handle_);
   }
@@ -917,6 +930,7 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
   RAYLIB_UNUSED(tree_ids);
   RAYLIB_UNUSED(stem_ids);
   RAYLIB_UNUSED(passthrough);
+  RAYLIB_UNUSED(beam_ids);
   std::cerr << "LasRayCloudWriter: WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true" << std::endl;
   return false;
 #endif  // RAYLIB_WITH_LAS

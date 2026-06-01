@@ -91,6 +91,7 @@ private:
 /// RGBA is fully preserved: RGB in LAS colour fields, alpha in intensity.
 /// When @c with_tree_id is true, a fourth int32 "tree_id" extra attribute is added.
 /// When @c with_stem_id is true, a fifth int32 "stem_id" extra attribute is added (requires with_tree_id).
+/// When @c with_beam_id is true, an int32 "beam_id" extra attribute is added (per-pulse beam ID).
 /// When @c extra_bytes_vlr is non-empty, the original sensor extra-byte attributes are
 /// registered from its 192-byte EXTRA_BYTES VLR records and written per point from passthrough[8+].
 class RAYLIB_EXPORT LasRayCloudWriter
@@ -98,13 +99,15 @@ class RAYLIB_EXPORT LasRayCloudWriter
 public:
   explicit LasRayCloudWriter(const std::string &file_name, bool with_tree_id = false,
                              bool with_stem_id = false,
-                             const std::vector<uint8_t> &extra_bytes_vlr = {});
+                             const std::vector<uint8_t> &extra_bytes_vlr = {},
+                             bool with_beam_id = false);
   ~LasRayCloudWriter();
   bool writeChunk(const std::vector<Eigen::Vector3d> &starts, const std::vector<Eigen::Vector3d> &ends,
                   const std::vector<double> &times, const std::vector<RGBA> &colours,
                   const std::vector<int32_t> &tree_ids = {},
                   const std::vector<int32_t> &stem_ids = {},
-                  const std::vector<uint8_t> &passthrough = {});
+                  const std::vector<uint8_t> &passthrough = {},
+                  const std::vector<int32_t> &beam_ids = {});
   unsigned long pointCount() const { return points_written_; }
 
 private:
@@ -112,6 +115,7 @@ private:
   uint64_t points_written_ = 0;
   bool with_tree_id_ = false;
   bool with_stem_id_ = false;
+  bool with_beam_id_ = false;
   uint16_t orig_extra_size_ = 0;   ///< per-point original sensor extra bytes
   uint16_t passthrough_stride_ = 10; ///< 10 + orig_extra_size_
 #if RAYLIB_WITH_LAS

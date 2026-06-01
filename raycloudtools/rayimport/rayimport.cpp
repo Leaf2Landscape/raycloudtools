@@ -29,6 +29,7 @@ void usage(int exit_code = 1)
   std::cout << "                                          --max_intensity 100 - specify maximum intensity value (default 100)." << std::endl;
   std::cout << "                                                              0 sets all to full intensity (bounded rays)." << std::endl;
   std::cout << "                                        --remove_start_pos  - translate so first point is at 0,0,0" << std::endl;
+  std::cout << "                                        --beam_id           - assign a per-pulse beam_id extra attribute" << std::endl;
   std::cout << "rayimport pointcloudfile unbound transformfile - load unbound data (pulses that missed) from RIEGL .rxp file" << std::endl;
   std::cout << "                                               transformfile is a text file containing a 4x4 transformation matrix" << std::endl;
   std::cout << "The output is a _raycloud.las/.laz file (preserving .laz if the input is .laz)." << std::endl;
@@ -44,14 +45,15 @@ int rayImport(int argc, char *argv[])
   ray::TextArgument unbound_text("unbound");
   ray::OptionalKeyValueArgument max_intensity_option("max_intensity", 'm', &max_intensity);
   ray::OptionalFlagArgument remove("remove_start_pos", 'r');
+  ray::OptionalFlagArgument beam_id_opt("beam_id", 'b');
   ray::FileArgument cloud_file, trajectory_file, transform_file;
   bool standard_format =
-    ray::parseCommandLine(argc, argv, { &cloud_file, &trajectory_file }, { &max_intensity_option, &remove });
+    ray::parseCommandLine(argc, argv, { &cloud_file, &trajectory_file }, { &max_intensity_option, &remove, &beam_id_opt });
   bool position_format =
-    ray::parseCommandLine(argc, argv, { &cloud_file, &position }, { &max_intensity_option, &remove });
+    ray::parseCommandLine(argc, argv, { &cloud_file, &position }, { &max_intensity_option, &remove, &beam_id_opt });
   bool ray_format =
-    ray::parseCommandLine(argc, argv, { &cloud_file, &ray_text, &ray_vec }, { &max_intensity_option, &remove });
-  bool unbound_format = ray::parseCommandLine(argc, argv, { &cloud_file, &unbound_text, &transform_file }, { &remove });
+    ray::parseCommandLine(argc, argv, { &cloud_file, &ray_text, &ray_vec }, { &max_intensity_option, &remove, &beam_id_opt });
+  bool unbound_format = ray::parseCommandLine(argc, argv, { &cloud_file, &unbound_text, &transform_file }, { &remove, &beam_id_opt });
   if (!standard_format && !position_format && !ray_format && !unbound_format)
     usage();
 
@@ -108,13 +110,18 @@ int rayImport(int argc, char *argv[])
   }
 
   ray::CloudWriter writer;
-  if (!writer.begin(save_file + "." + save_ext, input_extra_bytes_vlr))
+  if (!writer.begin(save_file + "." + save_ext, input_extra_bytes_vlr, beam_id_opt.isSet()))
     usage();
   Eigen::Vector3d start_pos(0, 0, 0);
   double min_time = std::numeric_limits<double>::max();
   double max_time = std::numeric_limits<double>::lowest();
   std::vector<uint8_t> all_passthrough;
   size_t prev_pass_size = 0;
+  int32_t current_beam_id = -1;
+  double last_beam_time = std::numeric_limits<double>::quiet_NaN();
+  Eigen::Vector3d last_beam_start(0, 0, 0);
+  bool warned_beam_fallback = false;
+  std::vector<int32_t> chunk_beam_ids;
   auto add_chunk = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                        std::vector<double> &times, std::vector<ray::RGBA> &colours) {
     if (start_pos.squaredNorm() == 0.0)
@@ -192,7 +199,64 @@ int rayImport(int argc, char *argv[])
     }
     std::vector<uint8_t> chunk_pass(all_passthrough.begin() + prev_pass_size, all_passthrough.end());
     prev_pass_size = all_passthrough.size();
-    if (!writer.writeChunk(starts, ends, times, colours, chunk_pass))
+    chunk_beam_ids.clear();
+    if (beam_id_opt.isSet())
+    {
+      chunk_beam_ids.resize(times.size());
+      // Passthrough stride: 10 standard bytes + any sensor extra bytes per point.
+      const size_t pt_stride =
+        (!chunk_pass.empty() && !times.empty()) ? (chunk_pass.size() / times.size()) : 0;
+      const bool has_passthrough = (pt_stride >= 10 &&
+                                    chunk_pass.size() >= pt_stride * times.size());
+      for (size_t i = 0; i < times.size(); i++)
+      {
+        bool new_beam = false;
+        if (has_passthrough)
+        {
+          // Use return_number from the LAS passthrough as the pulse-boundary signal.
+          // A new pulse (beam) starts when return_number == 1.
+          // gps_time change is an additional trigger for single-return or unordered data.
+          const uint8_t byte0 = chunk_pass[i * pt_stride];
+          const uint8_t ret_num = byte0 & 0x0Fu;
+          new_beam = (ret_num == 1) || (times[i] != last_beam_time);
+        }
+        else if (!starts.empty())
+        {
+          // No LAS return fields (PLY/RXP): new beam when the ray origin (sensor position)
+          // changes. Same-pulse returns share the same origin; use 5 mm tolerance to
+          // absorb floating-point differences from trajectory interpolation.
+          const Eigen::Vector3d &prev = (i == 0) ? last_beam_start : starts[i - 1];
+          new_beam = !starts[i].isApprox(prev, 0.005);
+        }
+        else
+        {
+          // No positions and no passthrough: fall back to gps_time change.
+          if (times[i] != 0.0 || i > 0)
+          {
+            new_beam = (times[i] != last_beam_time);
+          }
+          else
+          {
+            if (!warned_beam_fallback)
+            {
+              std::cout << "warning: no sensor positions or GPS timestamps detected; "
+                           "beam_id will be one per point" << std::endl;
+              warned_beam_fallback = true;
+            }
+            new_beam = true;
+          }
+        }
+        if (new_beam)
+        {
+          ++current_beam_id;
+          last_beam_time = times[i];
+          if (!starts.empty())
+            last_beam_start = starts[i];
+        }
+        chunk_beam_ids[i] = current_beam_id;
+      }
+    }
+    if (!writer.writeChunk(starts, ends, times, colours, chunk_pass, chunk_beam_ids))
       usage();
   };
 
