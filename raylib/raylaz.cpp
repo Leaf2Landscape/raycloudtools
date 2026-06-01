@@ -43,7 +43,7 @@ bool readLas(const std::string &file_name,
              size_t &num_bounded, double max_intensity, Eigen::Vector3d *offset_to_remove, size_t chunk_size,
              std::vector<int32_t> *tree_ids_out, std::vector<uint8_t> *passthrough_out,
              uint16_t *orig_extra_size_out, std::vector<uint8_t> *extra_bytes_vlr_out,
-             std::vector<int32_t> *stem_ids_out)
+             std::vector<int32_t> *stem_ids_out, std::vector<int32_t> *beam_ids_out)
 {
 #if RAYLIB_WITH_LAS
   std::cout << "readLas: filename: " << file_name << std::endl;
@@ -108,17 +108,36 @@ bool readLas(const std::string &file_name,
       break;
     }
   }
+  // Fallback for older RCT files written without the VLR marker: detect by "sx" attribute name.
+  if (!is_raycloud)
+  {
+    for (laszip_U32 v = 0; v < header->number_of_variable_length_records; v++)
+    {
+      auto &vlr = header->vlrs[v];
+      if (strcmp(vlr.user_id, "LASF_Spec") != 0 || vlr.record_id != 4)
+        continue;
+      const int num_attrs = vlr.record_length_after_header / 192;
+      for (int a = 0; a < num_attrs; a++)
+      {
+        char attr_name[33] = {};
+        memcpy(attr_name, vlr.data + a * 192 + 4, 32);
+        if (strcmp(attr_name, "sx") == 0) { is_raycloud = true; break; }
+      }
+      break;
+    }
+  }
 
   // LAS EXTRA_BYTES data_type → per-point byte size (types 0 and >10 are skipped)
   static const uint16_t kExtraTypeSize[11] = { 0, 1, 1, 2, 2, 4, 4, 8, 8, 4, 8 };
   // Names of raycloud-owned extra attributes (these are skipped when extracting original data)
-  static const char *kRayCloudAttrs[] = { "sx", "sy", "sz", "alpha", "tree_id", "stem_id" };
+  static const char *kRayCloudAttrs[] = { "sx", "sy", "sz", "alpha", "tree_id", "stem_id", "beam_id" };
 
   uint16_t local_skip_size = 0;   // bytes of our own extra attributes before original data
   uint16_t local_orig_extra = 0;  // bytes of original sensor data per point
   uint16_t own_offset      = 0;   // running byte cursor through our own attrs (in declared order)
   uint16_t tree_id_offset  = 0;   uint8_t tree_id_dtype = 0;  // 0 = absent
   uint16_t stem_id_offset  = 0;   uint8_t stem_id_dtype = 0;  // 0 = absent
+  uint16_t beam_id_offset  = 0;   uint8_t beam_id_dtype = 0;  // 0 = absent
   uint16_t alpha_offset    = 12;  // default: sx+sy+sz only; overwritten when "alpha" VLR found
   std::vector<uint8_t> local_orig_vlr;
 
@@ -144,6 +163,7 @@ bool readLas(const std::string &file_name,
           if (strcmp(attr_name, own) == 0) { is_ours = true; break; }
         if (strcmp(attr_name, "tree_id") == 0) { tree_id_offset = own_offset; tree_id_dtype = dtype; }
         if (strcmp(attr_name, "stem_id") == 0) { stem_id_offset = own_offset; stem_id_dtype = dtype; }
+        if (strcmp(attr_name, "beam_id") == 0) { beam_id_offset = own_offset; beam_id_dtype = dtype; }
         if (strcmp(attr_name, "alpha")   == 0) { alpha_offset   = own_offset; }
       }
       if (is_ours)
@@ -215,6 +235,9 @@ bool readLas(const std::string &file_name,
         stem_ids_out->push_back(readLasIdField(point->extra_bytes, stem_id_offset, stem_id_dtype));
       else if (stem_ids_out && tree_id_dtype != 0 && stem_id_dtype == 0)
         stem_ids_out->push_back(0);
+      if (beam_ids_out && beam_id_dtype != 0 &&
+          point->num_extra_bytes >= beam_id_offset + kExtraTypeSize[beam_id_dtype])
+        beam_ids_out->push_back(readLasIdField(point->extra_bytes, beam_id_offset, beam_id_dtype));
     }
     else
     {
@@ -347,6 +370,7 @@ bool readLas(const std::string &file_name,
   RAYLIB_UNUSED(orig_extra_size_out);
   RAYLIB_UNUSED(extra_bytes_vlr_out);
   RAYLIB_UNUSED(stem_ids_out);
+  RAYLIB_UNUSED(beam_ids_out);
   std::cerr << "readLas: cannot read file as WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true" << std::endl;
   return false;
 #endif  // RAYLIB_WITH_LAS
@@ -379,9 +403,26 @@ bool readLasExtraBytesVlr(const std::string &file_name, uint16_t &orig_extra_siz
       break;
     }
   }
+  if (!is_raycloud)
+  {
+    for (laszip_U32 v = 0; v < header->number_of_variable_length_records; v++)
+    {
+      auto &vlr = header->vlrs[v];
+      if (strcmp(vlr.user_id, "LASF_Spec") != 0 || vlr.record_id != 4)
+        continue;
+      const int num_attrs = vlr.record_length_after_header / 192;
+      for (int a = 0; a < num_attrs; a++)
+      {
+        char attr_name[33] = {};
+        memcpy(attr_name, vlr.data + a * 192 + 4, 32);
+        if (strcmp(attr_name, "sx") == 0) { is_raycloud = true; break; }
+      }
+      break;
+    }
+  }
 
   static const uint16_t kExtraTypeSize[11] = { 0, 1, 1, 2, 2, 4, 4, 8, 8, 4, 8 };
-  static const char *kRayCloudAttrs[] = { "sx", "sy", "sz", "alpha", "tree_id", "stem_id" };
+  static const char *kRayCloudAttrs[] = { "sx", "sy", "sz", "alpha", "tree_id", "stem_id", "beam_id" };
 
   uint16_t local_orig_extra = 0;
   std::vector<uint8_t> local_orig_vlr;

@@ -36,7 +36,8 @@ bool RAYLIB_EXPORT readLas(const std::string &file_name,
                            std::vector<uint8_t> *passthrough_out = nullptr,
                            uint16_t *orig_extra_size_out = nullptr,
                            std::vector<uint8_t> *extra_bytes_vlr_out = nullptr,
-                           std::vector<int32_t> *stem_ids_out = nullptr);
+                           std::vector<int32_t> *stem_ids_out = nullptr,
+                           std::vector<int32_t> *beam_ids_out = nullptr);
 
 
 /// Read only the EXTRA_BYTES VLR from a las/laz file header without reading any point data.

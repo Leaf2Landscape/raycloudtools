@@ -64,6 +64,8 @@ RUN git clone https://github.com/ethz-asl/libnabo.git && \
 
 WORKDIR /src
 
+RUN rm -rf /src/build /src/CMakeCache.txt /src/CMakeFiles /src/raylib/raylibconfig.h /src/treetools
+
 # Build and install raycloudtools
 RUN mkdir /build && \
     cd /build && \
@@ -74,7 +76,7 @@ RUN mkdir /build && \
         -DPROJ_LIBRARY=/usr/lib/x86_64-linux-gnu/libproj.so \
         -DWITH_QHULL=ON \
         -DWITH_LAS=ON \
-        # -DDOUBLE_RAYS=ON \ Turn on for global coords
+        -DDOUBLE_RAYS=OFF \
         -DWITH_TIFF=ON \
         -DRAYCLOUD_BUILD_TESTS=ON \
         -DCMAKE_BUILD_TYPE=Release && \

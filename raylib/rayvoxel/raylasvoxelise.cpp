@@ -51,7 +51,8 @@ static const uint16_t kPassthroughStdBytes = 10;
 // VoxelGrid Class Implementation
 // ==================================================================================
 
-VoxelGrid::VoxelGrid(const Cuboid &grid_bounds, double vox_width, size_t reservation_size)
+VoxelGrid::VoxelGrid(const Cuboid &grid_bounds, double vox_width,
+                     size_t ram_budget_bytes, size_t sparse_reservation)
     : bounds_(grid_bounds), voxel_width_(vox_width)
 {
   Eigen::Vector3d extent = bounds_.max_bound_ - bounds_.min_bound_;
@@ -64,71 +65,68 @@ VoxelGrid::VoxelGrid(const Cuboid &grid_bounds, double vox_width, size_t reserva
   }
 
   peaks_.resize(voxel_dims_[0] * voxel_dims_[1], std::numeric_limits<double>::lowest());
-  std::cout << "Initialized VoxelGrid with conceptual dimensions: " << voxel_dims_.transpose()
-            << " (using sparse storage)" << std::endl;
 
-  // Pre-allocate memory in the hash map to avoid rehashing during processing.
-  if (reservation_size > 0) {
-    std::cout << "Reserving space for approximately " << reservation_size << " voxels..." << std::endl;
-    sparse_voxels_.reserve(reservation_size);
+  const int64_t total = voxel_dims_[0] * voxel_dims_[1] * voxel_dims_[2];
+  const size_t required = static_cast<size_t>(total) * sizeof(Voxel);
+
+  if (total > 0 && required / sizeof(Voxel) == static_cast<size_t>(total) && required <= ram_budget_bytes) {
+    flat_voxels_.assign(static_cast<size_t>(total), Voxel{});
+    use_sparse_fallback_ = false;
+    std::cout << "Initialized VoxelGrid: " << voxel_dims_.transpose()
+              << " flat array (" << required / (1024 * 1024) << " MB)" << std::endl;
+  } else {
+    use_sparse_fallback_ = true;
+    if (sparse_reservation > 0)
+      sparse_voxels_.reserve(sparse_reservation);
+    std::cout << "Initialized VoxelGrid: " << voxel_dims_.transpose()
+              << " sparse map (flat would need " << required / (1024 * 1024) << " MB > budget "
+              << ram_budget_bytes / (1024 * 1024) << " MB)" << std::endl;
   }
 }
 
 void VoxelGrid::merge(const VoxelProcessor& processor)
 {
-  // This lock ensures that multiple threads can safely merge their results
-  // into the main grid's map without causing data corruption.
   std::lock_guard<std::mutex> lock(merge_mutex_);
-  for (const auto& pair : processor.getMap()) {
-    sparse_voxels_[pair.first] += pair.second;
+  if (!use_sparse_fallback_) {
+    for (const auto& pair : processor.getMap())
+      flat_voxels_[flatIndex(pair.first.x, pair.first.y, pair.first.z)] += pair.second;
+  } else {
+    for (const auto& pair : processor.getMap())
+      sparse_voxels_[pair.first] += pair.second;
   }
 }
 
 void VoxelGrid::take(VoxelProcessor& processor)
 {
-  // This is a non-locking, single-threaded optimization.
-  // It moves the map from the processor directly into the grid's map.
-  sparse_voxels_ = processor.takeMap();
+  absorbMap(processor.takeMap());
 }
 
 void VoxelGrid::absorbMap(VoxelProcessor::Map&& m)
 {
-  for (auto& pair : m) {
-    sparse_voxels_[pair.first] += pair.second;
+  if (!use_sparse_fallback_) {
+    for (auto& pair : m)
+      flat_voxels_[flatIndex(pair.first.x, pair.first.y, pair.first.z)] += pair.second;
+  } else {
+    for (auto& pair : m)
+      sparse_voxels_[pair.first] += pair.second;
   }
 }
 
 VoxelGrid::VoxelState VoxelGrid::getVoxelState(int64_t i, int64_t j, int64_t k) const {
-    VoxelCoord coord = {i, j, k};
-    auto it = sparse_voxels_.find(coord);
-
-    if (it == sparse_voxels_.end()) {
-        // If the voxel coordinate is not in the map, it was never touched by any ray.
-        return VoxelState::UNOBSERVED;
-    }
-
-    // If it is in the map, determine its state from the stored voxel data.
-    const Voxel& v = it->second;
-    if (v.is_filled) return VoxelState::FILLED;
-    if (v.num_rays_observed > 0) return VoxelState::EMPTY;
-    if (v.num_rays_occluded > 0) return VoxelState::OCCLUDED;
-
-    // This case should not be hit if a voxel exists in the map, but it's a safe fallback.
+    const Voxel& v = getVoxel(i, j, k);
+    if (v.num_hits > 0.0f) return VoxelState::FILLED;
+    if (v.num_rays_observed > 0.0f) return VoxelState::EMPTY;
+    if (v.num_rays_occluded > 0.0f) return VoxelState::OCCLUDED;
     return VoxelState::UNOBSERVED;
 }
 
 const VoxelGrid::Voxel& VoxelGrid::getVoxel(int64_t i, int64_t j, int64_t k) const {
-    // To safely handle requests for voxels that don't exist in the map (since this is a
-    // const method and cannot modify the map), we return a reference to a static empty voxel.
     static const Voxel empty_voxel;
-    VoxelCoord coord = {i, j, k};
-    auto it = sparse_voxels_.find(coord);
-
-    if (it != sparse_voxels_.end()) {
-        return it->second; // Return a const reference to the actual voxel.
-    } else {
-        return empty_voxel; // Return the static empty one if not found.
+    if (!use_sparse_fallback_) {
+        return flat_voxels_[flatIndex(i, j, k)];
     }
+    auto it = sparse_voxels_.find({i, j, k});
+    return it != sparse_voxels_.end() ? it->second : empty_voxel;
 }
 
 int64_t VoxelGrid::getIndex(int64_t i, int64_t j, int64_t k) const {
@@ -160,6 +158,29 @@ double VoxelGrid::Voxel::transmittance() const
 
 namespace {
 
+// Query MemAvailable from /proc/meminfo; fall back to 512 MB if unavailable.
+static size_t getAvailableRamBytes()
+{
+  std::ifstream f("/proc/meminfo");
+  std::string line;
+  while (std::getline(f, line)) {
+    if (line.find("MemAvailable:") == 0) {
+      size_t kb = 0;
+      sscanf(line.c_str(), "MemAvailable: %zu kB", &kb);
+      return kb * 1024ULL;
+    }
+  }
+  return 512ULL * 1024 * 1024;
+}
+
+// Beams are queued in fixed-size batches to amortise mutex overhead.
+// 32 beams/batch → 32× fewer lock acquisitions vs one-beam-per-slot.
+static constexpr size_t kBeamBatchSize = 32;
+struct BeamBatch {
+  std::array<BeamData, kBeamBatchSize> beams;
+  size_t count = 0;
+};
+
 // Build a PointData record from a single ray (start -> end) and its passthrough bytes.
 // The stride is the per-point passthrough byte count (10 standard fields + sensor extras).
 // distance_to_sensor is computed as the ray length (end - start).norm().
@@ -189,6 +210,52 @@ PointData makePointData(const Eigen::Vector3d& start, const Eigen::Vector3d& end
 }
 
 } // anonymous namespace
+
+// ==================================================================================
+// Classification Post-Traversal Pass
+// ==================================================================================
+
+// Reads the cloud endpoints only (no ray walking) to build a flat-index→per-class
+// hit count table. O(N_points) I/O pass, much cheaper than the traversal pass.
+static ClassTable buildClassTable(const std::string& cloud_name, const VoxelGrid& grid)
+{
+  ClassTable class_table;
+
+  uint16_t orig_extra_size = 0;
+  std::vector<uint8_t> extra_bytes_vlr;
+  readLasExtraBytesVlr(cloud_name, orig_extra_size, extra_bytes_vlr);
+  const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + orig_extra_size);
+
+  const Cuboid& bounds    = grid.getBounds();
+  const double vox_width  = grid.getVoxelWidth();
+  const auto& dims        = grid.getDimensions();
+
+  size_t num_bounded = 0;
+  std::vector<uint8_t> passthrough;
+  uint16_t pt_extra = 0;
+
+  ray::readLas(cloud_name,
+    [&](std::vector<Eigen::Vector3d>& /*starts*/, std::vector<Eigen::Vector3d>& ends,
+        std::vector<double>& /*times*/, std::vector<ray::RGBA>& /*colours*/) {
+      for (size_t i = 0; i < ends.size(); ++i) {
+        const size_t base = i * stride;
+        if (passthrough.size() < base + stride) continue;
+        const uint8_t return_number = passthrough[base + 0] & 0x0F;
+        if (return_number == 0) continue;  // miss ray, not a real return
+
+        const uint8_t classification = passthrough[base + 2];
+        const Eigen::Vector3d vox = (ends[i] - bounds.min_bound_) / vox_width;
+        const int64_t ix = static_cast<int64_t>(vox.x());
+        const int64_t iy = static_cast<int64_t>(vox.y());
+        const int64_t iz = static_cast<int64_t>(vox.z());
+        if (ix < 0 || ix >= dims[0] || iy < 0 || iy >= dims[1] || iz < 0 || iz >= dims[2]) continue;
+        class_table[grid.flatIndex(ix, iy, iz)][classification] += 1.0f;
+      }
+      passthrough.clear();
+    }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, &pt_extra);
+
+  return class_table;
+}
 
 // ==================================================================================
 // Processing Strategy Implementations
@@ -261,58 +328,90 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
 
   if (resolved_threads > 1) {
     // --- OPTION 2: Parallel Producer-Consumer Implementation ---
-    std::cout << "Processing point cloud using " << resolved_threads << " parallel threads (in-memory)..." << std::endl;
-    ThreadSafeQueue<BeamData> beam_queue(resolved_threads * 100);
+
+    // Scale queue depth to available RAM: use up to 1 GB, minimum 8 batches/thread.
+    const size_t avail_ram    = getAvailableRamBytes();
+    const size_t queue_budget = std::min(avail_ram / 20, size_t(1) * 1024 * 1024 * 1024);
+    const size_t queue_depth  = std::max(queue_budget / sizeof(BeamBatch),
+                                         resolved_threads * 8);
+
+    // Scale LAS read chunk: larger chunks reduce callback overhead when the queue is deep.
+    // Aim for each chunk to fill ~4 queue batches per thread.
+    const size_t las_chunk = std::min(
+        std::max(size_t(4000000), resolved_threads * kBeamBatchSize * 4),
+        size_t(16000000));
+
+    std::cout << "Processing point cloud using " << resolved_threads
+              << " parallel threads (in-memory).\n"
+              << "  Queue: " << queue_depth << " batches × " << kBeamBatchSize
+              << " beams = " << queue_depth * kBeamBatchSize << " beams  ("
+              << (queue_depth * sizeof(BeamBatch)) / (1024 * 1024) << " MB)\n"
+              << "  LAS chunk: " << las_chunk / 1000000 << "M points" << std::endl;
+
+    ThreadSafeQueue<BeamBatch> beam_queue(queue_depth);
     std::vector<std::thread> threads;
 
-    // The worker task lambda
-    std::vector<VoxelProcessor::Map> worker_maps(resolved_threads);
+    const bool use_flat = grid.isFlat();
+    VoxelGrid::Voxel* flat_ptr = use_flat ? grid.flat_voxels_.data() : nullptr;
+    const int64_t flat_dimX  = use_flat ? grid.voxel_dims_[0] : 0;
+    const int64_t flat_dimXY = use_flat ? grid.voxel_dims_[0] * grid.voxel_dims_[1] : 0;
+
+    std::vector<VoxelProcessor::Map> worker_maps(use_flat ? 0 : resolved_threads);
 
     auto worker_task = [&](size_t thread_idx) {
       VoxelProcessor processor(grid.getBounds(), grid.getVoxelWidth(), weighting_method, use_occlusion,
                                apply_flat_top, peaks_ptr, calc_beam_metrics, beam_diameter,
                                tan_half_divergence, subvoxel_split, dtm);
-      BeamData beam;
-      while(beam_queue.pop(beam)) {
-        processor.processBeam(beam);
+      if (use_flat)
+        processor.setFlatTarget(flat_ptr, flat_dimX, flat_dimXY);
+      BeamBatch batch;
+      while (beam_queue.pop(batch)) {
+        for (size_t b = 0; b < batch.count; ++b)
+          processor.processBeam(batch.beams[b]);
       }
-      worker_maps[thread_idx] = processor.takeMap();
+      if (!use_flat)
+        worker_maps[thread_idx] = processor.takeMap();
     };
 
-    // Launch worker threads
-    for (size_t i = 0; i < resolved_threads; ++i) {
+    for (size_t i = 0; i < resolved_threads; ++i)
       threads.emplace_back(worker_task, i);
-    }
 
     size_t num_bounded = 0;
     std::vector<uint8_t> passthrough;
     std::vector<int32_t> beam_ids_chunk;
     uint16_t pt_extra = 0;
     static bool not_raycloud_warned = false;
-    // Beam accumulator state, persisting across readLas chunk calls.
     double pending_gps_time = std::numeric_limits<double>::quiet_NaN();
     int32_t pending_beam_id = -1;
     std::vector<PointData> pending_returns;
     Eigen::Vector3d pending_beam_origin;
+
+    // Current batch being filled by the producer.
+    BeamBatch current_batch;
+
+    // Commit a completed beam into the current batch; push when the batch is full.
     auto flush_beam = [&]() {
-      if (!pending_returns.empty()) {
-        BeamData beam;
-        beam.beam_origin = pending_beam_origin;
-        beam.gps_time    = pending_gps_time;
-        beam.num_returns = static_cast<uint8_t>(std::min(pending_returns.size(),
-                             static_cast<size_t>(kMaxReturnsPerBeam)));
-        for (uint8_t r = 0; r < beam.num_returns; ++r) {
-          beam.returns[r] = pending_returns[r];
-        }
-        beam_queue.push(std::move(beam));
-        pending_returns.clear();
+      if (pending_returns.empty()) return;
+      BeamData& bd = current_batch.beams[current_batch.count];
+      bd.beam_origin = pending_beam_origin;
+      bd.gps_time    = pending_gps_time;
+      bd.num_returns = static_cast<uint8_t>(std::min(pending_returns.size(),
+                                            static_cast<size_t>(kMaxReturnsPerBeam)));
+      for (uint8_t r = 0; r < bd.num_returns; ++r)
+        bd.returns[r] = pending_returns[r];
+      ++current_batch.count;
+      pending_returns.clear();
+      if (current_batch.count == kBeamBatchSize) {
+        BeamBatch tmp = current_batch;  // copy before reset so workers get valid data
+        current_batch.count = 0;
+        beam_queue.push(std::move(tmp));
       }
     };
+
     ray::readLas(cloud_name,
       [&](std::vector<Eigen::Vector3d>& starts, std::vector<Eigen::Vector3d>& ends,
           std::vector<double>& times, std::vector<ray::RGBA>& /*colours*/) {
         for (size_t i = 0; i < ends.size(); ++i) {
-          // readLas only supplies ray starts for ray-cloud files (files with sx,sy,sz extra bytes).
           if (starts.empty() || starts[i] == ends[i]) {
             if (!not_raycloud_warned) {
               std::cerr << "Warning: input is not a ray cloud (no sx,sy,sz ray starts); skipping points." << std::endl;
@@ -335,15 +434,19 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
         }
         passthrough.clear();
         beam_ids_chunk.clear();
-      }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, &pt_extra, nullptr, nullptr, &beam_ids_chunk);
+      }, num_bounded, 255.0, nullptr, las_chunk,
+         nullptr, &passthrough, &pt_extra, nullptr, nullptr, &beam_ids_chunk);
 
-    flush_beam(); // Flush the final beam.
-    beam_queue.notify_done(); // Signal that no more beams are coming
-    // Join all threads
+    flush_beam();  // commit the last beam
+    if (current_batch.count > 0) {
+      beam_queue.push(std::move(current_batch));
+    }
+    beam_queue.notify_done();
     for (auto& t : threads) { t.join(); }
-    // Serial reduction — no locks needed after join
-    for (size_t i = 0; i < resolved_threads; ++i) {
-      grid.absorbMap(std::move(worker_maps[i]));
+
+    if (!use_flat) {
+      for (size_t i = 0; i < resolved_threads; ++i)
+        grid.absorbMap(std::move(worker_maps[i]));
     }
     std::cout << "Parallel processing finished." << std::endl;
 
@@ -353,6 +456,10 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
     VoxelProcessor processor(grid.getBounds(), grid.getVoxelWidth(), weighting_method, use_occlusion,
                              apply_flat_top, peaks_ptr, calc_beam_metrics, beam_diameter,
                              tan_half_divergence, subvoxel_split, dtm);
+    if (grid.isFlat())
+      processor.setFlatTarget(grid.flat_voxels_.data(),
+                              grid.voxel_dims_[0],
+                              grid.voxel_dims_[0] * grid.voxel_dims_[1]);
 
     size_t num_bounded = 0;
     std::vector<uint8_t> passthrough;
@@ -406,9 +513,11 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
         beam_ids_chunk.clear();
       }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, &pt_extra, nullptr, nullptr, &beam_ids_chunk);
 
-    flush_beam(); // Flush the final beam.
-    // Move results from the single processor to the main grid
-    grid.take(processor);
+    flush_beam();
+    // Flat path: writes already landed in flat_voxels_ — nothing to move.
+    // Sparse path: move the processor's map into the grid.
+    if (!grid.isFlat())
+      grid.take(processor);
   }
 
   return true;
@@ -442,6 +551,14 @@ public:
   ShardMerger(const std::vector<std::string>& paths, VoxelGrid& grid)
     : shard_paths_(paths), target_grid_(grid) {}
 
+  void writeAccumulated(const VoxelCoord& coord, const VoxelGrid::Voxel& v) {
+    if (!target_grid_.use_sparse_fallback_) {
+      target_grid_.voxelAt(target_grid_.flatIndex(coord.x, coord.y, coord.z)) = v;
+    } else {
+      target_grid_.getSparseVoxels_internal()[coord] = v;
+    }
+  }
+
   bool merge() {
     std::cout << "Phase 2: Merging " << shard_paths_.size() << " temporary shards..." << std::endl;
     std::vector<std::ifstream> shard_streams;
@@ -457,8 +574,12 @@ public:
     // Min-priority queue to efficiently find the next voxel to merge.
     std::priority_queue<MergeEntry, std::vector<MergeEntry>, std::greater<MergeEntry>> pq;
 
-    // Prime the queue with the first entry from each shard.
+    // Validate shard headers and prime the queue.
     for (size_t i = 0; i < shard_streams.size(); ++i) {
+      if (!readShardHeader(shard_streams[i])) {
+        std::cerr << "Error: Shard file has invalid or incompatible header: " << shard_paths_[i] << std::endl;
+        return false;
+      }
       VoxelCoord coord;
       VoxelGrid::Voxel voxel;
       if (readVoxelData(shard_streams[i], coord, voxel)) {
@@ -479,16 +600,13 @@ public:
       pq.pop();
 
       if (entry.coord == current_coord) {
-        // Accumulate data for the same voxel coordinate.
         accumulator += entry.voxel;
       } else {
-        // New coordinate found; write the accumulated data for the previous one.
-        target_grid_.getSparseVoxels_internal()[current_coord] = accumulator;
+        writeAccumulated(current_coord, accumulator);
         current_coord = entry.coord;
         accumulator = entry.voxel;
       }
 
-      // Read the next entry from the same shard to replace the one we just processed.
       VoxelCoord next_coord;
       VoxelGrid::Voxel next_voxel;
       if (readVoxelData(shard_streams[entry.shard_index], next_coord, next_voxel)) {
@@ -496,10 +614,13 @@ public:
       }
     }
 
-    // Write the last accumulated voxel.
-    target_grid_.getSparseVoxels_internal()[current_coord] = accumulator;
+    writeAccumulated(current_coord, accumulator);
 
-    std::cout << "Merge complete. Final grid has " << target_grid_.getSparseVoxels().size() << " voxels." << std::endl;
+    if (target_grid_.isFlat()) {
+      std::cout << "Merge complete (flat grid)." << std::endl;
+    } else {
+      std::cout << "Merge complete. Final grid has " << target_grid_.getSparseVoxels().size() << " voxels." << std::endl;
+    }
     return true;
   }
 };
@@ -822,7 +943,9 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
 
     std::unique_ptr<VoxelGrid> grid_ptr;
     try {
-        grid_ptr = std::make_unique<VoxelGrid>(processing_bounds, params.voxel_size, final_reserve_size);
+        const size_t ram_budget_bytes = static_cast<size_t>(params.ram_budget_mb) * 1024ULL * 1024;
+        grid_ptr = std::make_unique<VoxelGrid>(processing_bounds, params.voxel_size,
+                                               ram_budget_bytes, final_reserve_size);
     } catch (const std::exception& e) {
         std::cerr << "Error during VoxelGrid initialization: " << e.what()
                   << " Not enough memory. Consider using --out_of_core or a larger --voxel_size." << std::endl;
@@ -858,10 +981,12 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
         applyNeighbourPriors(grid, params.neighbour_prior_min_rays);
     }
 
-    // This is the new, decoupled output pipeline.
-    // Calculate all output metrics once and store them in a map.
+    // Build the classification table in a separate O(N_points) pass (no ray walking).
+    std::cout << "Building classification table..." << std::endl;
+    ClassTable class_table = buildClassTable(params.cloud_name, grid);
+
     std::cout << "Calculating output metrics..." << std::endl;
-    MetricResultsMap metrics = calculateOutputMetrics(grid, params, dtm_ptr.get());
+    MetricResultsMap metrics = calculateOutputMetrics(grid, params, dtm_ptr.get(), class_table);
 
     // Pass the pre-calculated metrics to the writer functions.
     std::string base_name_stub = getFileNameStub(params.cloud_name);

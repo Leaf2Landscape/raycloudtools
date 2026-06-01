@@ -59,81 +59,124 @@ void calculatePeaks(VoxelGrid& grid, const std::string& file_name)
     }, num_bounded, 255.0, nullptr);
 }
 
-// Unchanged function
 void applyNeighbourPriors(VoxelGrid& grid, int min_rays_for_density)
 {
   if (min_rays_for_density <= 0) return;
 
   double num_hit_voxels = 0.0;
   double num_hit_voxels_unsatisfied = 0.0;
+  const auto& dims = grid.getDimensions();
 
-  // MODIFIED for sparse grid: Instead of copying a huge dense vector, we copy
-  // only the map of existing voxels. This is memory-efficient.
-  auto read_voxels = grid.sparse_voxels_;
+  if (!grid.use_sparse_fallback_) {
+    // Flat path: copy the whole flat array as the read-only snapshot.
+    const std::vector<VoxelGrid::Voxel> read_voxels = grid.flat_voxels_;
+    const int64_t dimX = dims[0], dimY = dims[1], dimZ = dims[2];
 
-  // MODIFIED to iterate over the existing voxels in the read-only copy.
-  // This is more efficient than iterating over the entire conceptual grid.
-  for (const auto& pair : read_voxels) {
-    const VoxelCoord& coord = pair.first;
-    const VoxelGrid::Voxel& read_voxel = pair.second;
+    for (int64_t k = 1; k < dimZ - 1; ++k) {
+    for (int64_t j = 1; j < dimY - 1; ++j) {
+    for (int64_t i = 1; i < dimX - 1; ++i) {
+      const int64_t flat_idx = i + j * dimX + k * dimX * dimY;
+      const VoxelGrid::Voxel& read_voxel = read_voxels[flat_idx];
+      if (read_voxel.num_hits == 0.0f && read_voxel.num_rays_observed == 0.0f) continue;
 
-    // Skip voxels near the padded boundary.
-    const auto& dims = grid.getDimensions();
-    if (coord.x < 1 || coord.x >= dims[0] - 1 ||
-        coord.y < 1 || coord.y >= dims[1] - 1 ||
-        coord.z < 1 || coord.z >= dims[2] - 1) {
-      continue;
-    }
+      bool was_undersampled = (read_voxel.num_rays_observed < static_cast<float>(min_rays_for_density));
+      if (read_voxel.num_hits > 0.0f) {
+        num_hit_voxels++;
+        if (was_undersampled) num_hit_voxels_unsatisfied++;
+      }
 
-    // This is the voxel in the live grid that we will modify.
-    VoxelGrid::Voxel& center_voxel = grid.sparse_voxels_.at(coord);
+      float needed = static_cast<float>(min_rays_for_density) - read_voxel.num_rays_observed;
+      if (needed <= 0.0f) continue;
 
-    // Explicitly cast min_rays_for_density to float to avoid a conversion warning.
-    bool was_undersampled = (read_voxel.num_rays_observed < static_cast<float>(min_rays_for_density));
-    if (read_voxel.is_filled) {
-      num_hit_voxels++;
-      if (was_undersampled) {
-        num_hit_voxels_unsatisfied++;
+      VoxelGrid::Voxel& center_voxel = grid.flat_voxels_[flat_idx];
+
+      VoxelGrid::Voxel shell1_sum;
+      shell1_sum += grid.getVoxel(i-1,j,k); shell1_sum += grid.getVoxel(i+1,j,k);
+      shell1_sum += grid.getVoxel(i,j-1,k); shell1_sum += grid.getVoxel(i,j+1,k);
+      shell1_sum += grid.getVoxel(i,j,k-1); shell1_sum += grid.getVoxel(i,j,k+1);
+      if (shell1_sum.num_rays_observed > 0) {
+        double r = std::min(1.0, static_cast<double>(needed) / shell1_sum.num_rays_observed);
+        center_voxel += shell1_sum * r;
+        needed -= static_cast<float>(shell1_sum.num_rays_observed * r);
+      }
+      if (needed <= 0.0f) continue;
+
+      VoxelGrid::Voxel shell2_sum;
+      shell2_sum += grid.getVoxel(i-1,j-1,k); shell2_sum += grid.getVoxel(i-1,j+1,k); shell2_sum += grid.getVoxel(i+1,j-1,k); shell2_sum += grid.getVoxel(i+1,j+1,k);
+      shell2_sum += grid.getVoxel(i-1,j,k-1); shell2_sum += grid.getVoxel(i-1,j,k+1); shell2_sum += grid.getVoxel(i+1,j,k-1); shell2_sum += grid.getVoxel(i+1,j,k+1);
+      shell2_sum += grid.getVoxel(i,j-1,k-1); shell2_sum += grid.getVoxel(i,j-1,k+1); shell2_sum += grid.getVoxel(i,j+1,k-1); shell2_sum += grid.getVoxel(i,j+1,k+1);
+      if (shell2_sum.num_rays_observed > 0) {
+        double r = std::min(1.0, static_cast<double>(needed) / shell2_sum.num_rays_observed);
+        center_voxel += shell2_sum * r;
+        needed -= static_cast<float>(shell2_sum.num_rays_observed * r);
+      }
+      if (needed <= 0.0f) continue;
+
+      VoxelGrid::Voxel shell3_sum;
+      shell3_sum += grid.getVoxel(i-1,j-1,k-1); shell3_sum += grid.getVoxel(i-1,j-1,k+1); shell3_sum += grid.getVoxel(i-1,j+1,k-1); shell3_sum += grid.getVoxel(i-1,j+1,k+1);
+      shell3_sum += grid.getVoxel(i+1,j-1,k-1); shell3_sum += grid.getVoxel(i+1,j-1,k+1); shell3_sum += grid.getVoxel(i+1,j+1,k-1); shell3_sum += grid.getVoxel(i+1,j+1,k+1);
+      if (shell3_sum.num_rays_observed > 0) {
+        double r = std::min(1.0, static_cast<double>(needed) / shell3_sum.num_rays_observed);
+        center_voxel += shell3_sum * r;
+      }
+    }}}
+
+  } else {
+    // Sparse fallback path: only iterate occupied voxels.
+    auto read_voxels = grid.sparse_voxels_;
+
+    for (const auto& pair : read_voxels) {
+      const VoxelCoord& coord = pair.first;
+      const VoxelGrid::Voxel& read_voxel = pair.second;
+
+      if (coord.x < 1 || coord.x >= dims[0] - 1 ||
+          coord.y < 1 || coord.y >= dims[1] - 1 ||
+          coord.z < 1 || coord.z >= dims[2] - 1) {
+        continue;
+      }
+
+      VoxelGrid::Voxel& center_voxel = grid.sparse_voxels_.at(coord);
+
+      bool was_undersampled = (read_voxel.num_rays_observed < static_cast<float>(min_rays_for_density));
+      if (read_voxel.num_hits > 0.0f) {
+        num_hit_voxels++;
+        if (was_undersampled) num_hit_voxels_unsatisfied++;
+      }
+
+      float needed = static_cast<float>(min_rays_for_density) - read_voxel.num_rays_observed;
+      if (needed <= 0.0f) continue;
+
+      VoxelGrid::Voxel shell1_sum;
+      shell1_sum += grid.getVoxel(coord.x-1,coord.y,coord.z); shell1_sum += grid.getVoxel(coord.x+1,coord.y,coord.z);
+      shell1_sum += grid.getVoxel(coord.x,coord.y-1,coord.z); shell1_sum += grid.getVoxel(coord.x,coord.y+1,coord.z);
+      shell1_sum += grid.getVoxel(coord.x,coord.y,coord.z-1); shell1_sum += grid.getVoxel(coord.x,coord.y,coord.z+1);
+      if (shell1_sum.num_rays_observed > 0) {
+        double r = std::min(1.0, static_cast<double>(needed) / shell1_sum.num_rays_observed);
+        center_voxel += shell1_sum * r;
+        needed -= static_cast<float>(shell1_sum.num_rays_observed * r);
+      }
+      if (needed <= 0.0f) continue;
+
+      VoxelGrid::Voxel shell2_sum;
+      shell2_sum += grid.getVoxel(coord.x-1,coord.y-1,coord.z); shell2_sum += grid.getVoxel(coord.x-1,coord.y+1,coord.z); shell2_sum += grid.getVoxel(coord.x+1,coord.y-1,coord.z); shell2_sum += grid.getVoxel(coord.x+1,coord.y+1,coord.z);
+      shell2_sum += grid.getVoxel(coord.x-1,coord.y,coord.z-1); shell2_sum += grid.getVoxel(coord.x-1,coord.y,coord.z+1); shell2_sum += grid.getVoxel(coord.x+1,coord.y,coord.z-1); shell2_sum += grid.getVoxel(coord.x+1,coord.y,coord.z+1);
+      shell2_sum += grid.getVoxel(coord.x,coord.y-1,coord.z-1); shell2_sum += grid.getVoxel(coord.x,coord.y-1,coord.z+1); shell2_sum += grid.getVoxel(coord.x,coord.y+1,coord.z-1); shell2_sum += grid.getVoxel(coord.x,coord.y+1,coord.z+1);
+      if (shell2_sum.num_rays_observed > 0) {
+        double r = std::min(1.0, static_cast<double>(needed) / shell2_sum.num_rays_observed);
+        center_voxel += shell2_sum * r;
+        needed -= static_cast<float>(shell2_sum.num_rays_observed * r);
+      }
+      if (needed <= 0.0f) continue;
+
+      VoxelGrid::Voxel shell3_sum;
+      shell3_sum += grid.getVoxel(coord.x-1,coord.y-1,coord.z-1); shell3_sum += grid.getVoxel(coord.x-1,coord.y-1,coord.z+1); shell3_sum += grid.getVoxel(coord.x-1,coord.y+1,coord.z-1); shell3_sum += grid.getVoxel(coord.x-1,coord.y+1,coord.z+1);
+      shell3_sum += grid.getVoxel(coord.x+1,coord.y-1,coord.z-1); shell3_sum += grid.getVoxel(coord.x+1,coord.y-1,coord.z+1); shell3_sum += grid.getVoxel(coord.x+1,coord.y+1,coord.z-1); shell3_sum += grid.getVoxel(coord.x+1,coord.y+1,coord.z+1);
+      if (shell3_sum.num_rays_observed > 0) {
+        double r = std::min(1.0, static_cast<double>(needed) / shell3_sum.num_rays_observed);
+        center_voxel += shell3_sum * r;
       }
     }
-
-    float needed = static_cast<float>(min_rays_for_density) - read_voxel.num_rays_observed;
-    if (needed <= 0.0f) continue;
-
-    // --- Safe Neighbor Access ---
-    // The previous dense array logic is replaced with safe calls to getVoxel().
-    // This correctly handles cases where a neighbor might not exist in the map
-    // (getVoxel returns a default empty voxel in that case).
-    VoxelGrid::Voxel shell1_sum;
-    shell1_sum += grid.getVoxel(coord.x - 1, coord.y, coord.z); shell1_sum += grid.getVoxel(coord.x + 1, coord.y, coord.z);
-    shell1_sum += grid.getVoxel(coord.x, coord.y - 1, coord.z); shell1_sum += grid.getVoxel(coord.x, coord.y + 1, coord.z);
-    shell1_sum += grid.getVoxel(coord.x, coord.y, coord.z - 1); shell1_sum += grid.getVoxel(coord.x, coord.y, coord.z + 1);
-    if (shell1_sum.num_rays_observed > 0) {
-      double borrow_ratio = std::min(1.0, static_cast<double>(needed) / shell1_sum.num_rays_observed);
-      center_voxel += shell1_sum * borrow_ratio;
-      needed -= static_cast<float>(shell1_sum.num_rays_observed * borrow_ratio);
-    }
-    if (needed <= 0.0f) continue;
-
-    VoxelGrid::Voxel shell2_sum;
-    shell2_sum += grid.getVoxel(coord.x-1, coord.y-1, coord.z); shell2_sum += grid.getVoxel(coord.x-1, coord.y+1, coord.z); shell2_sum += grid.getVoxel(coord.x+1, coord.y-1, coord.z); shell2_sum += grid.getVoxel(coord.x+1, coord.y+1, coord.z);
-    shell2_sum += grid.getVoxel(coord.x-1, coord.y, coord.z-1); shell2_sum += grid.getVoxel(coord.x-1, coord.y, coord.z+1); shell2_sum += grid.getVoxel(coord.x+1, coord.y, coord.z-1); shell2_sum += grid.getVoxel(coord.x+1, coord.y, coord.z+1);
-    shell2_sum += grid.getVoxel(coord.x, coord.y-1, coord.z-1); shell2_sum += grid.getVoxel(coord.x, coord.y-1, coord.z+1); shell2_sum += grid.getVoxel(coord.x, coord.y+1, coord.z-1); shell2_sum += grid.getVoxel(coord.x, coord.y+1, coord.z+1);
-    if (shell2_sum.num_rays_observed > 0) {
-      double borrow_ratio = std::min(1.0, static_cast<double>(needed) / shell2_sum.num_rays_observed);
-      center_voxel += shell2_sum * borrow_ratio;
-      needed -= static_cast<float>(shell2_sum.num_rays_observed * borrow_ratio);
-    }
-    if (needed <= 0.0f) continue;
-
-    VoxelGrid::Voxel shell3_sum;
-    shell3_sum += grid.getVoxel(coord.x-1, coord.y-1, coord.z-1); shell3_sum += grid.getVoxel(coord.x-1, coord.y-1, coord.z+1); shell3_sum += grid.getVoxel(coord.x-1, coord.y+1, coord.z-1); shell3_sum += grid.getVoxel(coord.x-1, coord.y+1, coord.z+1);
-    shell3_sum += grid.getVoxel(coord.x+1, coord.y-1, coord.z-1); shell3_sum += grid.getVoxel(coord.x+1, coord.y-1, coord.z+1); shell3_sum += grid.getVoxel(coord.x+1, coord.y+1, coord.z-1); shell3_sum += grid.getVoxel(coord.x+1, coord.y+1, coord.z+1);
-    if (shell3_sum.num_rays_observed > 0) {
-      double borrow_ratio = std::min(1.0, static_cast<double>(needed) / shell3_sum.num_rays_observed);
-      center_voxel += shell3_sum * borrow_ratio;
-    }
-  }
+  } // end sparse path
 
   if (num_hit_voxels > 0) {
     const double percentage = 100.0 * num_hit_voxels_unsatisfied / num_hit_voxels;

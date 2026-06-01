@@ -13,6 +13,7 @@
 #define RAYLIB_RAYVOXEL_RAYLASVOXELPROCESSOR_H
 
 #include "raylib/rayvoxel/raylasvoxelise.h" // For Voxel, VoxelCoord, etc.
+#include "raylib/rayvoxel/raylasatomic.h"   // For atomic_fadd / atomic_or_u64
 #include "raylib/raycuboid.h"
 #include "raylib/rayvoxel/raylasheightfield.h" // For HeightField
 #include <array>
@@ -84,6 +85,17 @@ namespace ray
     /// @brief Clears the internal map, ready for the next chunk of work.
     void clear() { sparse_voxels_.clear(); }
 
+    /// @brief Enables direct flat-array write mode. When set, walkGrid and
+    ///        hit-recording write directly into the shared flat array via
+    ///        atomic adds instead of accumulating into the per-thread map.
+    ///        Pass nullptr to revert to map mode (e.g. for OOC path).
+    void setFlatTarget(VoxelGrid::Voxel* arr, int64_t dimX, int64_t dimXY) noexcept
+    {
+      flat_array_ = arr;
+      flat_dim_x_ = dimX;
+      flat_dim_xy_ = dimXY;
+    }
+
   private:
     /// @enum RayType
     /// @brief Differentiates between the part of the ray before and after the last hit.
@@ -115,8 +127,13 @@ namespace ray
     Eigen::Vector3d current_ray_vox_dir_;
     Eigen::Vector3d current_ray_world_start_;
 
+    // --- Flat-array write mode (optional) ---
+    VoxelGrid::Voxel* flat_array_ = nullptr;  // non-null → write direct, skip map
+    int64_t flat_dim_x_  = 0;
+    int64_t flat_dim_xy_ = 0;
+
     // --- Local Storage ---
-    // Each processor accumulates results into its own private map.
+    // Each processor accumulates results into its own private map (map mode only).
     Map sparse_voxels_;
   };
 
