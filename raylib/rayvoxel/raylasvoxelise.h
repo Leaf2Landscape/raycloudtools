@@ -50,13 +50,16 @@ namespace ray
   // Provides the hashing mechanism for VoxelCoord for std::unordered_map.
   struct VoxelCoordHash {
     std::size_t operator()(const VoxelCoord& c) const noexcept {
-      // FNV-style mix of three int64_t values
-      std::size_t h = 0;
-      auto mix = [&](int64_t v) {
-        h ^= std::hash<int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-      };
-      mix(c.x); mix(c.y); mix(c.z);
-      return h;
+      // Murmur3-inspired: pack coords into two 64-bit words, then finalize.
+      uint64_t h = static_cast<uint64_t>(c.x) * 2654435761ULL
+                 ^ static_cast<uint64_t>(c.y) * 805459861ULL
+                 ^ static_cast<uint64_t>(c.z) * 3674653429ULL;
+      h ^= h >> 33;
+      h *= 0xff51afd7ed558ccdULL;
+      h ^= h >> 33;
+      h *= 0xc4ceb9fe1a85ec53ULL;
+      h ^= h >> 33;
+      return static_cast<std::size_t>(h);
     }
   };
 
