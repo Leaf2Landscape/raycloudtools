@@ -17,6 +17,7 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
+#include <array>
 #include <algorithm>
 #include <cassert>
 
@@ -40,43 +41,46 @@ namespace ray
 namespace { // Use an anonymous namespace for local helpers
 
 // Helper to get the dominant point classification. Returns -1 if no hits.
-int getDominantPointClassification(const std::map<U8, float>& classification_hits) {
-    if (classification_hits.empty()) {
-        return -1;
-    }
-    U8 dominant_class = 0;
+int getDominantPointClassification(const std::array<float, 256>& classification_hits) {
+    int dominant = -1;
     float max_hits = -1.0f;
-    for (const auto& pair : classification_hits) {
-        if (pair.second > max_hits) {
-            max_hits = pair.second;
-            dominant_class = pair.first;
+    for (int c = 0; c < 256; ++c) {
+        if (classification_hits[c] > max_hits) {
+            max_hits = classification_hits[c];
+            dominant = c;
         }
     }
-    return static_cast<int>(dominant_class);
+    return (max_hits > 0.0f) ? dominant : -1;
 }
 
 // Helper to get the classification if and only if all hits in the voxel are of that class. Returns -1 otherwise.
-int getAbsolutePointClassification(const std::map<U8, float>& classification_hits) {
-    if (classification_hits.size() == 1) {
-        return static_cast<int>(classification_hits.begin()->first);
+int getAbsolutePointClassification(const std::array<float, 256>& classification_hits) {
+    int found = -1;
+    int nonzero_count = 0;
+    for (int c = 0; c < 256; ++c) {
+        if (classification_hits[c] > 0.0f) {
+            ++nonzero_count;
+            found = c;
+            if (nonzero_count > 1) return -1;
+        }
     }
-    return -1;
+    return (nonzero_count == 1) ? found : -1;
 }
 
 // Helper to format the classification hits map to a string
-std::string formatClassificationHits(const std::map<U8, float>& hits) {
-    if (hits.empty()) {
-        return "{}";
-    }
+std::string formatClassificationHits(const std::array<float, 256>& hits) {
+    bool any = false;
+    for (int c = 0; c < 256; ++c) if (hits[c] > 0.0f) { any = true; break; }
+    if (!any) return "{}";
     std::stringstream ss;
     ss << "{";
     bool first = true;
-    for (const auto& pair : hits) {
-        if (!first) {
-            ss << ";";
+    for (int c = 0; c < 256; ++c) {
+        if (hits[c] > 0.0f) {
+            if (!first) ss << ";";
+            ss << c << ":" << std::fixed << std::setprecision(2) << hits[c];
+            first = false;
         }
-        ss << static_cast<int>(pair.first) << ":" << std::fixed << std::setprecision(2) << pair.second;
-        first = false;
     }
     ss << "}";
     return ss.str();
@@ -182,17 +186,15 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
 
                 float leaf_hits = 0.0f, wood_hits = 0.0f;
                 for (int code : leaf_classes) {
-                    // Add a range check to prevent unsafe conversion from int to U8 map key.
+                    // Range check still required to avoid signed UB on the array index.
                     if (code >= 0 && code <= 255) {
-                        auto it = v_metrics.classification_hits.find(static_cast<U8>(code));
-                        if (it != v_metrics.classification_hits.end()) leaf_hits += it->second;
+                        leaf_hits += v_metrics.classification_hits[code];
                     }
                 }
                 for (int code : wood_classes) {
-                    // Add a range check to prevent unsafe conversion from int to U8 map key.
+                    // Range check still required to avoid signed UB on the array index.
                     if (code >= 0 && code <= 255) {
-                        auto it = v_metrics.classification_hits.find(static_cast<U8>(code));
-                        if (it != v_metrics.classification_hits.end()) wood_hits += it->second;
+                        wood_hits += v_metrics.classification_hits[code];
                     }
                 }
                 data.pad_leaf = leaf_hits / (g_theta * v_metrics.path_length_observed);
@@ -410,7 +412,7 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
     }
     long long total_classification_hits = 0;
     for(const auto& data : data_to_write) {
-        total_classification_hits += data.classification_hits.size();
+        for (int c = 0; c < 256; ++c) if (data.classification_hits[c] > 0.0f) ++total_classification_hits;
     }
 
     auto nPoints = dataFile.addDim("nPoints", point_count);
@@ -498,10 +500,12 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
         if (params.calc_beam_metrics) { transm_data.push_back(data.transmittance); }
         if (params.subvoxel_split > 0) { explore_data.push_back(data.exploration_rate); }
 
-        for (const auto& pair : data.classification_hits) {
-            voxel_id_data.push_back(voxel_idx_counter);
-            hit_class_code_data.push_back(pair.first);
-            hit_class_count_data.push_back(pair.second);
+        for (int c = 0; c < 256; ++c) {
+            if (data.classification_hits[c] > 0.0f) {
+                voxel_id_data.push_back(voxel_idx_counter);
+                hit_class_code_data.push_back(static_cast<unsigned char>(c));
+                hit_class_count_data.push_back(data.classification_hits[c]);
+            }
         }
         voxel_idx_counter++;
     }

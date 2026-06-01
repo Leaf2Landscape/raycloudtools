@@ -11,9 +11,9 @@
 #include "raylib/rayutils.h"
 #include "raylib/rayvoxel/raylasvoxelconfig.h" // For VoxelizationParameters
 #include "raylib/rayvoxel/raylasheightfield.h" // For HeightField
+#include <array>
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -95,7 +95,7 @@ namespace ray
       float num_rays_occluded = 0.0f;     // Sum of occluded rays passing through (unweighted).
       float path_length_occluded = 0.0f;  // Sum of path lengths of occluded rays (unweighted).
       bool is_filled = false;             // True if a point return is located in this voxel.
-      std::map<U8, float> classification_hits; // Unweighted sum of hits per classification code.
+      std::array<float, 256> classification_hits{}; // Unweighted sum of hits per classification code.
       float sum_of_angles = 0.0f;         // Weighted sum of zenith angles of rays passing through.
       float sum_of_laser_distances = 0.0f;// Weighted sum of distances from sensor to voxel center for rays.
       float bs_entering = 0.0f;           // Weighted sum of entering beam cross-sectional area.
@@ -172,9 +172,7 @@ namespace ray
     is_filled = is_filled || other.is_filled;
     subvoxel_bitmap |= other.subvoxel_bitmap;
 
-    for (const auto& pair : other.classification_hits) {
-        classification_hits[pair.first] += pair.second;
-    }
+    for (int c = 0; c < 256; ++c) classification_hits[c] += other.classification_hits[c];
   }
 
   inline VoxelGrid::Voxel VoxelGrid::Voxel::operator*(double scale) const
@@ -192,9 +190,7 @@ namespace ray
     v.is_filled = is_filled;
     v.subvoxel_bitmap = subvoxel_bitmap;
 
-    for (const auto& pair : classification_hits) {
-        v.classification_hits[pair.first] = static_cast<float>(pair.second * scale);
-    }
+    for (int c = 0; c < 256; ++c) v.classification_hits[c] = static_cast<float>(classification_hits[c] * scale);
     return v;
   }
 

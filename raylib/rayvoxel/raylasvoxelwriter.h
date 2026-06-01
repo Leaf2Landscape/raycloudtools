@@ -13,7 +13,7 @@
 #include "raylib/rayvoxel/raylasvoxelconfig.h" // For VoxelizationParameters
 #include "raylib/rayvoxel/raylasheightfield.h" // For HeightField
 #include <string>
-#include <map>
+#include <array>
 #include <limits>
 #include <unordered_map>
 
@@ -36,7 +36,7 @@ namespace ray
     float path_length_observed = 0.0f;
     float num_rays_occluded = 0.0f;
     float path_length_occluded = 0.0f;
-    std::map<U8, float> classification_hits;
+    std::array<float, 256> classification_hits{};
 
     // Calculated Metrics
     double pad_bv_total = 0.0;

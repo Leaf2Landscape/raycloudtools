@@ -14,7 +14,6 @@
 
 #include "raylib/rayvoxel/raylasvoxelise.h"
 #include <fstream>
-#include <map>
 
 namespace ray
 {
@@ -33,12 +32,9 @@ namespace ray
   /// @brief Serializes a Voxel and its VoxelCoord to a binary output stream.
   inline bool writeVoxelData(std::ofstream& out, const VoxelCoord& coord, const VoxelGrid::Voxel& voxel)
   {
-    // Write VoxelCoord (POD)
     writeBinary(out, coord.x);
     writeBinary(out, coord.y);
     writeBinary(out, coord.z);
-
-    // Write Voxel members
     writeBinary(out, voxel.num_hits);
     writeBinary(out, voxel.num_rays_observed);
     writeBinary(out, voxel.path_length_observed);
@@ -51,28 +47,28 @@ namespace ray
     writeBinary(out, voxel.bs_intercepted);
     writeBinary(out, voxel.subvoxel_bitmap);
 
-    // Serialize the classification_hits map
-    size_t map_size = voxel.classification_hits.size();
-    writeBinary(out, map_size);
-    for (const auto& pair : voxel.classification_hits) {
-      writeBinary(out, pair.first);  // U8 key
-      writeBinary(out, pair.second); // float value
+    // Sparse-on-disk: count nonzero entries, then (code, value) pairs
+    uint16_t nonzero = 0;
+    for (int c = 0; c < 256; ++c) if (voxel.classification_hits[c] != 0.0f) ++nonzero;
+    writeBinary(out, nonzero);
+    for (int c = 0; c < 256; ++c) {
+      if (voxel.classification_hits[c] != 0.0f) {
+        U8 code = static_cast<U8>(c);
+        writeBinary(out, code);
+        writeBinary(out, voxel.classification_hits[c]);
+      }
     }
-
     return out.good();
   }
 
   /// @brief Deserializes a Voxel and its VoxelCoord from a binary input stream.
   inline bool readVoxelData(std::ifstream& in, VoxelCoord& coord, VoxelGrid::Voxel& voxel)
   {
-    // Read VoxelCoord
     readBinary(in, coord.x);
     readBinary(in, coord.y);
     readBinary(in, coord.z);
+    if (!in.good()) return false;
 
-    if (!in.good()) return false; // Early exit if read failed (e.g., end of file)
-
-    // Read Voxel members
     readBinary(in, voxel.num_hits);
     readBinary(in, voxel.num_rays_observed);
     readBinary(in, voxel.path_length_observed);
@@ -85,19 +81,16 @@ namespace ray
     readBinary(in, voxel.bs_intercepted);
     readBinary(in, voxel.subvoxel_bitmap);
 
-    // Deserialize the classification_hits map
-    voxel.classification_hits.clear();
-    size_t map_size;
-    readBinary(in, map_size);
-    for (size_t i = 0; i < map_size; ++i) {
-      U8 key;
-      float value;
-      readBinary(in, key);
+    voxel.classification_hits.fill(0.0f);
+    uint16_t nonzero;
+    readBinary(in, nonzero);
+    for (uint16_t i = 0; i < nonzero; ++i) {
+      U8 code; float value;
+      readBinary(in, code);
       readBinary(in, value);
-      if (!in.good()) return false; // Check for read errors inside the loop
-      voxel.classification_hits[key] = value;
+      if (!in.good()) return false;
+      voxel.classification_hits[code] = value;
     }
-
     return in.good();
   }
 
