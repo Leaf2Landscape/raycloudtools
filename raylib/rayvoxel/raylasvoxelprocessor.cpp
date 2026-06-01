@@ -73,6 +73,10 @@ bool VoxelProcessor::flushToShard(const std::string& shard_path)
     std::cerr << "Error: Could not open temporary shard file for writing: " << shard_path << std::endl;
     return false;
   }
+  if (!writeShardHeader(out)) {
+    std::cerr << "Error: Failed to write shard header to: " << shard_path << std::endl;
+    return false;
+  }
 
   for (const auto& pair : sorted_voxels) {
     if (!writeVoxelData(out, pair.first, pair.second)) {
@@ -133,18 +137,23 @@ void VoxelProcessor::processPoint(const PointData& p)
     Eigen::Vector3d vox_coord_filled = (end_pos - bounds_.min_bound_) / voxel_width_;
     int64_t ix = static_cast<int64_t>(vox_coord_filled.x()), iy = static_cast<int64_t>(vox_coord_filled.y()), iz = static_cast<int64_t>(vox_coord_filled.z());
     if (ix >= 0 && ix < voxel_dims_[0] && iy >= 0 && iy < voxel_dims_[1] && iz >= 0 && iz < voxel_dims_[2]) {
-      VoxelCoord coord = {ix, iy, iz};
-      VoxelGrid::Voxel& v = sparse_voxels_[coord];
-      v.is_filled = true;
-      v.num_hits += static_cast<float>(hit_weight);
-      v.classification_hits[p.classification] += static_cast<float>(hit_weight);
-
-      if (calc_beam_metrics_) {
-        // Use the distance_to_sensor value computed as the ray length.
-        double distance_to_hit = p.distance_to_sensor;
-        double beam_radius_at_hit = tan_half_divergence_ * distance_to_hit + (0.5 * beam_diameter_);
-        double beam_area_at_hit = kPi * beam_radius_at_hit * beam_radius_at_hit;
-        v.bs_intercepted += static_cast<float>(beam_area_at_hit * shot_weight * hit_weight);
+      if (flat_array_) {
+        VoxelGrid::Voxel& v = flat_array_[ix + iy * flat_dim_x_ + iz * flat_dim_xy_];
+        atomic_fadd(v.num_hits, static_cast<float>(hit_weight));
+        if (calc_beam_metrics_) {
+          double dist = p.distance_to_sensor;
+          double r = tan_half_divergence_ * dist + 0.5 * beam_diameter_;
+          atomic_fadd(v.bs_intercepted, static_cast<float>(kPi * r * r * shot_weight * hit_weight));
+        }
+      } else {
+        VoxelCoord coord = {ix, iy, iz};
+        VoxelGrid::Voxel& v = sparse_voxels_[coord];
+        v.num_hits += static_cast<float>(hit_weight);
+        if (calc_beam_metrics_) {
+          double dist = p.distance_to_sensor;
+          double r = tan_half_divergence_ * dist + 0.5 * beam_diameter_;
+          v.bs_intercepted += static_cast<float>(kPi * r * r * shot_weight * hit_weight);
+        }
       }
     }
   }
@@ -207,16 +216,23 @@ void VoxelProcessor::processBeam(const BeamData& beam)
     int64_t iy = static_cast<int64_t>(vox_coord_filled.y());
     int64_t iz = static_cast<int64_t>(vox_coord_filled.z());
     if (ix >= 0 && ix < voxel_dims_[0] && iy >= 0 && iy < voxel_dims_[1] && iz >= 0 && iz < voxel_dims_[2]) {
-      VoxelCoord coord = {ix, iy, iz};
-      VoxelGrid::Voxel& v = sparse_voxels_[coord];
-      v.is_filled = true;
-      v.num_hits += 1.0f;
-      v.classification_hits[p.classification] += 1.0f;
-      if (calc_beam_metrics_) {
-        double dist = p.distance_to_sensor;
-        double beam_radius = tan_half_divergence_ * dist + 0.5 * beam_diameter_;
-        double beam_area = kPi * beam_radius * beam_radius;
-        v.bs_intercepted += static_cast<float>(beam_area * beam_weight);
+      if (flat_array_) {
+        VoxelGrid::Voxel& v = flat_array_[ix + iy * flat_dim_x_ + iz * flat_dim_xy_];
+        atomic_fadd(v.num_hits, 1.0f);
+        if (calc_beam_metrics_) {
+          double dist = p.distance_to_sensor;
+          double r = tan_half_divergence_ * dist + 0.5 * beam_diameter_;
+          atomic_fadd(v.bs_intercepted, static_cast<float>(kPi * r * r * beam_weight));
+        }
+      } else {
+        VoxelCoord coord = {ix, iy, iz};
+        VoxelGrid::Voxel& v = sparse_voxels_[coord];
+        v.num_hits += 1.0f;
+        if (calc_beam_metrics_) {
+          double dist = p.distance_to_sensor;
+          double r = tan_half_divergence_ * dist + 0.5 * beam_diameter_;
+          v.bs_intercepted += static_cast<float>(kPi * r * r * beam_weight);
+        }
       }
     }
   }
@@ -258,6 +274,10 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
     // Zenith angle is the angle between the ray direction and the vertical Z-axis (0,0,1).
     // The cosine of this angle is simply the z-component of the normalized direction vector.
     double zenith_angle = acos(clamped(current_ray_vox_dir_.z(), -1.0, 1.0));
+    double azimuth_angle = std::atan2(current_ray_vox_dir_.x(), current_ray_vox_dir_.y());
+    if (azimuth_angle < 0.0) azimuth_angle += 2.0 * kPi;
+    const double sin_az = std::sin(azimuth_angle);
+    const double cos_az = std::cos(azimuth_angle);
 
     auto walk_lambda =
         [&](const Eigen::Vector3i &p, const Eigen::Vector3i &/*target*/, double in_length, double out_length, double max_length) -> bool {
@@ -288,47 +308,74 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
 
             double length_in_voxel = (end_length - in_length) * voxel_width_;
 
-            VoxelCoord coord = {p.x(), p.y(), p.z()};
-
             if (type == RayType::OCCLUDED && dtm_ && dtm_->isValid()) {
-                // Voxel-based filtering for occluded rays.
                 Eigen::Vector3d voxel_center_world = bounds_.min_bound_ + (p.cast<double>() + Eigen::Vector3d(0.5, 0.5, 0.5)) * voxel_width_;
                 double ground_height;
                 if (dtm_->getHeightNearest(voxel_center_world.x(), voxel_center_world.y(), ground_height)) {
-                    // If the center of this voxel is below the DTM, skip it entirely.
                     if (voxel_center_world.z() < ground_height) {
-                        return false; // Continue walking to the next voxel.
+                        return false;
                     }
                 }
             }
 
-            VoxelGrid::Voxel& v = sparse_voxels_[coord];
+            if (flat_array_) {
+                // Direct atomic writes into the shared flat array — no per-thread map.
+                VoxelGrid::Voxel& v = flat_array_[p.x() + p.y() * flat_dim_x_ + p.z() * flat_dim_xy_];
+                if (type == RayType::OBSERVED) {
+                    atomic_fadd(v.num_rays_observed, static_cast<float>(weight));
+                    atomic_fadd(v.path_length_observed, static_cast<float>(length_in_voxel * weight));
+                    atomic_fadd(v.sum_of_angles, static_cast<float>(zenith_angle * weight));
+                    atomic_fadd(v.sum_sin_azimuth, static_cast<float>(sin_az * weight));
+                    atomic_fadd(v.sum_cos_azimuth, static_cast<float>(cos_az * weight));
 
-            if (type == RayType::OBSERVED) {
-                v.num_rays_observed += static_cast<float>(weight);
-                v.path_length_observed += static_cast<float>(length_in_voxel * weight);
+                    Eigen::Vector3d voxel_center_world = bounds_.min_bound_ + (p.cast<double>() + Eigen::Vector3d(0.5, 0.5, 0.5)) * voxel_width_;
+                    double dist_to_center = (voxel_center_world - current_ray_world_start_).norm();
+                    atomic_fadd(v.sum_of_laser_distances, static_cast<float>(dist_to_center * weight));
 
-                Eigen::Vector3d voxel_center_world = bounds_.min_bound_ + (p.cast<double>() + Eigen::Vector3d(0.5, 0.5, 0.5)) * voxel_width_;
-                double distance_to_voxel_center = (voxel_center_world - current_ray_world_start_).norm();
-
-                v.sum_of_angles += static_cast<float>(zenith_angle * weight);
-                v.sum_of_laser_distances += static_cast<float>(distance_to_voxel_center * weight);
-
-                if (calc_beam_metrics_) {
-                    double beam_radius = tan_half_divergence_ * distance_to_voxel_center + (0.5 * beam_diameter_);
-                    double beam_area = kPi * beam_radius * beam_radius;
-                    v.bs_entering += static_cast<float>(beam_area * weight);
+                    if (calc_beam_metrics_) {
+                        double beam_radius = tan_half_divergence_ * dist_to_center + 0.5 * beam_diameter_;
+                        atomic_fadd(v.bs_entering, static_cast<float>(kPi * beam_radius * beam_radius * weight));
+                    }
+                    if (subvoxel_split_ > 0) {
+                        Eigen::Vector3d ls = (current_ray_vox_start_ + current_ray_vox_dir_ * in_length  - p.cast<double>()) * subvoxel_split_;
+                        Eigen::Vector3d le = (current_ray_vox_start_ + current_ray_vox_dir_ * end_length - p.cast<double>()) * subvoxel_split_;
+                        uint64_t bits = 0;
+                        walkSubGrid(ls, le, subvoxel_split_, bits);
+                        if (bits) atomic_or_u64(v.subvoxel_bitmap, bits);
+                    }
+                } else {
+                    atomic_fadd(v.num_rays_occluded, static_cast<float>(weight));
+                    atomic_fadd(v.path_length_occluded, static_cast<float>(length_in_voxel * weight));
                 }
+            } else {
+                // Per-thread sparse map — OOC path and sparse-fallback mode.
+                VoxelCoord coord = {p.x(), p.y(), p.z()};
+                VoxelGrid::Voxel& v = sparse_voxels_[coord];
+                if (type == RayType::OBSERVED) {
+                    v.num_rays_observed += static_cast<float>(weight);
+                    v.path_length_observed += static_cast<float>(length_in_voxel * weight);
 
-                if (subvoxel_split_ > 0) {
-                    Eigen::Vector3d local_start = (current_ray_vox_start_ + current_ray_vox_dir_ * in_length - p.cast<double>()) * subvoxel_split_;
-                    Eigen::Vector3d local_end = (current_ray_vox_start_ + current_ray_vox_dir_ * end_length - p.cast<double>()) * subvoxel_split_;
-                    walkSubGrid(local_start, local_end, subvoxel_split_, v.subvoxel_bitmap);
+                    Eigen::Vector3d voxel_center_world = bounds_.min_bound_ + (p.cast<double>() + Eigen::Vector3d(0.5, 0.5, 0.5)) * voxel_width_;
+                    double dist_to_center = (voxel_center_world - current_ray_world_start_).norm();
+
+                    v.sum_of_angles += static_cast<float>(zenith_angle * weight);
+                    v.sum_sin_azimuth += static_cast<float>(sin_az * weight);
+                    v.sum_cos_azimuth += static_cast<float>(cos_az * weight);
+                    v.sum_of_laser_distances += static_cast<float>(dist_to_center * weight);
+
+                    if (calc_beam_metrics_) {
+                        double beam_radius = tan_half_divergence_ * dist_to_center + 0.5 * beam_diameter_;
+                        v.bs_entering += static_cast<float>(kPi * beam_radius * beam_radius * weight);
+                    }
+                    if (subvoxel_split_ > 0) {
+                        Eigen::Vector3d ls = (current_ray_vox_start_ + current_ray_vox_dir_ * in_length  - p.cast<double>()) * subvoxel_split_;
+                        Eigen::Vector3d le = (current_ray_vox_start_ + current_ray_vox_dir_ * end_length - p.cast<double>()) * subvoxel_split_;
+                        walkSubGrid(ls, le, subvoxel_split_, v.subvoxel_bitmap);
+                    }
+                } else {
+                    v.num_rays_occluded += static_cast<float>(weight);
+                    v.path_length_occluded += static_cast<float>(length_in_voxel * weight);
                 }
-
-            } else { // OCCLUDED
-                v.num_rays_occluded += static_cast<float>(weight);
-                v.path_length_occluded += static_cast<float>(length_in_voxel * weight);
             }
 
             return false;

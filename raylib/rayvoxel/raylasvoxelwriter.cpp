@@ -132,87 +132,106 @@ void parseLadParams(const std::string& lad_params_str, double& param1, double& p
 // Centralized Metric Calculator Implementation
 // ==================================================================================
 
-MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const VoxelizationParameters& params, const HeightField* dtm)
+MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const VoxelizationParameters& params,
+                                         const HeightField* dtm, const ClassTable& class_table)
 {
     MetricResultsMap results;
     const double voxel_volume = grid.getVoxelWidth() * grid.getVoxelWidth() * grid.getVoxelWidth();
+    const double vox_w = grid.getVoxelWidth();
+    const Eigen::Vector3d& bmin = grid.getBounds().min_bound_;
+    const auto& dims = grid.getDimensions();
 
-    // Pre-parse configuration for efficiency inside the loop
     const std::vector<int> leaf_classes = parseClasses(params.leaf_classes_str);
     const std::vector<int> wood_classes = parseClasses(params.wood_classes_str);
     double lad_param1, lad_param2;
     parseLadParams(params.lad_params_str, lad_param1, lad_param2);
 
-    // Iterate ONLY over the observed voxels in the sparse grid
-    for (const auto& pair : grid.getSparseVoxels()) {
-        const VoxelCoord& coord = pair.first;
-        const VoxelGrid::Voxel& v_metrics = pair.second;
-
+    // Lambda to fill a VoxelOutputData from a voxel + its flat index
+    auto populateData = [&](int64_t flat_idx, int64_t ci, int64_t cj, int64_t ck,
+                            const VoxelGrid::Voxel& v) -> VoxelOutputData {
         VoxelOutputData data;
+        data.i = ci; data.j = cj; data.k = ck;
+        data.x = bmin.x() + vox_w * (static_cast<double>(ci) + 0.5);
+        data.y = bmin.y() + vox_w * (static_cast<double>(cj) + 0.5);
+        data.z = bmin.z() + vox_w * (static_cast<double>(ck) + 0.5);
+        data.state = grid.getVoxelState(ci, cj, ck);
+        data.num_hits = v.num_hits;
+        data.num_rays_observed = v.num_rays_observed;
+        data.path_length_observed = v.path_length_observed;
+        data.num_rays_occluded = v.num_rays_occluded;
+        data.path_length_occluded = v.path_length_occluded;
 
-        // --- Populate Identity and Base Metrics ---
-        data.i = coord.x; data.j = coord.y; data.k = coord.z;
-        data.x = grid.getBounds().min_bound_.x() + grid.getVoxelWidth() * (static_cast<double>(coord.x) + 0.5);
-        data.y = grid.getBounds().min_bound_.y() + grid.getVoxelWidth() * (static_cast<double>(coord.y) + 0.5);
-        data.z = grid.getBounds().min_bound_.z() + grid.getVoxelWidth() * (static_cast<double>(coord.z) + 0.5);
-        data.state = grid.getVoxelState(coord.x, coord.y, coord.z);
-        data.dominant_class = getDominantPointClassification(v_metrics.classification_hits);
-        data.absolute_class = getAbsolutePointClassification(v_metrics.classification_hits);
-        data.num_hits = v_metrics.num_hits;
-        data.num_rays_observed = v_metrics.num_rays_observed;
-        data.path_length_observed = v_metrics.path_length_observed;
-        data.num_rays_occluded = v_metrics.num_rays_occluded;
-        data.path_length_occluded = v_metrics.path_length_occluded;
-        data.classification_hits = v_metrics.classification_hits;
+        // Classification from the post-traversal table
+        auto cit = class_table.find(flat_idx);
+        if (cit != class_table.end()) {
+            data.classification_hits = cit->second;
+            data.dominant_class = getDominantPointClassification(data.classification_hits);
+            data.absolute_class  = getAbsolutePointClassification(data.classification_hits);
+        }
 
-        // --- Perform ALL metric calculations here, and only here ---
-        data.pad_bv_total = v_metrics.pad_bv_total();
-        data.surface_area = data.pad_bv_total * voxel_volume;
-        data.mean_angle_rad = (v_metrics.num_rays_observed > 0) ? (v_metrics.sum_of_angles / v_metrics.num_rays_observed) : 0.0;
-        data.mean_laser_dist = (v_metrics.num_rays_observed > 0) ? (v_metrics.sum_of_laser_distances / v_metrics.num_rays_observed) : 0.0;
+        data.pad_bv_total  = v.pad_bv_total();
+        data.surface_area  = data.pad_bv_total * voxel_volume;
+        data.mean_zenith_angle_rad  = (v.num_rays_observed > 0) ? (v.sum_of_angles / v.num_rays_observed) : 0.0;
+        if (v.num_rays_observed > 0) {
+          const double mean_sin = v.sum_sin_azimuth / v.num_rays_observed;
+          const double mean_cos = v.sum_cos_azimuth / v.num_rays_observed;
+          double az = std::atan2(mean_sin, mean_cos);
+          if (az < 0.0) az += 2.0 * kPi;
+          data.mean_azimuth_rad = az;
+          data.azimuth_concentration = std::sqrt(mean_sin * mean_sin + mean_cos * mean_cos);
+        }
+        data.mean_laser_dist = (v.num_rays_observed > 0) ? (v.sum_of_laser_distances / v.num_rays_observed) : 0.0;
 
-        // --- DTM-based Metrics ---
         if (dtm && dtm->isValid()) {
             double ground_height;
-            if (dtm->getHeight(data.x, data.y, ground_height)) {
+            if (dtm->getHeight(data.x, data.y, ground_height))
                 data.distance_from_ground = data.z - ground_height;
-            }
         }
 
-        if (params.calc_veg_metrics && v_metrics.path_length_observed > 0) {
-            double g_theta = computeG(data.mean_angle_rad, params.lad, lad_param1, lad_param2);
+        if (params.calc_veg_metrics && v.path_length_observed > 0) {
+            double g_theta = computeG(data.mean_zenith_angle_rad, params.lad, lad_param1, lad_param2);
             if (g_theta > 0) {
-                data.pad_g_corrected = v_metrics.num_hits / (g_theta * v_metrics.path_length_observed);
-
+                data.pad_g_corrected = v.num_hits / (g_theta * v.path_length_observed);
                 float leaf_hits = 0.0f, wood_hits = 0.0f;
-                for (int code : leaf_classes) {
-                    // Range check still required to avoid signed UB on the array index.
-                    if (code >= 0 && code <= 255) {
-                        leaf_hits += v_metrics.classification_hits[code];
-                    }
-                }
-                for (int code : wood_classes) {
-                    // Range check still required to avoid signed UB on the array index.
-                    if (code >= 0 && code <= 255) {
-                        wood_hits += v_metrics.classification_hits[code];
-                    }
-                }
-                data.pad_leaf = leaf_hits / (g_theta * v_metrics.path_length_observed);
-                data.pad_wood = wood_hits / (g_theta * v_metrics.path_length_observed);
+                for (int code : leaf_classes)
+                    if (code >= 0 && code <= 255) leaf_hits += data.classification_hits[code];
+                for (int code : wood_classes)
+                    if (code >= 0 && code <= 255) wood_hits += data.classification_hits[code];
+                data.pad_leaf = leaf_hits / (g_theta * v.path_length_observed);
+                data.pad_wood = wood_hits / (g_theta * v.path_length_observed);
             }
         }
 
-        if (params.calc_beam_metrics) {
-            data.transmittance = v_metrics.transmittance();
-        }
+        if (params.calc_beam_metrics)
+            data.transmittance = v.transmittance();
 
         if (params.subvoxel_split > 0) {
-            int set_bits = popcount(v_metrics.subvoxel_bitmap);
+            int set_bits = popcount(v.subvoxel_bitmap);
             int total_subvoxels = params.subvoxel_split * params.subvoxel_split * params.subvoxel_split;
             data.exploration_rate = (total_subvoxels > 0) ? static_cast<double>(set_bits) / total_subvoxels : 0.0;
         }
+        return data;
+    };
 
-        results[coord] = data;
+    if (grid.isFlat()) {
+        const int64_t total = dims[0] * dims[1] * dims[2];
+        const int64_t dimX = dims[0], dimY = dims[1];
+        for (int64_t flat_idx = 0; flat_idx < total; ++flat_idx) {
+            const VoxelGrid::Voxel& v = grid.voxelAt(flat_idx);
+            if (v.num_hits == 0.0f && v.num_rays_observed == 0.0f && v.num_rays_occluded == 0.0f) continue;
+            const int64_t ci = flat_idx % dimX;
+            const int64_t cj = (flat_idx / dimX) % dimY;
+            const int64_t ck = flat_idx / (dimX * dimY);
+            results[{ci, cj, ck}] = populateData(flat_idx, ci, cj, ck, v);
+        }
+    } else {
+        // Sparse fallback: iterate only occupied voxels
+        for (const auto& pair : grid.getSparseVoxels()) {
+            const VoxelCoord& coord = pair.first;
+            const VoxelGrid::Voxel& v = pair.second;
+            const int64_t flat_idx = grid.flatIndex(coord.x, coord.y, coord.z);
+            results[coord] = populateData(flat_idx, coord.x, coord.y, coord.z, v);
+        }
     }
     return results;
 }
@@ -239,7 +258,7 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
                       user_extent.z() / static_cast<double>(user_dims.z()));
   space.header["res"] = format_vec_string(res);
 
-  std::string colnames = "i j k classification nbEchos nbSampling PadBVTotal lgTotal angleMean distLaser";
+  std::string colnames = "i j k classification nbEchos nbSampling PadBVTotal lgTotal zenithAngleMean azimuthAngleMean azimuthConcentration distLaser";
   if (params.calc_beam_metrics) {
     colnames += " bsEntering bsIntercepted";
   }
@@ -259,7 +278,9 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
     v_data.variables.push_back(std::to_string(static_cast<int>(data ? data->num_rays_observed : 0.0f)));
     v_data.variables.push_back(std::to_string(data ? data->pad_bv_total : 0.0));
     v_data.variables.push_back(std::to_string(data ? data->path_length_observed : 0.0f));
-    v_data.variables.push_back(std::to_string(data ? data->mean_angle_rad * 180.0 / kPi : 0.0));
+    v_data.variables.push_back(std::to_string(data ? data->mean_zenith_angle_rad * 180.0 / kPi : 0.0));
+    v_data.variables.push_back(std::to_string(data ? data->mean_azimuth_rad * 180.0 / kPi : 0.0));
+    v_data.variables.push_back(std::to_string(data ? data->azimuth_concentration : 0.0));
     v_data.variables.push_back(std::to_string(data ? data->mean_laser_dist : 0.0));
 
     if (params.calc_beam_metrics) {
@@ -305,7 +326,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
   outfile << std::fixed << std::setprecision(6);
   std::string header = "i j k x y z voxel_state pointclass absolute_pointclass num_hits num_rays_observed path_length_observed "
                        "num_rays_occluded path_length_occluded pad_bv_total surface_area voxel_size "
-                       "mean_angle_rad mean_laser_dist";
+                       "mean_zenith_angle_rad mean_azimuth_rad azimuth_concentration mean_laser_dist";
   if (!params.dtm_file.empty() || params.dtm_from_class >= 0) { header += " distance_from_ground"; }
   if (params.calc_veg_metrics) header += " pad_g_corrected pad_leaf pad_wood";
   if (params.calc_beam_metrics) header += " transmittance";
@@ -322,7 +343,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
             << data.num_hits << " " << data.num_rays_observed << " " << data.path_length_observed << " "
             << data.num_rays_occluded << " " << data.path_length_occluded << " "
             << data.pad_bv_total << " " << data.surface_area << " " << grid.getVoxelWidth() << " "
-            << data.mean_angle_rad << " " << data.mean_laser_dist;
+            << data.mean_zenith_angle_rad << " " << data.mean_azimuth_rad << " " << data.azimuth_concentration << " " << data.mean_laser_dist;
     if (!params.dtm_file.empty() || params.dtm_from_class >= 0) {
         if (data.distance_from_ground != std::numeric_limits<double>::lowest()) {
             outfile << " " << data.distance_from_ground;
@@ -429,7 +450,9 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
     vars["num_rays_observed"] = dataFile.addVar("num_rays_observed", netCDF::ncFloat, {nPoints});
     vars["pad_bv_total"] = dataFile.addVar("pad_bv_total", netCDF::ncDouble, {nPoints});
     vars["surface_area"] = dataFile.addVar("surface_area", netCDF::ncDouble, {nPoints});
-    vars["mean_angle_rad"] = dataFile.addVar("mean_angle_rad", netCDF::ncDouble, {nPoints});
+    vars["mean_zenith_angle_rad"] = dataFile.addVar("mean_zenith_angle_rad", netCDF::ncDouble, {nPoints});
+    vars["mean_azimuth_rad"] = dataFile.addVar("mean_azimuth_rad", netCDF::ncDouble, {nPoints});
+    vars["azimuth_concentration"] = dataFile.addVar("azimuth_concentration", netCDF::ncDouble, {nPoints});
     vars["mean_laser_dist"] = dataFile.addVar("mean_laser_dist", netCDF::ncDouble, {nPoints});
     if (!params.dtm_file.empty() || params.dtm_from_class >= 0) {
       vars["distance_from_ground"] = dataFile.addVar("distance_from_ground", netCDF::ncDouble, {nPoints});
@@ -453,7 +476,7 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
 
     std::vector<int> i_data, j_data, k_data, state_data, pclass_data, abs_pclass_data;
     std::vector<float> hits_data, rays_data;
-    std::vector<double> pad_data, sa_data, angle_data, dist_data, dfg_data, pad_g_data, pad_leaf_data, pad_wood_data, transm_data, explore_data;
+    std::vector<double> pad_data, sa_data, angle_data, azimuth_data, concentration_data, dist_data, dfg_data, pad_g_data, pad_leaf_data, pad_wood_data, transm_data, explore_data;
     std::vector<int> voxel_id_data;
     std::vector<unsigned char> hit_class_code_data;
     std::vector<float> hit_class_count_data;
@@ -462,7 +485,7 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
     state_data.reserve(point_count); pclass_data.reserve(point_count); abs_pclass_data.reserve(point_count);
     hits_data.reserve(point_count); rays_data.reserve(point_count);
     pad_data.reserve(point_count); sa_data.reserve(point_count);
-    angle_data.reserve(point_count); dist_data.reserve(point_count);
+    angle_data.reserve(point_count); azimuth_data.reserve(point_count); concentration_data.reserve(point_count); dist_data.reserve(point_count);
     if (!params.dtm_file.empty() || params.dtm_from_class >= 0) { dfg_data.reserve(point_count); }
     if (params.calc_veg_metrics) {
         pad_g_data.reserve(point_count);
@@ -489,7 +512,9 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
         rays_data.push_back(data.num_rays_observed);
         pad_data.push_back(data.pad_bv_total);
         sa_data.push_back(data.surface_area);
-        angle_data.push_back(data.mean_angle_rad);
+        angle_data.push_back(data.mean_zenith_angle_rad);
+        azimuth_data.push_back(data.mean_azimuth_rad);
+        concentration_data.push_back(data.azimuth_concentration);
         dist_data.push_back(data.mean_laser_dist);
         if (!params.dtm_file.empty() || params.dtm_from_class >= 0) { dfg_data.push_back(data.distance_from_ground); }
         if (params.calc_veg_metrics) {
@@ -520,7 +545,9 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
     vars["num_rays_observed"].putVar(rays_data.data());
     vars["pad_bv_total"].putVar(pad_data.data());
     vars["surface_area"].putVar(sa_data.data());
-    vars["mean_angle_rad"].putVar(angle_data.data());
+    vars["mean_zenith_angle_rad"].putVar(angle_data.data());
+    vars["mean_azimuth_rad"].putVar(azimuth_data.data());
+    vars["azimuth_concentration"].putVar(concentration_data.data());
     vars["mean_laser_dist"].putVar(dist_data.data());
 
     if (!params.dtm_file.empty() || params.dtm_from_class >= 0) { vars["distance_from_ground"].putVar(dfg_data.data()); }

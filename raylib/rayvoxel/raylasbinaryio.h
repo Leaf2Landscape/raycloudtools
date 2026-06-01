@@ -29,6 +29,24 @@ namespace ray
     in.read(reinterpret_cast<char*>(&value), sizeof(T));
   }
 
+  static constexpr uint32_t kShardMagic   = 0x564F584C; // "VOXL"
+  static constexpr uint16_t kShardVersion = 2;          // v2: no is_filled / classification_hits
+
+  /// @brief Writes shard-file header. Call once at the start of each shard.
+  inline bool writeShardHeader(std::ofstream& out) {
+    writeBinary(out, kShardMagic);
+    writeBinary(out, kShardVersion);
+    return out.good();
+  }
+
+  /// @brief Reads and validates the shard-file header.
+  inline bool readShardHeader(std::ifstream& in) {
+    uint32_t magic; uint16_t version;
+    readBinary(in, magic);
+    readBinary(in, version);
+    return in.good() && magic == kShardMagic && version == kShardVersion;
+  }
+
   /// @brief Serializes a Voxel and its VoxelCoord to a binary output stream.
   inline bool writeVoxelData(std::ofstream& out, const VoxelCoord& coord, const VoxelGrid::Voxel& voxel)
   {
@@ -40,24 +58,13 @@ namespace ray
     writeBinary(out, voxel.path_length_observed);
     writeBinary(out, voxel.num_rays_occluded);
     writeBinary(out, voxel.path_length_occluded);
-    writeBinary(out, voxel.is_filled);
     writeBinary(out, voxel.sum_of_angles);
+    writeBinary(out, voxel.sum_sin_azimuth);
+    writeBinary(out, voxel.sum_cos_azimuth);
     writeBinary(out, voxel.sum_of_laser_distances);
     writeBinary(out, voxel.bs_entering);
     writeBinary(out, voxel.bs_intercepted);
     writeBinary(out, voxel.subvoxel_bitmap);
-
-    // Sparse-on-disk: count nonzero entries, then (code, value) pairs
-    uint16_t nonzero = 0;
-    for (int c = 0; c < 256; ++c) if (voxel.classification_hits[c] != 0.0f) ++nonzero;
-    writeBinary(out, nonzero);
-    for (int c = 0; c < 256; ++c) {
-      if (voxel.classification_hits[c] != 0.0f) {
-        U8 code = static_cast<U8>(c);
-        writeBinary(out, code);
-        writeBinary(out, voxel.classification_hits[c]);
-      }
-    }
     return out.good();
   }
 
@@ -74,23 +81,13 @@ namespace ray
     readBinary(in, voxel.path_length_observed);
     readBinary(in, voxel.num_rays_occluded);
     readBinary(in, voxel.path_length_occluded);
-    readBinary(in, voxel.is_filled);
     readBinary(in, voxel.sum_of_angles);
+    readBinary(in, voxel.sum_sin_azimuth);
+    readBinary(in, voxel.sum_cos_azimuth);
     readBinary(in, voxel.sum_of_laser_distances);
     readBinary(in, voxel.bs_entering);
     readBinary(in, voxel.bs_intercepted);
     readBinary(in, voxel.subvoxel_bitmap);
-
-    voxel.classification_hits.fill(0.0f);
-    uint16_t nonzero;
-    readBinary(in, nonzero);
-    for (uint16_t i = 0; i < nonzero; ++i) {
-      U8 code; float value;
-      readBinary(in, code);
-      readBinary(in, value);
-      if (!in.good()) return false;
-      voxel.classification_hits[code] = value;
-    }
     return in.good();
   }
 

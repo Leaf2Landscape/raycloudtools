@@ -86,7 +86,9 @@ namespace ray
     };
 
     /// @struct Voxel
-    /// @brief Stores the accumulated metrics for a single voxel cell.
+    /// @brief Stores the accumulated traversal metrics for a single voxel cell.
+    ///        classification_hits is NOT stored here; it is computed in a
+    ///        separate post-traversal pass and held in a ClassTable.
     struct Voxel
     {
       float num_hits = 0.0f;              // Sum of hit events (unweighted).
@@ -94,10 +96,10 @@ namespace ray
       float path_length_observed = 0.0f;  // Sum of path lengths of observed rays (weighted).
       float num_rays_occluded = 0.0f;     // Sum of occluded rays passing through (unweighted).
       float path_length_occluded = 0.0f;  // Sum of path lengths of occluded rays (unweighted).
-      bool is_filled = false;             // True if a point return is located in this voxel.
-      std::array<float, 256> classification_hits{}; // Unweighted sum of hits per classification code.
       float sum_of_angles = 0.0f;         // Weighted sum of zenith angles of rays passing through.
-      float sum_of_laser_distances = 0.0f;// Weighted sum of distances from sensor to voxel center for rays.
+      float sum_sin_azimuth = 0.0f;       // Weighted sum of sin(azimuth) of rays passing through.
+      float sum_cos_azimuth = 0.0f;       // Weighted sum of cos(azimuth) of rays passing through.
+      float sum_of_laser_distances = 0.0f;// Weighted sum of distances from sensor to voxel center.
       float bs_entering = 0.0f;           // Weighted sum of entering beam cross-sectional area.
       float bs_intercepted = 0.0f;        // Weighted sum of intercepted beam cross-sectional area.
       uint64_t subvoxel_bitmap = 0;       // Bitmap for tracking subvoxel coverage (up to 4x4x4).
@@ -116,19 +118,32 @@ namespace ray
     };
 
   public:
-    VoxelGrid(const Cuboid &grid_bounds, double vox_width, size_t reservation_size = 0);
+    /// ram_budget_bytes: if the flat array would exceed this, fall back to sparse map.
+    VoxelGrid(const Cuboid &grid_bounds, double vox_width,
+              size_t ram_budget_bytes = 2ULL * 1024 * 1024 * 1024,
+              size_t sparse_reservation = 0);
 
-    /// @brief Merges the results from a VoxelProcessor into this grid's main map.
-    ///        This operation is thread-safe.
+    /// Merge a processor map into the grid (thread-safe via internal mutex).
     void merge(const VoxelProcessor& processor);
 
-    /// @brief Moves the results from a VoxelProcessor into this grid's main map. Not thread-safe.
+    /// Move-assign a processor map into the grid (single-threaded, no lock).
     void take(VoxelProcessor& processor);
 
     /// Bulk-import a moved processor map; not thread-safe — call only after join().
-    /// The argument type is identical to VoxelProcessor::Map, spelled out here
-    /// because VoxelProcessor is only forward-declared in this header.
     void absorbMap(std::unordered_map<VoxelCoord, Voxel, VoxelCoordHash>&& m);
+
+    // --- Storage mode ---
+    bool isFlat() const { return !use_sparse_fallback_; }
+
+    // Direct flat-index access (write). Call only when isFlat().
+    Voxel& voxelAt(int64_t flat_idx) { return flat_voxels_[flat_idx]; }
+    const Voxel& voxelAt(int64_t flat_idx) const { return flat_voxels_[flat_idx]; }
+
+    // Flat index arithmetic: i + j*dimX + k*dimX*dimY
+    int64_t flatIndex(int64_t i, int64_t j, int64_t k) const
+    {
+      return i + j * voxel_dims_[0] + k * voxel_dims_[0] * voxel_dims_[1];
+    }
 
     // --- Accessors ---
     VoxelState getVoxelState(int64_t i, int64_t j, int64_t k) const;
@@ -139,22 +154,25 @@ namespace ray
     const std::vector<double>& getPeaks() const { return peaks_; }
     int64_t getIndex(int64_t i, int64_t j, int64_t k) const;
 
-    // Public getter for read-only access to the sparse voxel map.
+    // Sparse map accessor — valid only when !isFlat().
     const std::unordered_map<VoxelCoord, Voxel, VoxelCoordHash>& getSparseVoxels() const { return sparse_voxels_; }
 
   private:
-    // Private getter for write access, intended only for friend classes.
     std::unordered_map<VoxelCoord, Voxel, VoxelCoordHash>& getSparseVoxels_internal() { return sparse_voxels_; }
 
     Cuboid bounds_;
+    std::vector<Voxel> flat_voxels_;
+    bool use_sparse_fallback_ = true;
     std::unordered_map<VoxelCoord, Voxel, VoxelCoordHash> sparse_voxels_;
     double voxel_width_;
     Eigen::Matrix<int64_t, 3, 1> voxel_dims_;
     std::vector<double> peaks_;
-
-    // Mutex to protect the main map during concurrent merge operations.
     std::mutex merge_mutex_;
   };
+
+  // ClassTable: flat voxel index → per-classification hit counts.
+  // Populated in a separate post-traversal pass; only hit voxels have entries.
+  using ClassTable = std::unordered_map<int64_t, std::array<float, 256>>;
 
   // --- Inline Voxel Operator Implementations ---
 
@@ -166,13 +184,12 @@ namespace ray
     num_rays_occluded += other.num_rays_occluded;
     path_length_occluded += other.path_length_occluded;
     sum_of_angles += other.sum_of_angles;
+    sum_sin_azimuth += other.sum_sin_azimuth;
+    sum_cos_azimuth += other.sum_cos_azimuth;
     sum_of_laser_distances += other.sum_of_laser_distances;
     bs_entering += other.bs_entering;
     bs_intercepted += other.bs_intercepted;
-    is_filled = is_filled || other.is_filled;
     subvoxel_bitmap |= other.subvoxel_bitmap;
-
-    for (int c = 0; c < 256; ++c) classification_hits[c] += other.classification_hits[c];
   }
 
   inline VoxelGrid::Voxel VoxelGrid::Voxel::operator*(double scale) const
@@ -184,13 +201,12 @@ namespace ray
     v.num_rays_occluded = static_cast<float>(num_rays_occluded * scale);
     v.path_length_occluded = static_cast<float>(path_length_occluded * scale);
     v.sum_of_angles = static_cast<float>(sum_of_angles * scale);
+    v.sum_sin_azimuth = static_cast<float>(sum_sin_azimuth * scale);
+    v.sum_cos_azimuth = static_cast<float>(sum_cos_azimuth * scale);
     v.sum_of_laser_distances = static_cast<float>(sum_of_laser_distances * scale);
     v.bs_entering = static_cast<float>(bs_entering * scale);
     v.bs_intercepted = static_cast<float>(bs_intercepted * scale);
-    v.is_filled = is_filled;
     v.subvoxel_bitmap = subvoxel_bitmap;
-
-    for (int c = 0; c < 256; ++c) v.classification_hits[c] = static_cast<float>(classification_hits[c] * scale);
     return v;
   }
 

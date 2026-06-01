@@ -41,7 +41,9 @@ namespace ray
     // Calculated Metrics
     double pad_bv_total = 0.0;
     double surface_area = 0.0;
-    double mean_angle_rad = 0.0;
+    double mean_zenith_angle_rad = 0.0;
+    double mean_azimuth_rad = 0.0;
+    double azimuth_concentration = 0.0;
     double mean_laser_dist = 0.0;
 
     // DTM-derived Metric
@@ -62,7 +64,8 @@ namespace ray
   // MODIFIED: Centralized metric calculator function declaration.
   // This function will iterate over the sparse grid once and compute all
   // required output metrics, populating a MetricResultsMap.
-  MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const VoxelizationParameters& params, const HeightField* dtm);
+  MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const VoxelizationParameters& params,
+                                           const HeightField* dtm, const ClassTable& class_table);
 
   // MODIFIED: All writer function signatures are now refactored to be cleaner.
   // They take the pre-calculated MetricResultsMap and the params object,
