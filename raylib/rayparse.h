@@ -99,6 +99,22 @@ private:
   bool check_extension_;
 };
 
+/// A free-form string value, e.g. "amapvox" in "--output_format amapvox".
+/// Unlike TextArgument it does not match a fixed token; it accepts any non-flag string.
+class RAYLIB_EXPORT StringArgument : public FixedArgument
+{
+public:
+  StringArgument() {}
+  StringArgument(const std::string &default_value)
+    : value_(default_value)
+  {}
+  virtual bool parse(int argc, char *argv[], int &index, bool set_value);
+  inline const std::string &text() const { return value_; }
+
+private:
+  std::string value_;
+};
+
 /// Numerical values
 class RAYLIB_EXPORT ValueArgument : public FixedArgument
 {

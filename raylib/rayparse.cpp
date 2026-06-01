@@ -73,6 +73,21 @@ bool TextArgument::parse(int argc, char *argv[], int &index, bool)
   return true;
 }
 
+bool StringArgument::parse(int argc, char *argv[], int &index, bool set_value)
+{
+  if (index >= argc)
+    return false;
+  std::string text = std::string(argv[index]);
+  if (text.empty())
+    return false;
+  if (text[0] == '-')  // no value should start with a dash. That is reserved for flag arguments
+    return false;
+  if (set_value)
+    value_ = text;
+  index++;
+  return true;
+}
+
 bool FileArgument::parse(int argc, char *argv[], int &index, bool set_value)
 {
   if (index >= argc)

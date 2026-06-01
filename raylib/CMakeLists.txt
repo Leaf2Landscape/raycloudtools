@@ -58,6 +58,16 @@ set(PUBLIC_HEADERS
   extraction/raytreenode.h
   extraction/raygrid2d.h
   extraction/raydensegrid.h
+  rayvoxel/rayvox.h
+  rayvoxel/raylasvoxelconfig.h
+  rayvoxel/raylasheightfield.h
+  rayvoxel/raylasvegmetrics.h
+  rayvoxel/raylasbinaryio.h
+  rayvoxel/raylasthreadsafequeue.h
+  rayvoxel/raylasvoxelise.h
+  rayvoxel/raylasvoxelprocessor.h
+  rayvoxel/raylasvoxelrefine.h
+  rayvoxel/raylasvoxelwriter.h
 )
 
 set(PRIVATE_HEADERS
@@ -110,6 +120,13 @@ set(SOURCES
   extraction/raysegment.cpp
   extraction/raydensegrid.cpp
   extraction/raytreeslib.cpp
+  rayvoxel/rayvox.cpp
+  rayvoxel/raylasvegmetrics.cpp
+  rayvoxel/raylasheightfield.cpp
+  rayvoxel/raylasvoxelise.cpp
+  rayvoxel/raylasvoxelprocessor.cpp
+  rayvoxel/raylasvoxelrefine.cpp
+  rayvoxel/raylasvoxelwriter.cpp
 )
 
 get_target_property(SIMPLE_FFT_INCLUDE_DIRS simple_fft INTERFACE_INCLUDE_DIRECTORIES)

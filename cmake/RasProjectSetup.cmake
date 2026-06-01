@@ -106,11 +106,7 @@ macro(ras_project)
   endif(RAS_SRC_DIR)
 
   # C++ standards setup.
-  if(MSVC) # Should really look for VS2019+
-    set(CMAKE_CXX_STANDARD 17)
-  else(MSVC)
-    set(CMAKE_CXX_STANDARD 14)
-  endif(MSVC)
+  set(CMAKE_CXX_STANDARD 17)
   if(RAS_CXX_STD)
     set(CMAKE_CXX_STANDARD ${RAS_CXX_STD})
   endif(RAS_CXX_STD)
