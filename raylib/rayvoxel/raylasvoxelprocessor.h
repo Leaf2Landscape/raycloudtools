@@ -103,6 +103,7 @@ namespace ray
     double beam_diameter_;
     double tan_half_divergence_;
     int subvoxel_split_;
+    int64_t row_stride_;
     const HeightField* dtm_; // Pointer to the DTM for ground clipping
 
     // --- Per-ray state ---

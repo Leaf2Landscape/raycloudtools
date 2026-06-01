@@ -91,6 +91,13 @@ void VoxelGrid::take(VoxelProcessor& processor)
   sparse_voxels_ = processor.takeMap();
 }
 
+void VoxelGrid::absorbMap(VoxelProcessor::Map&& m)
+{
+  for (auto& pair : m) {
+    sparse_voxels_[pair.first] += pair.second;
+  }
+}
+
 VoxelGrid::VoxelState VoxelGrid::getVoxelState(int64_t i, int64_t j, int64_t k) const {
     VoxelCoord coord = {i, j, k};
     auto it = sparse_voxels_.find(coord);
@@ -259,7 +266,9 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
     std::vector<std::thread> threads;
 
     // The worker task lambda
-    auto worker_task = [&]() {
+    std::vector<VoxelProcessor::Map> worker_maps(resolved_threads);
+
+    auto worker_task = [&](size_t thread_idx) {
       VoxelProcessor processor(grid.getBounds(), grid.getVoxelWidth(), weighting_method, use_occlusion,
                                apply_flat_top, peaks_ptr, calc_beam_metrics, beam_diameter,
                                tan_half_divergence, subvoxel_split, dtm);
@@ -267,13 +276,12 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
       while(beam_queue.pop(beam)) {
         processor.processBeam(beam);
       }
-      // Merge results back to the main grid
-      grid.merge(processor);
+      worker_maps[thread_idx] = processor.takeMap();
     };
 
     // Launch worker threads
     for (size_t i = 0; i < resolved_threads; ++i) {
-      threads.emplace_back(worker_task);
+      threads.emplace_back(worker_task, i);
     }
 
     size_t num_bounded = 0;
@@ -329,6 +337,10 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
     beam_queue.notify_done(); // Signal that no more beams are coming
     // Join all threads
     for (auto& t : threads) { t.join(); }
+    // Serial reduction — no locks needed after join
+    for (size_t i = 0; i < resolved_threads; ++i) {
+      grid.absorbMap(std::move(worker_maps[i]));
+    }
     std::cout << "Parallel processing finished." << std::endl;
 
   } else {

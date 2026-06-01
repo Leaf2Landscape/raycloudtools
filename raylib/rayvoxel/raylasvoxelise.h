@@ -122,6 +122,11 @@ namespace ray
     /// @brief Moves the results from a VoxelProcessor into this grid's main map. Not thread-safe.
     void take(VoxelProcessor& processor);
 
+    /// Bulk-import a moved processor map; not thread-safe — call only after join().
+    /// The argument type is identical to VoxelProcessor::Map, spelled out here
+    /// because VoxelProcessor is only forward-declared in this header.
+    void absorbMap(std::unordered_map<VoxelCoord, Voxel, VoxelCoordHash>&& m);
+
     // --- Accessors ---
     VoxelState getVoxelState(int64_t i, int64_t j, int64_t k) const;
     const Voxel& getVoxel(int64_t i, int64_t j, int64_t k) const;

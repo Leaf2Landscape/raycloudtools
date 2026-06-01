@@ -33,6 +33,7 @@ VoxelProcessor::VoxelProcessor(const Cuboid& grid_bounds, double voxel_width, co
     beam_diameter_(beam_diameter),
     tan_half_divergence_(tan_half_divergence),
     subvoxel_split_(subvoxel_split),
+    row_stride_(voxel_dims_[0]),
     dtm_(dtm)
 {
 }
@@ -274,7 +275,7 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
             // compensation is enabled, the peaks_ pointer must be valid.
             if (use_flat_top_ && type == RayType::OBSERVED) {
                 assert(peaks_ != nullptr && "If use_flat_top_ is true, peaks_ must be valid.");
-                int64_t peak_id = p.x() + p.y() * voxel_dims_[0];
+                int64_t peak_id = p.x() + p.y() * row_stride_;
                 if (peak_id >= 0 && peak_id < static_cast<int64_t>(peaks_->size())) {
                     double peak = (*peaks_)[peak_id];
                     double in_height = current_ray_vox_start_.z() + current_ray_vox_dir_.z() * in_length;
