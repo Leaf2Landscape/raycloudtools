@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <unordered_map>
 
 #include "raylib/raycloud.h"
 #include "raylib/raycloudwriter.h"
@@ -109,6 +110,21 @@ int rayImport(int argc, char *argv[])
     ray::readLasExtraBytesVlr(cloud_file.name(), orig_extra, input_extra_bytes_vlr);
   }
 
+  // Pre-scan: build a global GPS-time -> beam_id map so that all returns of one pulse
+  // (same timestamp) get the same beam_id regardless of chunk boundaries or spatial sorting.
+  std::unordered_map<double, int32_t> beam_id_map;
+  if (beam_id_opt.isSet() && (in_ext == "las" || in_ext == "laz"))
+  {
+    int32_t next_id = 0;
+    size_t dummy_bounded = 0;
+    ray::readLas(cloud_file.name(), [&](std::vector<Eigen::Vector3d> &, std::vector<Eigen::Vector3d> &,
+                                        std::vector<double> &scan_times, std::vector<ray::RGBA> &) {
+      for (const double t : scan_times)
+        if (beam_id_map.emplace(t, next_id).second)
+          ++next_id;
+    }, dummy_bounded, maximum_intensity);
+  }
+
   ray::CloudWriter writer;
   if (!writer.begin(save_file + "." + save_ext, input_extra_bytes_vlr, beam_id_opt.isSet()))
     usage();
@@ -203,57 +219,54 @@ int rayImport(int argc, char *argv[])
     if (beam_id_opt.isSet())
     {
       chunk_beam_ids.resize(times.size());
-      // Passthrough stride: 10 standard bytes + any sensor extra bytes per point.
-      const size_t pt_stride =
-        (!chunk_pass.empty() && !times.empty()) ? (chunk_pass.size() / times.size()) : 0;
-      const bool has_passthrough = (pt_stride >= 10 &&
-                                    chunk_pass.size() >= pt_stride * times.size());
-      for (size_t i = 0; i < times.size(); i++)
+      if (!beam_id_map.empty())
       {
-        bool new_beam = false;
-        if (has_passthrough)
+        // LAS/LAZ: look up beam_id from the globally pre-assigned map keyed by GPS time.
+        // All returns of a pulse share one timestamp and thus one beam_id, even when the
+        // file is spatially sorted and returns of the same pulse span different chunks.
+        for (size_t i = 0; i < times.size(); i++)
         {
-          // Use return_number from the LAS passthrough as the pulse-boundary signal.
-          // A new pulse (beam) starts when return_number == 1.
-          // gps_time change is an additional trigger for single-return or unordered data.
-          const uint8_t byte0 = chunk_pass[i * pt_stride];
-          const uint8_t ret_num = byte0 & 0x0Fu;
-          new_beam = (ret_num == 1) || (times[i] != last_beam_time);
+          const auto it = beam_id_map.find(times[i]);
+          chunk_beam_ids[i] = (it != beam_id_map.end()) ? it->second : -1;
         }
-        else if (!starts.empty())
+      }
+      else
+      {
+        // PLY/RXP: detect new beam by ray-origin change or GPS-time change.
+        for (size_t i = 0; i < times.size(); i++)
         {
-          // No LAS return fields (PLY/RXP): new beam when the ray origin (sensor position)
-          // changes. Same-pulse returns share the same origin; use 5 mm tolerance to
-          // absorb floating-point differences from trajectory interpolation.
-          const Eigen::Vector3d &prev = (i == 0) ? last_beam_start : starts[i - 1];
-          new_beam = !starts[i].isApprox(prev, 0.005);
-        }
-        else
-        {
-          // No positions and no passthrough: fall back to gps_time change.
-          if (times[i] != 0.0 || i > 0)
+          bool new_beam = false;
+          if (!starts.empty())
           {
-            new_beam = (times[i] != last_beam_time);
+            const Eigen::Vector3d &prev = (i == 0) ? last_beam_start : starts[i - 1];
+            new_beam = !starts[i].isApprox(prev, 0.005);
           }
           else
           {
-            if (!warned_beam_fallback)
+            if (times[i] != 0.0 || i > 0)
             {
-              std::cout << "warning: no sensor positions or GPS timestamps detected; "
-                           "beam_id will be one per point" << std::endl;
-              warned_beam_fallback = true;
+              new_beam = (times[i] != last_beam_time);
             }
-            new_beam = true;
+            else
+            {
+              if (!warned_beam_fallback)
+              {
+                std::cout << "warning: no sensor positions or GPS timestamps detected; "
+                             "beam_id will be one per point" << std::endl;
+                warned_beam_fallback = true;
+              }
+              new_beam = true;
+            }
           }
+          if (new_beam)
+          {
+            ++current_beam_id;
+            last_beam_time = times[i];
+            if (!starts.empty())
+              last_beam_start = starts[i];
+          }
+          chunk_beam_ids[i] = current_beam_id;
         }
-        if (new_beam)
-        {
-          ++current_beam_id;
-          last_beam_time = times[i];
-          if (!starts.empty())
-            last_beam_start = starts[i];
-        }
-        chunk_beam_ids[i] = current_beam_id;
       }
     }
     if (!writer.writeChunk(starts, ends, times, colours, chunk_pass, chunk_beam_ids))
