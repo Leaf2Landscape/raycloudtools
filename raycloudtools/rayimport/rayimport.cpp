@@ -122,7 +122,7 @@ int rayImport(int argc, char *argv[])
       for (const double t : scan_times)
         if (beam_id_map.emplace(t, next_id).second)
           ++next_id;
-    }, dummy_bounded, maximum_intensity);
+    }, dummy_bounded, maximum_intensity, nullptr, 1000000, nullptr, nullptr);
   }
 
   ray::CloudWriter writer;
