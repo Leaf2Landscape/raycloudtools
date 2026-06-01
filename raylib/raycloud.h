@@ -39,6 +39,7 @@ public:
   std::vector<double> times;
   std::vector<RGBA> colours;
   std::vector<int32_t> tree_ids;   ///< optional per-point tree ID (populated by rayextract trees)
+  std::vector<int32_t> stem_ids;   ///< optional per-point stem ID; -1 = unassigned
   /// Flat array of per-point passthrough bytes, stride = extra_bytes_size.
   /// The first 8 bytes per point are standard LAS 1.4 extended fields:
   ///   [0] ext_return_number[0:3] | ext_num_returns[4:7]

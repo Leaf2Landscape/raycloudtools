@@ -10,31 +10,6 @@
 
 namespace ray
 {
-/// nodes of priority queue used in shortest path algorithm
-struct QueueNode
-{
-//  QueueNode() {}
-  QueueNode(double distance_to_ground, double score, double radius, int root, int index)
-    : distance_to_ground(distance_to_ground)
-    , score(score)
-    , radius(radius)
-    , root(root)
-    , id(index)
-  {}
-
-  double distance_to_ground; // path distance to the ground
-  double score;              // score is the modified edge length metric being minimised
-  double radius;             // radius of the tree base, this acts as a score scale coefficient
-  int root;                  // index of the root of the path
-  int id;                    // index into the points_ array for this node
-};
-
-class QueueNodeComparator
-{
-public:
-  bool operator()(const QueueNode &p1, const QueueNode &p2) { return p1.score > p2.score; }
-};
-
 /// Connect the supplied set of points @c points according to the shortest path to the ground, by filling in their
 /// parent indices
 /// @c distance_limit maximum distance between points that can be connected

@@ -17,13 +17,33 @@
 
 namespace ray
 {
+// Read a tree/stem ID extra-byte field of the given LAS data_type and normalise its
+// per-type "unassigned" sentinel to int32_t -1. uint types use 0 as unassigned;
+// int types use -1. IDs exceeding INT32_MAX are narrowed (known limitation).
+static int32_t readLasIdField(const uint8_t *extra, uint16_t off, uint8_t dtype)
+{
+  switch (dtype)
+  {
+    case 1: { uint8_t  v; memcpy(&v, extra + off, 1); return v  == 0u ? -1 : static_cast<int32_t>(v); }
+    case 3: { uint16_t v; memcpy(&v, extra + off, 2); return v  == 0u ? -1 : static_cast<int32_t>(v); }
+    case 5: { uint32_t v; memcpy(&v, extra + off, 4); return v  == 0u ? -1 : static_cast<int32_t>(v); }
+    case 7: { uint64_t v; memcpy(&v, extra + off, 8); return v  == 0u ? -1 : static_cast<int32_t>(v); }
+    case 2: { int8_t   v; memcpy(&v, extra + off, 1); return v  == -1 ? -1 : static_cast<int32_t>(v); }
+    case 4: { int16_t  v; memcpy(&v, extra + off, 2); return v  == -1 ? -1 : static_cast<int32_t>(v); }
+    case 6: { int32_t  v; memcpy(&v, extra + off, 4); return v; }  // raycloudtools native; identity
+    case 8: { int64_t  v; memcpy(&v, extra + off, 8); return v  == -1 ? -1 : static_cast<int32_t>(v); }
+    default: return -1;  // absent (0), float (9/10), or unknown
+  }
+}
+
 bool readLas(const std::string &file_name,
              std::function<void(std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                                 std::vector<double> &times, std::vector<RGBA> &colours)>
                apply,
              size_t &num_bounded, double max_intensity, Eigen::Vector3d *offset_to_remove, size_t chunk_size,
              std::vector<int32_t> *tree_ids_out, std::vector<uint8_t> *passthrough_out,
-             uint16_t *orig_extra_size_out, std::vector<uint8_t> *extra_bytes_vlr_out)
+             uint16_t *orig_extra_size_out, std::vector<uint8_t> *extra_bytes_vlr_out,
+             std::vector<int32_t> *stem_ids_out)
 {
 #if RAYLIB_WITH_LAS
   std::cout << "readLas: filename: " << file_name << std::endl;
@@ -92,11 +112,14 @@ bool readLas(const std::string &file_name,
   // LAS EXTRA_BYTES data_type → per-point byte size (types 0 and >10 are skipped)
   static const uint16_t kExtraTypeSize[11] = { 0, 1, 1, 2, 2, 4, 4, 8, 8, 4, 8 };
   // Names of raycloud-owned extra attributes (these are skipped when extracting original data)
-  static const char *kRayCloudAttrs[] = { "sx", "sy", "sz", "alpha", "tree_id" };
+  static const char *kRayCloudAttrs[] = { "sx", "sy", "sz", "alpha", "tree_id", "stem_id" };
 
   uint16_t local_skip_size = 0;   // bytes of our own extra attributes before original data
   uint16_t local_orig_extra = 0;  // bytes of original sensor data per point
-  bool has_tree_id_attr = false;  // true only if VLR explicitly declares "tree_id"
+  uint16_t own_offset      = 0;   // running byte cursor through our own attrs (in declared order)
+  uint16_t tree_id_offset  = 0;   uint8_t tree_id_dtype = 0;  // 0 = absent
+  uint16_t stem_id_offset  = 0;   uint8_t stem_id_dtype = 0;  // 0 = absent
+  uint16_t alpha_offset    = 12;  // default: sx+sy+sz only; overwritten when "alpha" VLR found
   std::vector<uint8_t> local_orig_vlr;
 
   for (laszip_U32 v = 0; v < header->number_of_variable_length_records; v++)
@@ -119,11 +142,15 @@ bool readLas(const std::string &file_name,
       {
         for (const char *own : kRayCloudAttrs)
           if (strcmp(attr_name, own) == 0) { is_ours = true; break; }
-        if (strcmp(attr_name, "tree_id") == 0)
-          has_tree_id_attr = true;
+        if (strcmp(attr_name, "tree_id") == 0) { tree_id_offset = own_offset; tree_id_dtype = dtype; }
+        if (strcmp(attr_name, "stem_id") == 0) { stem_id_offset = own_offset; stem_id_dtype = dtype; }
+        if (strcmp(attr_name, "alpha")   == 0) { alpha_offset   = own_offset; }
       }
       if (is_ours)
-        local_skip_size += attr_size;
+      {
+        own_offset       += attr_size;
+        local_skip_size  += attr_size;
+      }
       else
       {
         local_orig_extra += attr_size;
@@ -180,12 +207,14 @@ bool readLas(const std::string &file_name,
       memcpy(&sy, point->extra_bytes + 4, 4);
       memcpy(&sz, point->extra_bytes + 8, 4);
       starts.push_back({ position[0] + sx, position[1] + sy, position[2] + sz });
-      if (tree_ids_out && has_tree_id_attr)
-      {
-        int32_t tid;
-        memcpy(&tid, point->extra_bytes + 12, 4);
-        tree_ids_out->push_back(tid);
-      }
+      if (tree_ids_out && tree_id_dtype != 0 &&
+          point->num_extra_bytes >= tree_id_offset + kExtraTypeSize[tree_id_dtype])
+        tree_ids_out->push_back(readLasIdField(point->extra_bytes, tree_id_offset, tree_id_dtype));
+      if (stem_ids_out && stem_id_dtype != 0 &&
+          point->num_extra_bytes >= stem_id_offset + kExtraTypeSize[stem_id_dtype])
+        stem_ids_out->push_back(readLasIdField(point->extra_bytes, stem_id_offset, stem_id_dtype));
+      else if (stem_ids_out && tree_id_dtype != 0 && stem_id_dtype == 0)
+        stem_ids_out->push_back(0);
     }
     else
     {
@@ -263,9 +292,9 @@ bool readLas(const std::string &file_name,
     uint8_t intensity;
     if (is_raycloud)
     {
-      // Alpha is stored in extra_bytes at position 12 (or 16 with tree_id).
+      // Alpha is stored in extra_bytes at position 12 (or 16 with tree_id, or 20 with tree_id+stem_id).
       // Prefer extra_bytes so the intensity field is free to carry the original sensor value.
-      const uint16_t alpha_pos = has_tree_id_attr ? 16u : 12u;
+      const uint16_t alpha_pos = alpha_offset;
       intensity = (point->num_extra_bytes > alpha_pos)
                     ? point->extra_bytes[alpha_pos]
                     : static_cast<uint8_t>(point->intensity);  // fallback for old files
@@ -317,6 +346,7 @@ bool readLas(const std::string &file_name,
   RAYLIB_UNUSED(passthrough_out);
   RAYLIB_UNUSED(orig_extra_size_out);
   RAYLIB_UNUSED(extra_bytes_vlr_out);
+  RAYLIB_UNUSED(stem_ids_out);
   std::cerr << "readLas: cannot read file as WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true" << std::endl;
   return false;
 #endif  // RAYLIB_WITH_LAS
@@ -351,7 +381,7 @@ bool readLasExtraBytesVlr(const std::string &file_name, uint16_t &orig_extra_siz
   }
 
   static const uint16_t kExtraTypeSize[11] = { 0, 1, 1, 2, 2, 4, 4, 8, 8, 4, 8 };
-  static const char *kRayCloudAttrs[] = { "sx", "sy", "sz", "alpha", "tree_id" };
+  static const char *kRayCloudAttrs[] = { "sx", "sy", "sz", "alpha", "tree_id", "stem_id" };
 
   uint16_t local_orig_extra = 0;
   std::vector<uint8_t> local_orig_vlr;
@@ -615,29 +645,32 @@ bool LasWriter::writeChunk(const std::vector<Eigen::Vector3d> &points, const std
 bool RAYLIB_EXPORT writeLasRayCloud(const std::string &file_name, const std::vector<Eigen::Vector3d> &starts,
                                     const std::vector<Eigen::Vector3d> &ends, const std::vector<double> &times,
                                     const std::vector<RGBA> &colours, const std::vector<int32_t> &tree_ids,
+                                    const std::vector<int32_t> &stem_ids,
                                     const std::vector<uint8_t> &passthrough,
                                     const std::vector<uint8_t> &extra_bytes_vlr)
 {
 #if RAYLIB_WITH_LAS
-  LasRayCloudWriter writer(file_name, !tree_ids.empty(), extra_bytes_vlr);
-  return writer.writeChunk(starts, ends, times, colours, tree_ids, passthrough);
+  LasRayCloudWriter writer(file_name, !tree_ids.empty(), !stem_ids.empty(), extra_bytes_vlr);
+  return writer.writeChunk(starts, ends, times, colours, tree_ids, stem_ids, passthrough);
 #else   // RAYLIB_WITH_LAS
   RAYLIB_UNUSED(file_name);
   RAYLIB_UNUSED(starts);
   RAYLIB_UNUSED(ends);
   RAYLIB_UNUSED(times);
   RAYLIB_UNUSED(colours);
+  RAYLIB_UNUSED(stem_ids);
   std::cerr << "writeLasRayCloud: WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true" << std::endl;
   return false;
 #endif  // RAYLIB_WITH_LAS
 }
 
 #if RAYLIB_WITH_LAS
-LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tree_id,
+LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tree_id, bool with_stem_id,
                                      const std::vector<uint8_t> &extra_bytes_vlr)
   : file_name_(file_name)
   , points_written_(0)
   , with_tree_id_(with_tree_id)
+  , with_stem_id_(with_stem_id)
   , orig_extra_size_(0)
   , passthrough_stride_(10)
   , writer_handle_(nullptr)
@@ -669,9 +702,13 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
   bool attr_err =
     laszip_add_attribute(writer_handle_, 8, "sx", "ray start x offset", 1.0, 0.0) ||
     laszip_add_attribute(writer_handle_, 8, "sy", "ray start y offset", 1.0, 0.0) ||
-    laszip_add_attribute(writer_handle_, 8, "sz", "ray start z offset", 1.0, 0.0) ||
-    (with_tree_id_ && laszip_add_attribute(writer_handle_, 5, "tree_id", "per-point tree ID", 1.0, 0.0)) ||
-    laszip_add_attribute(writer_handle_, 0, "alpha", "intensity 1-255", 1.0, 0.0);
+    laszip_add_attribute(writer_handle_, 8, "sz", "ray start z offset", 1.0, 0.0);
+  if (!attr_err && with_tree_id_)
+    attr_err = laszip_add_attribute(writer_handle_, 5, "tree_id", "per-point tree ID", 1.0, 0.0);
+  if (!attr_err && with_stem_id_)
+    attr_err = laszip_add_attribute(writer_handle_, 5, "stem_id", "per-point stem ID", 1.0, 0.0);
+  if (!attr_err)
+    attr_err = laszip_add_attribute(writer_handle_, 0, "alpha", "intensity 1-255", 1.0, 0.0);
   if (attr_err)
   {
     laszip_CHAR *error;
@@ -706,8 +743,12 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
   passthrough_stride_ = static_cast<uint16_t>(10 + orig_extra_size_);
 
   // LAS 1.4 format 7 base = 36 bytes.
-  const laszip_U16 record_size =
-    static_cast<laszip_U16>(36 + 12 + (with_tree_id_ ? 4 : 0) + 1 + orig_extra_size_);
+  uint16_t extra = 12; // sx, sy, sz
+  if (with_tree_id_) extra += 4;
+  if (with_stem_id_) extra += 4;
+  extra += 1; // alpha
+  extra += orig_extra_size_;
+  const laszip_U16 record_size = static_cast<laszip_U16>(36 + extra);
   if (laszip_set_point_type_and_size(writer_handle_, 7, record_size))
   {
     laszip_CHAR *error;
@@ -750,13 +791,15 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
   laszip_get_point_pointer(writer_handle_, &point_);
 }
 #else   // RAYLIB_WITH_LAS
-LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tree_id,
+LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tree_id, bool with_stem_id,
                                      const std::vector<uint8_t> &extra_bytes_vlr)
   : file_name_(file_name)
   , with_tree_id_(with_tree_id)
+  , with_stem_id_(with_stem_id)
 {
   RAYLIB_UNUSED(file_name);
   RAYLIB_UNUSED(with_tree_id);
+  RAYLIB_UNUSED(with_stem_id);
   RAYLIB_UNUSED(extra_bytes_vlr);
   std::cerr << "LasRayCloudWriter: WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true" << std::endl;
 }
@@ -795,6 +838,7 @@ LasRayCloudWriter::~LasRayCloudWriter()
 bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
                                    const std::vector<Eigen::Vector3d> &ends, const std::vector<double> &times,
                                    const std::vector<RGBA> &colours, const std::vector<int32_t> &tree_ids,
+                                   const std::vector<int32_t> &stem_ids,
                                    const std::vector<uint8_t> &passthrough)
 {
 #if RAYLIB_WITH_LAS
@@ -836,7 +880,9 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
       // Original sensor extra bytes at p[10..].
       if (orig_extra_size_ > 0)
       {
-        const uint16_t orig_start = static_cast<uint16_t>(with_tree_id_ ? 17 : 13);
+        uint16_t orig_start = 13; // sx+sy+sz+alpha
+        if (with_tree_id_) orig_start += 4;
+        if (with_stem_id_) orig_start += 4;
         std::memcpy(point_->extra_bytes + orig_start, p + 10, orig_extra_size_);
       }
     }
@@ -844,15 +890,21 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
     const float sx = static_cast<float>(starts[i][0] - ends[i][0]);
     const float sy = static_cast<float>(starts[i][1] - ends[i][1]);
     const float sz = static_cast<float>(starts[i][2] - ends[i][2]);
-    std::memcpy(point_->extra_bytes, &sx, 4);
+    std::memcpy(point_->extra_bytes,     &sx, 4);
     std::memcpy(point_->extra_bytes + 4, &sy, 4);
     std::memcpy(point_->extra_bytes + 8, &sz, 4);
-    if (with_tree_id_)
-    {
+    uint16_t off = 12;
+    if (with_tree_id_) {
       const int32_t tid = (i < tree_ids.size()) ? tree_ids[i] : -1;
-      std::memcpy(point_->extra_bytes + 12, &tid, 4);
+      std::memcpy(point_->extra_bytes + off, &tid, 4);
+      off += 4;
     }
-    point_->extra_bytes[with_tree_id_ ? 16 : 12] = colours[i].alpha;
+    if (with_stem_id_) {
+      const int32_t sid = (i < stem_ids.size()) ? stem_ids[i] : -1;
+      std::memcpy(point_->extra_bytes + off, &sid, 4);
+      off += 4;
+    }
+    point_->extra_bytes[off] = colours[i].alpha;
     laszip_write_point(writer_handle_);
   }
   points_written_ += ends.size();
@@ -863,6 +915,7 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
   RAYLIB_UNUSED(times);
   RAYLIB_UNUSED(colours);
   RAYLIB_UNUSED(tree_ids);
+  RAYLIB_UNUSED(stem_ids);
   RAYLIB_UNUSED(passthrough);
   std::cerr << "LasRayCloudWriter: WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true" << std::endl;
   return false;

@@ -27,6 +27,7 @@ void Cloud::clear()
   times.clear();
   colours.clear();
   tree_ids.clear();
+  stem_ids.clear();
   passthrough.clear();
   extra_bytes_size = 8;
   extra_bytes_vlr.clear();
@@ -36,7 +37,7 @@ void Cloud::save(const std::string &file_name) const
 {
   const std::string ext = getFileNameExtension(file_name);
   if (ext == "las" || ext == "laz")
-    writeLasRayCloud(file_name, starts, ends, times, colours, tree_ids, passthrough, extra_bytes_vlr);
+    writeLasRayCloud(file_name, starts, ends, times, colours, tree_ids, stem_ids, passthrough, extra_bytes_vlr);
   else
     writePlyRayCloud(file_name, starts, ends, times, colours);
 }
@@ -56,6 +57,7 @@ bool Cloud::load(const std::string &file_name, bool check_extension, int min_num
 bool Cloud::loadLas(const std::string &file, int min_num_rays)
 {
   std::vector<int32_t> ids;
+  std::vector<int32_t> sids;
   std::vector<uint8_t> pass;
   uint16_t orig_extra = 0;
   std::vector<uint8_t> orig_vlr;
@@ -67,9 +69,11 @@ bool Cloud::loadLas(const std::string &file, int min_num_rays)
     colours.insert(colours.end(), colour_pts.begin(), colour_pts.end());
   };
   size_t num_bounded;
-  bool res = readLas(file, apply, num_bounded, 1.0, nullptr, 1000000, &ids, &pass, &orig_extra, &orig_vlr);
+  bool res = readLas(file, apply, num_bounded, 1.0, nullptr, 1000000, &ids, &pass, &orig_extra, &orig_vlr, &sids);
   if (!ids.empty())
     tree_ids = std::move(ids);
+  if (!sids.empty())
+    stem_ids = std::move(sids);
   if (!pass.empty())
   {
     passthrough = std::move(pass);

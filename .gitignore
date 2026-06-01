@@ -1,3 +1,4 @@
+.claude/
 .idea/
 build*/
 cmake-build*/
@@ -16,3 +17,4 @@ data*/
 !pics/*.png
 forest_*.txt
 room_*.txt
+CLAUDE.md

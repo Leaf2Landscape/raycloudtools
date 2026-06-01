@@ -22,7 +22,7 @@ bool CloudWriter::begin(const std::string &file_name, const std::vector<uint8_t>
 
   if (use_las_)
   {
-    las_writer_ = new LasRayCloudWriter(file_name_, false, extra_bytes_vlr);
+    las_writer_ = new LasRayCloudWriter(file_name_, false, false, extra_bytes_vlr);
     return true;
   }
 
@@ -57,7 +57,7 @@ bool CloudWriter::writeChunk(const Cloud &chunk)
 {
   if (use_las_ && las_writer_)
     return las_writer_->writeChunk(chunk.starts, chunk.ends, chunk.times, chunk.colours,
-                                   chunk.tree_ids, chunk.passthrough);
+                                   chunk.tree_ids, chunk.stem_ids, chunk.passthrough);
   return writeChunk(const_cast<std::vector<Eigen::Vector3d> &>(chunk.starts),
                     const_cast<std::vector<Eigen::Vector3d> &>(chunk.ends),
                     const_cast<std::vector<double> &>(chunk.times),
@@ -72,7 +72,7 @@ bool CloudWriter::writeChunk(std::vector<Eigen::Vector3d> &starts, std::vector<E
   {
     if (!las_writer_)
       return false;
-    return las_writer_->writeChunk(starts, ends, times, colours, {}, passthrough);
+    return las_writer_->writeChunk(starts, ends, times, colours, {}, {}, passthrough);
   }
   return writeRayCloudChunk(ofs_, buffer_, starts, ends, times, colours, has_warned_);
 }

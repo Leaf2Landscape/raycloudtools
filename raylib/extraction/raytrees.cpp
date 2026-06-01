@@ -4,9 +4,14 @@
 //
 // Author: Thomas Lowe
 #include "raytrees.h"
+#include "raysegment.h"
 #include <nabo/nabo.h>
 #include "rayclusters.h"
+#include <cassert>
 #include <iomanip>
+#include <limits>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace ray
 {
@@ -60,128 +65,7 @@ Trees::Trees(Cloud &cloud, const Eigen::Vector3d &offset, const Mesh &mesh, cons
 
   // first do a special case for all the trunks. This is where we estimate mean taper
   ray::Cloud debug_cloud;
-  for (sec_ = 0; sec_ < (int)sections_.size(); sec_++)
-  {
-    double best_accuracy = -1.0;
-    std::vector<int> nodes;  // all the points in the section
-
-    // find height to tip by following the children:
-    std::vector<int> list = sections_[sec_].roots;
-    double max_height = -1e10;
-    for (size_t j = 0; j < list.size(); j++)
-    {
-      max_height = std::max(max_height, points_[list[j]].pos[2]);
-      list.insert(list.end(), children[list[j]].begin(), children[list[j]].end());
-    }
-    Eigen::Vector3d base = getRootPosition();
-    double tree_height = std::max(0.01, max_height - base[2]);
-    sections_[sec_].tree_height = tree_height;
-
-    // Use a usr defined taper to control the height up the trunk to calculate the radius at
-    double girth_height = params_->girth_height_ratio * tree_height; // sections_[sec_].max_distance_to_end;
-    double estimated_radius = 1e10;
-    double best_dist = 0.0;
-    Eigen::Vector3d best_tip;
-    
-    std::vector<int> best_nodes;
-    std::vector<int> best_ends;
-    for (int j = 1; j<=3; j++)
-    {
-      double max_dist = girth_height * (double)j / 2.0; // range from 0.5 to 1.5 times the specified height
-      nodes.clear();
-      sections_[sec_].ends.clear();
-      extractNodesAndEndsFromRoots(nodes, base, children, max_dist * 2.0/3.0, max_dist);
-      if (nodes.size() < 2)
-      {
-        continue;
-      }
-      sections_[sec_].tip = calculateTipFromVertices(nodes);
-      if (verbose)
-      {
-        for (auto &node: nodes)
-        {
-          debug_cloud.addRay(Eigen::Vector3d(0,0,0), points_[node].pos, 0.0, ray::RGBA(j==1 ? 255 : 0, j==2 ? 255:0, j==3 ? 255:0, 255));
-        }
-      }         
-      if (removeDistantPoints(nodes))
-      {
-        sections_[sec_].tip = calculateTipFromVertices(nodes);
-      }
-      if (verbose)
-      {
-        debug_cloud.addRay(Eigen::Vector3d(0,0,0), sections_[sec_].tip + Eigen::Vector3d(0,0,0.03), 0.0, ray::RGBA(255,255,0, 255));
-      }
-      // shift to cylinder's centre
-      Eigen::Vector3d up(0,0,1);
-      sections_[sec_].tip += vectorToCylinderCentre(nodes, up);
-      // now find the segment radius
-      double accuracy;
-      double radius = estimateCylinderRadius(nodes, up, accuracy);
-
-      ray::RGBA col(j==1 ? 255 : 127, j==2 ? 255:127, j==3 ? 255:127, 255);
-      if (verbose)
-      {
-        debug_cloud.addRay(Eigen::Vector3d(0,0,0), sections_[sec_].tip, 0.0, col);
-        for (double ang = 0; ang < 2.0*ray::kPi; ang += 0.1)
-        {
-          debug_cloud.addRay(Eigen::Vector3d(0,0,0), sections_[sec_].tip + radius * Eigen::Vector3d(std::sin(ang), std::cos(ang),0), 0.0, col);
-        }
-      }
-      if (radius < estimated_radius)
-      {
-        best_accuracy = accuracy;
-        estimated_radius = radius;
-        best_dist = max_dist;
-        best_tip = sections_[sec_].tip;
-        best_nodes = nodes;
-        best_ends = sections_[sec_].ends;
-      }
-    }
-    if (best_dist == 0.0)
-    {
-      std::cout << "warning: could not find any points on trunk " << sec_ << " at " << base.transpose() << " so removing the whole section" << std::endl;
-      sections_[sec_].tip = base + Eigen::Vector3d(0,0,0.01);
-      sections_[sec_].total_weight = 1e-10;
-      sections_[sec_].ends.clear(); // so this trunk is not ever used
-      continue; 
-    }    
-    sections_[sec_].tip = best_tip;
-    sections_[sec_].ends = best_ends;
-    nodes = best_nodes;
-    if (sections_[sec_].split_count < 2)
-    {
-      double thickness = best_dist; 
-      bool points_removed = false;
-      double gap = params_->gap_ratio * sections_[sec_].max_distance_to_end; // gap threshold for splitting
-      double span = params_->span_ratio * estimated_radius; // span threshold for splitting
-      std::vector<std::vector<int>> clusters = findPointClusters(base, points_removed, thickness, span, gap);
-
-      if (clusters.size() > 1 || (points_removed && clusters.size() > 0))  // a bifurcation (or an alteration)
-      {
-        sections_[sec_].split_count++;
-        bifurcate(clusters, thickness, children, true, true);
-        sec_--;
-        continue;
-      }
-    }
-    if (verbose)
-    {
-      for (auto &node: sections_[sec_].ends)
-      {
-        debug_cloud.addRay(Eigen::Vector3d(0,0,0), points_[node].pos + Eigen::Vector3d(0,0,0.02), 0.0, ray::RGBA(255, 0, 255, 255));
-      }
-      for (double ang = 0; ang < 2.0*ray::kPi; ang += 0.1)
-      {
-        uint8_t shade = 255; // (uint8_t)(best_accuracy * 255.0);
-        debug_cloud.addRay(Eigen::Vector3d(0,0,0), best_tip + (estimated_radius + 0.01) * Eigen::Vector3d(std::sin(ang), std::cos(ang),0), 0.0, ray::RGBA(shade,shade,shade,255));
-      }
-    }
-
-    nodes.clear();
-    sections_[sec_].ends.clear();
-    extractNodesAndEndsFromRoots(nodes, base, children, 0.0, best_dist/2.0); // make it lower
-    estimateCylinderTaper(estimated_radius, best_accuracy, false); // update the expected taper
-  }
+  estimateTrunkSections(children, verbose ? &debug_cloud : nullptr);
   if (verbose)
   {
     debug_cloud.translate(offset);
@@ -190,6 +74,43 @@ Trees::Trees(Cloud &cloud, const Eigen::Vector3d &offset, const Mesh &mesh, cons
 
   // now trace from root tree nodes upwards, getting node centroids
   // create new BranchSections as we go
+  reconstructBranches(children);
+
+  // Now calculate the section ids for all of the points, for the segmented cloud
+  std::vector<int> section_ids(points_.size(), -1);
+  calculateSectionIds(section_ids, children);
+
+  // If the largest_diameter flag is set then filter the trees to keep only the one(s)
+  // with the largest diameter.
+  if (params_->largest_diameter)
+  {
+    filterLargestDiameterTrees();
+  }
+
+  generateLocalSectionIds();
+
+  Eigen::Vector3d min_bound(0, 0, 0), max_bound(0, 0, 0);
+  // remove all sections with a root out of bounds, if we have gridded the cloud with an overlap
+  if (params_->grid_width)
+  {
+    removeOutOfBoundSections(cloud, min_bound, max_bound, offset);
+  }
+
+  std::vector<int> root_segs(cloud.ends.size(), -1);
+  // now colour the ray cloud based on the segmentation
+  segmentCloud(cloud, root_segs, section_ids);
+
+  if (params_->grid_width)  // also remove rays from the segmented cloud
+  {
+    removeOutOfBoundRays(cloud, min_bound, max_bound, root_segs);
+  }
+
+  std::cout << "cloud's estimated mean taper ratio (diameter / length): " << 2.0 * forest_taper_ / forest_weight_ << std::endl;
+}
+
+/// Branch reconstruction loop factored out so both constructors can share it.
+void Trees::reconstructBranches(std::vector<std::vector<int>> &children)
+{
   for (sec_ = 0; sec_ < (int)sections_.size(); sec_++)
   {
     const int par = sections_[sec_].parent;
@@ -203,7 +124,7 @@ Trees::Trees(Cloud &cloud, const Eigen::Vector3d &offset, const Mesh &mesh, cons
         {
           sections_[sec_].tip[2] = std::min(sections_[sec_].tip[2], points_[i].pos[2]);
         }
-      }      
+      }
       else
       {
         std::cout << "weird, a trunk without end points! " << sec_ << std::endl;
@@ -232,7 +153,7 @@ Trees::Trees(Cloud &cloud, const Eigen::Vector3d &offset, const Mesh &mesh, cons
       double span_rad = radius(sections_[sec_]); 
       double thickness = params_->cylinder_length_to_width * span_rad;
       extractNodesAndEndsFromRoots(nodes, base, children, 0.0, thickness);
-      
+
       bool points_removed = false;
       double gap = params_->gap_ratio * sections_[sec_].max_distance_to_end; // gap threshold for splitting
       double span = params_->span_ratio * span_rad; // span thershold for splitting
@@ -272,37 +193,344 @@ Trees::Trees(Cloud &cloud, const Eigen::Vector3d &offset, const Mesh &mesh, cons
       addChildSection();
     }
   }  // end of loop. We now have created all of the BranchSections
+}
 
-  // Now calculate the section ids for all of the points, for the segmented cloud
+/// Trunk estimation loop factored out so both constructors can share it.
+/// @c debug_cloud receives verbose diagnostic geometry when non-null.
+void Trees::estimateTrunkSections(std::vector<std::vector<int>> &children, Cloud *debug_cloud)
+{
+  for (sec_ = 0; sec_ < (int)sections_.size(); sec_++)
+  {
+    double best_accuracy = -1.0;
+    std::vector<int> nodes;  // all the points in the section
+
+    if (sections_[sec_].roots.empty())
+    {
+      std::cout << "warning: no roots for section " << sec_ << ", skipping." << std::endl;
+      sections_[sec_].total_weight = 1e-10;
+      sections_[sec_].ends.clear();
+      continue;
+    }
+
+    // find height to tip by following the children:
+    std::vector<int> list = sections_[sec_].roots;
+    double max_height = -1e10;
+    for (size_t j = 0; j < list.size(); j++)
+    {
+      max_height = std::max(max_height, points_[list[j]].pos[2]);
+      list.insert(list.end(), children[list[j]].begin(), children[list[j]].end());
+    }
+    Eigen::Vector3d base = getRootPosition();
+    double tree_height = std::max(0.01, max_height - base[2]);
+    sections_[sec_].tree_height = tree_height;
+
+    // Use a usr defined taper to control the height up the trunk to calculate the radius at
+    double girth_height = params_->girth_height_ratio * tree_height; // sections_[sec_].max_distance_to_end;
+    double estimated_radius = 1e10;
+    double best_dist = 0.0;
+    Eigen::Vector3d best_tip;
+
+    std::vector<int> best_nodes;
+    std::vector<int> best_ends;
+    for (int j = 1; j<=3; j++)
+    {
+      double max_dist = girth_height * (double)j / 2.0; // range from 0.5 to 1.5 times the specified height
+      nodes.clear();
+      sections_[sec_].ends.clear();
+      extractNodesAndEndsFromRoots(nodes, base, children, max_dist * 2.0/3.0, max_dist);
+      if (nodes.size() < 2)
+      {
+        continue;
+      }
+      sections_[sec_].tip = calculateTipFromVertices(nodes);
+      if (debug_cloud)
+      {
+        for (auto &node: nodes)
+        {
+          debug_cloud->addRay(Eigen::Vector3d(0,0,0), points_[node].pos, 0.0, ray::RGBA(j==1 ? 255 : 0, j==2 ? 255:0, j==3 ? 255:0, 255));
+        }
+      }
+      if (removeDistantPoints(nodes))
+      {
+        sections_[sec_].tip = calculateTipFromVertices(nodes);
+      }
+      if (debug_cloud)
+      {
+        debug_cloud->addRay(Eigen::Vector3d(0,0,0), sections_[sec_].tip + Eigen::Vector3d(0,0,0.03), 0.0, ray::RGBA(255,255,0, 255));
+      }
+      // shift to cylinder's centre
+      Eigen::Vector3d up(0,0,1);
+      sections_[sec_].tip += vectorToCylinderCentre(nodes, up);
+      // now find the segment radius
+      double accuracy;
+      double radius = estimateCylinderRadius(nodes, up, accuracy);
+
+      ray::RGBA col(j==1 ? 255 : 127, j==2 ? 255:127, j==3 ? 255:127, 255);
+      if (debug_cloud)
+      {
+        debug_cloud->addRay(Eigen::Vector3d(0,0,0), sections_[sec_].tip, 0.0, col);
+        for (double ang = 0; ang < 2.0*ray::kPi; ang += 0.1)
+        {
+          debug_cloud->addRay(Eigen::Vector3d(0,0,0), sections_[sec_].tip + radius * Eigen::Vector3d(std::sin(ang), std::cos(ang),0), 0.0, col);
+        }
+      }
+      if (radius < estimated_radius)
+      {
+        best_accuracy = accuracy;
+        estimated_radius = radius;
+        best_dist = max_dist;
+        best_tip = sections_[sec_].tip;
+        best_nodes = nodes;
+        best_ends = sections_[sec_].ends;
+      }
+    }
+    if (best_dist == 0.0)
+    {
+      std::cout << "warning: could not find any points on trunk " << sec_ << " at " << base.transpose() << " so removing the whole section" << std::endl;
+      sections_[sec_].tip = base + Eigen::Vector3d(0,0,0.01);
+      sections_[sec_].total_weight = 1e-10;
+      sections_[sec_].ends.clear(); // so this trunk is not ever used
+      continue;
+    }
+    sections_[sec_].tip = best_tip;
+    sections_[sec_].ends = best_ends;
+    nodes = best_nodes;
+    if (sections_[sec_].split_count < 2)
+    {
+      double thickness = best_dist; 
+      bool points_removed = false;
+      double gap = params_->gap_ratio * sections_[sec_].max_distance_to_end; // gap threshold for splitting
+      double span = params_->span_ratio * estimated_radius; // span threshold for splitting
+      std::vector<std::vector<int>> clusters = findPointClusters(base, points_removed, thickness, span, gap);
+
+      if (clusters.size() > 1 || (points_removed && clusters.size() > 0))  // a bifurcation (or an alteration)
+      {
+        sections_[sec_].split_count++;
+        bifurcate(clusters, thickness, children, true, true);
+        sec_--;
+        continue;
+      }
+    }
+    if (debug_cloud)
+    {
+      for (auto &node: sections_[sec_].ends)
+      {
+        debug_cloud->addRay(Eigen::Vector3d(0,0,0), points_[node].pos + Eigen::Vector3d(0,0,0.02), 0.0, ray::RGBA(255, 0, 255, 255));
+      }
+      for (double ang = 0; ang < 2.0*ray::kPi; ang += 0.1)
+      {
+        uint8_t shade = 255; // (uint8_t)(best_accuracy * 255.0);
+        debug_cloud->addRay(Eigen::Vector3d(0,0,0), best_tip + (estimated_radius + 0.01) * Eigen::Vector3d(std::sin(ang), std::cos(ang),0), 0.0, ray::RGBA(shade,shade,shade,255));
+      }
+    }
+
+    nodes.clear();
+    sections_[sec_].ends.clear();
+    extractNodesAndEndsFromRoots(nodes, base, children, 0.0, best_dist/2.0); // make it lower
+    estimateCylinderTaper(estimated_radius, best_accuracy, false); // update the expected taper
+  }
+}
+
+/// Build an id_map (contiguous_section_id -> (tree_id, stem_id)) for save().
+/// Only meaningful after the second (PreLabeledTag) constructor; returns empty map otherwise.
+std::map<int32_t, std::pair<int32_t,int32_t>>
+Trees::buildLabelIdMap() const
+{
+  std::map<int32_t, std::pair<int32_t,int32_t>> id_map;
+  for (size_t sec = 0; sec < sections_.size(); ++sec)
+  {
+    if (sections_[sec].parent != -1) continue;       // not a root section
+    if (sec >= sec_labels_.size()) continue;          // legacy ctor: no mapping
+    const int32_t key = contiguous_section_ids_[sec];
+    if (key < 0) continue;                           // dropped/empty tree
+    id_map[key] = sec_labels_[sec];
+  }
+  return id_map;
+}
+
+/// Second constructor: reconstruct from a pre-labeled cloud using per-tree Dijkstra.
+/// cloud.tree_ids must be populated (tree_id > 0 = valid tree); cloud.stem_ids optional.
+Trees::Trees(Cloud &cloud, const Eigen::Vector3d &offset, const Mesh &mesh,
+             const TreesParams &params, bool verbose, PreLabeledTag)
+{
+  params_ = &params;
+  (void)offset; // offset is already removed by caller before entering this constructor
+
+  // Step 1: Populate points_ from bounded cloud rays; track cloud index for each point.
+  std::vector<size_t> bounded_to_cloud; // bounded_to_cloud[j] = cloud index for points_[j]
+  points_.reserve(cloud.ends.size());
+  for (size_t i = 0; i < cloud.ends.size(); ++i)
+  {
+    if (!cloud.rayBounded(i)) continue;
+    uint8_t weight = 1;
+    if (params_->alpha_weighting && i < cloud.colours.size() && cloud.colours[i].alpha > 0)
+      weight = cloud.colours[i].alpha;
+    points_.push_back(Vertex(cloud.ends[i], cloud.starts[i], weight));
+    bounded_to_cloud.push_back(i);
+  }
+  const size_t N = points_.size(); // cloud point count
+
+  // Step 2: Build sections_ — one per unique (tree_id, stem_id) pair — and assign points_[j].root.
+  std::map<std::pair<int32_t,int32_t>, int> pair_to_sec;
+  const bool has_stem_ids = !cloud.stem_ids.empty();
+  for (size_t j = 0; j < N; ++j)
+  {
+    const size_t ci = bounded_to_cloud[j];
+    const int32_t tid = (ci < cloud.tree_ids.size()) ? cloud.tree_ids[ci] : -1;
+    if (tid < 0) { points_[j].root = -1; continue; }
+    int32_t sid = (has_stem_ids && ci < cloud.stem_ids.size()) ? cloud.stem_ids[ci] : 0;
+    if (sid < 0) sid = 0;
+    const auto key = std::make_pair(tid, sid);
+    auto it = pair_to_sec.find(key);
+    if (it == pair_to_sec.end())
+    {
+      const int sec_idx = static_cast<int>(sections_.size());
+      pair_to_sec[key] = sec_idx;
+      sec_labels_.push_back(key);
+      BranchSection root_sec;
+      root_sec.parent = -1;
+      root_sec.root   = sec_idx;
+      sections_.push_back(root_sec);
+      it = pair_to_sec.find(key);
+    }
+    points_[j].root = it->second;
+  }
+  const int num_secs = static_cast<int>(sections_.size());
+
+  // Step 3: Collect mesh vertices within the cloud bounding box.
+  Eigen::Vector3d box_min, box_max;
+  cloud.calcBounds(&box_min, &box_max);
+  std::vector<Eigen::Vector3d> mesh_verts;
+  mesh_verts.reserve(mesh.vertices().size());
+  for (const auto &vert : mesh.vertices())
+    if (vert[0] >= box_min[0] && vert[1] >= box_min[1] &&
+        vert[0] <= box_max[0] && vert[1] <= box_max[1])
+      mesh_verts.push_back(vert);
+  const size_t M = mesh_verts.size();
+
+  // Append mesh vertices to points_ (indices N..N+M-1) so parent remapping can use global indices.
+  for (const auto &v : mesh_verts)
+    points_.push_back(Vertex(v - Eigen::Vector3d(0, 0, 0.01), v + Eigen::Vector3d(0, 0, 0.01), 1));
+
+  // Step 4: Group cloud point indices by section for per-tree Dijkstra.
+  std::vector<std::vector<size_t>> sec_pts(static_cast<size_t>(num_secs));
+  for (size_t j = 0; j < N; ++j)
+  {
+    const int s = points_[j].root;
+    if (s >= 0 && s < num_secs)
+      sec_pts[static_cast<size_t>(s)].push_back(j);
+  }
+
+  // Step 5: Per-tree Dijkstra — for each labeled group, run Dijkstra on group + all mesh verts.
+  for (int s = 0; s < num_secs; ++s)
+  {
+    const auto &gpts = sec_pts[static_cast<size_t>(s)];
+    if (gpts.empty()) continue;
+
+    // Estimate tree height for the Dijkstra radius (used as score scale).
+    double min_z = std::numeric_limits<double>::max();
+    double max_z = std::numeric_limits<double>::lowest();
+    for (size_t gj : gpts)
+    {
+      min_z = std::min(min_z, points_[gj].pos.z());
+      max_z = std::max(max_z, points_[gj].pos.z());
+    }
+    const double tree_h = std::max(1.0, max_z - min_z);
+
+    // Build local points vector: group cloud pts first, then all mesh verts.
+    const size_t lN = gpts.size();
+    std::vector<Vertex> loc;
+    loc.reserve(lN + M);
+    for (size_t gj : gpts) loc.push_back(points_[gj]);
+    for (size_t mi = 0; mi < M; ++mi) loc.push_back(points_[N + mi]);
+
+    // Seed priority queue with all mesh vertex slots.
+    std::priority_queue<QueueNode, std::vector<QueueNode>, QueueNodeComparator> pq;
+    for (size_t li = lN; li < loc.size(); ++li)
+    {
+      loc[li].distance_to_ground = 0.0;
+      loc[li].score              = 0.0;
+      loc[li].root               = static_cast<int>(li);
+      pq.push(QueueNode(0.0, 0.0, tree_h, static_cast<int>(li), static_cast<int>(li)));
+    }
+
+    connectPointsShortestPath(loc, pq, params_->distance_limit, params_->gravity_factor);
+
+    // Remap parent indices from local to global points_ indices.
+    for (size_t li = 0; li < lN; ++li)
+    {
+      const size_t gj   = gpts[li];
+      points_[gj].distance_to_ground = loc[li].distance_to_ground;
+      const int lpar = loc[li].parent;
+      if (lpar < 0)
+        points_[gj].parent = -1;
+      else if (lpar < static_cast<int>(lN))
+        points_[gj].parent = static_cast<int>(gpts[static_cast<size_t>(lpar)]);
+      else
+        points_[gj].parent = static_cast<int>(N + static_cast<size_t>(lpar) - lN);
+    }
+  }
+
+  // Step 6: Populate sections_[s].roots with global mesh-vertex-parent indices.
+  {
+    std::vector<std::unordered_set<int>> sec_mesh_roots(static_cast<size_t>(num_secs));
+    for (size_t j = 0; j < N; ++j)
+    {
+      const int s   = points_[j].root;
+      const int par = points_[j].parent;
+      if (s >= 0 && s < num_secs && par >= static_cast<int>(N))
+        sec_mesh_roots[static_cast<size_t>(s)].insert(par);
+    }
+    for (int s = 0; s < num_secs; ++s)
+    {
+      for (int mv : sec_mesh_roots[static_cast<size_t>(s)])
+        sections_[static_cast<size_t>(s)].roots.push_back(mv);
+      // Fallback: use lowest-distance cloud points if no mesh vertex parents found.
+      if (sections_[static_cast<size_t>(s)].roots.empty())
+      {
+        double min_dg = std::numeric_limits<double>::max();
+        for (size_t j : sec_pts[static_cast<size_t>(s)])
+          min_dg = std::min(min_dg, points_[j].distance_to_ground);
+        for (size_t j : sec_pts[static_cast<size_t>(s)])
+          if (points_[j].distance_to_ground <= min_dg + 0.1)
+            sections_[static_cast<size_t>(s)].roots.push_back(static_cast<int>(j));
+      }
+    }
+  }
+
+  // Step 7: Distance-to-end propagation and max_distance_to_end per section.
+  calculatePointDistancesToEnd();
+  for (int s = 0; s < num_secs; ++s)
+    for (int idx : sections_[static_cast<size_t>(s)].roots)
+      sections_[static_cast<size_t>(s)].max_distance_to_end =
+        std::max(sections_[static_cast<size_t>(s)].max_distance_to_end, points_[idx].distance_to_end);
+
+  // Step 8: Build full children graph. Per-tree Dijkstra guarantees intra-tree parent chains;
+  // no cross-tree filtering is needed.
+  std::vector<std::vector<int>> children(points_.size());
+  for (size_t i = 0; i < points_.size(); ++i)
+  {
+    const int par = points_[i].parent;
+    if (par != -1) children[static_cast<size_t>(par)].push_back(static_cast<int>(i));
+  }
+
+  // Step 9: Trunk estimation — shared with the legacy constructor.
+  estimateTrunkSections(children, nullptr);
+
+  // Step 10: Branch reconstruction, id generation, and cloud segmentation.
+  reconstructBranches(children);
+
   std::vector<int> section_ids(points_.size(), -1);
   calculateSectionIds(section_ids, children);
-
-  // If the largest_diameter flag is set then filter the trees to keep only the one(s)
-  // with the largest diameter.
-  if (params_->largest_diameter)
-  {
-    filterLargestDiameterTrees();
-  }
-
+  if (params_->largest_diameter) filterLargestDiameterTrees();
   generateLocalSectionIds();
 
-  Eigen::Vector3d min_bound(0, 0, 0), max_bound(0, 0, 0);
-  // remove all sections with a root out of bounds, if we have gridded the cloud with an overlap
-  if (params_->grid_width)
-  {
-    removeOutOfBoundSections(cloud, min_bound, max_bound, offset);
-  }
-
   std::vector<int> root_segs(cloud.ends.size(), -1);
-  // now colour the ray cloud based on the segmentation
   segmentCloud(cloud, root_segs, section_ids);
 
-  if (params_->grid_width)  // also remove rays from the segmented cloud
-  {
-    removeOutOfBoundRays(cloud, min_bound, max_bound, root_segs);
-  }
-
-  std::cout << "cloud's estimated mean taper ratio (diameter / length): " << 2.0 * forest_taper_ / forest_weight_ << std::endl;
+  if (verbose)
+    std::cout << "reconstruct: processed " << sections_.size() << " sections from "
+              << num_secs << " unique labeled groups" << std::endl;
 }
 
 // If 1 tree plus some low lying foliage is in the node, then it won't be split if the foliage doesn't reach to the 
@@ -1215,7 +1443,8 @@ void Trees::removeOutOfBoundRays(Cloud &cloud, const Eigen::Vector3d &min_bound,
 }
 
 // save the structure to a text file
-bool Trees::save(const std::string &filename, const Eigen::Vector3d &offset, bool verbose) const
+bool Trees::save(const std::string &filename, const Eigen::Vector3d &offset, bool verbose,
+                 const std::map<int32_t, std::pair<int32_t,int32_t>> &id_map) const
 {
   std::ofstream ofs(filename.c_str(), std::ios::out);
   if (!ofs.is_open())
@@ -1224,8 +1453,16 @@ bool Trees::save(const std::string &filename, const Eigen::Vector3d &offset, boo
     return false;
   }
   ofs << std::setprecision(4) << std::fixed;
-  ofs << "# Tree file. Optional per-tree attributes (e.g. 'height,crown_radius, ') followed by 'x,y,z,radius' and any additional per-segment attributes:" << std::endl;
-  ofs << "x,y,z,radius,parent_id,section_id"; // simple format
+  if (id_map.empty())
+  {
+    ofs << "# Tree file. Optional per-tree attributes (e.g. 'height,crown_radius, ') followed by 'x,y,z,radius' and any additional per-segment attributes:" << std::endl;
+    ofs << "x,y,z,radius,parent_id,section_id"; // simple format
+  }
+  else
+  {
+    ofs << "# Tree file. tree_id,stem_id per stem; x,y,z,radius and optional per-segment attributes follow." << std::endl;
+    ofs << "tree_id,stem_id, x,y,z,radius,parent_id,section_id";
+  }
   if (verbose)
   {
     ofs << ",weight,len,accuracy,junction_weight";
@@ -1237,6 +1474,14 @@ bool Trees::save(const std::string &filename, const Eigen::Vector3d &offset, boo
     if (section.parent >= 0 || section.children.empty())  // not a root section, so move on
     {
       continue;
+    }
+    if (!id_map.empty())
+    {
+      auto it = id_map.find(contiguous_section_ids_[sec]);
+      if (it != id_map.end())
+        ofs << it->second.first << ", " << it->second.second << ", ";
+      else
+        ofs << "-1, -1, ";
     }
     ofs << section.tip[0]+offset[0] << "," << section.tip[1]+offset[1] << "," << section.tip[2]+offset[2] << "," << radius(section) << ",-1," << contiguous_section_ids_[sec];
     if (verbose)

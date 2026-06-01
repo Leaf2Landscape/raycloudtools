@@ -1,80 +1,96 @@
-# rayextract trees refactor: segment/reconstruct split + multistem support
+# rayextract refactor: minimal-diff segment/reconstruct split
 
-## Branch goal
-Refactor `rayextract trees` to (1) cleanly separate segmentation from
-reconstruction at the raylib level, and (2) treat (tree_id, stem_id) as
-the reconstructable unit, not tree_id alone. Add a `--mask` input to the
-segmentation step for carrying labels forward from a previous collection.
+## Current state
 
-## Domain context (NON-NEGOTIABLE — read before designing anything)
-- tree_id identifies one inventory-matched tree.
-- stem_id identifies one reconstructable stem within that tree.
-- A tree may have multiple stems. Stems may diverge at ground (e.g.
-  mallee, lignotuberous Eucalyptus) or may split off the side of a main
-  stem below girth height. In raycloudtools' current default behaviour,
-  the latter would be merged into a single tree with branches; for our
-  data, the stem separation has already been done upstream and must be
-  preserved.
-- A `reconstructable unit` is therefore a (tree_id, stem_id) pair, not
-  a tree_id. Reconstruction must operate per-unit, then group outputs
-  by tree_id for multistem-aware reporting.
-- When stem_id is absent or all stems within a tree share one stem_id,
-  behaviour must reduce exactly to the current rayextract trees output.
+`rayextract segment` and `rayextract reconstruct` are **functionally correct and complete**.
+Do not change behavior. This refactor is about code structure only.
 
-## Invariants
-- The existing `rayextract trees` CLI must continue to work and produce
-  byte-identical (or behaviourally identical, modulo intentional fixes)
-  output when called without --mask and without per-stem input. We are
-  adding capability, not breaking it.
-- Segmentation outputs (tree_ids, stem_ids, trunk metadata) must be
-  sufficient inputs for reconstruction. No hidden state crosses the
-  boundary.
-- The PLY loader's coordinate shift normalisation must be preserved
-  through any in-memory path we add — large UTM coordinates must not
-  reach float32 internals unshifted.
+### What each command does
 
-## --mask semantics
-- `--mask` accepts either:
-  (a) a directory of PLY files named `{tree_id}_{stem_id}.ply`
-      (stem_id optional in filename if not present in data), OR
-  (b) a single .las/.laz file with extra-bytes fields `tree_id` and
-      optionally `stem_id`.
-- Each unique (tree_id, stem_id) becomes a trunk seed for segmentation.
-- Output tree_ids and stem_ids in the new cloud match those in the mask
-  for matched stems. ID-collision policy for stems present in the new
-  cloud but not the mask is configurable (default: new IDs starting
-  beyond max mask ID).
-- Mask cloud is assumed co-registered with input cloud. We will not
-  attempt registration here.
+```
+rayextract segment <cloud.ply> [--ground mesh.ply] [--mask <path>]
+  -> <prefix>_segmented.las   (per-point tree_id, stem_id)
+  -> <prefix>_segmented_seeds.txt
 
-## CLI shape (NON-NEGOTIABLE)
+rayextract reconstruct <cloud_segmented.las> <ground_mesh.ply>
+  -> <prefix>_trees.txt
+  -> <prefix>_trees_mesh.ply
 
-Two new subcommands are added under `rayextract`, mirroring the existing
-`trunks → forest --trunks` composition pattern:
+rayextract trees <cloud.ply> <ground_mesh.ply>   (unchanged legacy behavior)
+```
 
-  rayextract segment cloud.ply [--mask <path>] [--ground cloud_mesh.ply]
-    → cloud_segmented.ply  (labelled cloud, tree_id + stem_id fields)
-    → cloud_seeds.txt      (per-stem trunk metadata)
+### Why reconstruct re-runs segmentation internally
 
-  rayextract reconstruct cloud_segmented.ply cloud_mesh.ply
-                         [--seeds cloud_seeds.txt]
-    → cloud_trees.txt      (branch structures, treetools-compatible)
-    → cloud_trees_mesh.ply (branch mesh)
+`reconstruct` accepts a pre-labeled cloud (tree_id per point) and must produce branch geometry
+(cylinders, radii, taper). The branch reconstruction algorithm (`reconstructBranches`) needs a
+Dijkstra-derived parent-child graph over all points. There is no way to produce this graph from
+point labels alone without re-running the path-finding.
 
-  rayextract trees cloud.ply cloud_mesh.ply       # unchanged
-    ≡ segment then reconstruct, in-memory, no intermediate files
+The current solution: the `PreLabeledTag` constructor in `Trees` runs **per-tree Dijkstra**, one
+pass per unique `(tree_id, stem_id)` group, using the pre-loaded labels to partition points.
+This re-runs path-finding while **honoring the input allocation** — points are never re-assigned
+to a different tree.
 
-Constraints:
-- `rayextract trees` behaviour is preserved bit-for-bit in the no-mask,
-  no-pre-segmented case. It is the back-compat entry point.
-- The seeds file format extends `cloud_trunks.txt` by adding `tree_id`
-  and `stem_id` columns. Existing tools reading `cloud_trunks.txt`
-  (notably `rayextract forest --trunks`) must continue to work
-  unchanged when handed our seeds file (they ignore extra columns).
-- The library API exposes `ray::segment()`, `ray::reconstruct()`, and
-  `ray::trees()` (the composition) as first-class functions. Nothing
-  is reachable only via the CLI; nothing is reachable only via the
-  library. CLI subcommands are thin `main()` wrappers.
-- `rayextract reconstruct` accepts a labelled cloud with no seeds file
-  and derives seeds by clustering low points per (tree_id, stem_id)
-  and fitting trunks. A warning is printed in this mode.
+## Refactor goal: minimize diff to main
+
+The implementation works. The problem is it has too much divergence from the upstream `main`
+branch, particularly inside `raytrees.h/.cpp` (original CSIRO authorship). The goal is to
+restructure so that the delta to main is as small and as reviewable as possible.
+
+### Target diff boundaries
+
+| File | Target |
+|---|---|
+| `raytrees.h` / `raytrees.cpp` | Minimize. Every added line needs justification. |
+| `raytreeslib.h` / `raytreeslib.cpp` | New files — this is where new logic should live. |
+| `raysegmentresult.h` | New file — data types only, no logic. |
+| `raymaskloader.h` / `raymaskloader.cpp` | New files — mask I/O only. |
+| `rayextract.cpp` | Additive-only: new subcommand blocks, no changes to existing blocks. |
+| `raysegment.h` / `raysegment.cpp` | Do not touch unless a bug fix is required. |
+| `raycloud.h` / `raycloud.cpp` | Minimize. `tree_ids` / `stem_ids` fields already present from LAS PR. |
+
+### Specific changes to raytrees.h/.cpp to justify or remove
+
+Currently added to raytrees.h (from main):
+- `PreLabeledTag` struct — needed; keep
+- `Trees(cloud, offset, mesh, params, verbose, PreLabeledTag)` — needed; keep
+- `buildSeedList()` public method — evaluate whether it can live in raytreeslib.cpp instead
+- `buildLabelIdMap()` public method — needed by reconstruct; keep
+- `reconstructBranches()` private method — needed for sharing between constructors; keep
+- `sec_labels_` private field — needed by PreLabeledTag constructor; keep
+- optional `id_map` param on `save()` — needed; keep
+
+If `buildSeedList()` only needs data already accessible via `save()` output, consider deriving
+seeds in `raytreeslib.cpp` from the saved text file or cloud rather than exposing a new method.
+Only keep it on `Trees` if no cleaner alternative exists.
+
+## Non-negotiable constraints
+
+- `rayextract trees` default behavior must remain bit-identical to main (no mask, no new flags).
+- `rayextract segment` output format (`_segmented.las`, `_segmented_seeds.txt`) must not change.
+- `rayextract reconstruct` output format (`_trees.txt`, `_trees_mesh.ply`) must not change.
+- Do not modify any existing `rayextract trees` parameter handling in `rayextract.cpp`.
+- Do not change `raysegment.cpp` / `raysegment.h` core Dijkstra logic.
+- Preserve PLY coordinate-shift normalization across all paths.
+
+## Mask feature status
+
+Mask support (`--mask`) is implemented and working at a first-draft level. It is in-scope for
+this refactor but should not be extended. The sidecar CSV output and `loadMask()` are correct.
+Do not add registration, do not add new mask formats.
+
+## Testing requirements
+
+- Confirm `rayextract trees` output is unchanged from main (no-mask case).
+- Confirm `rayextract segment` followed by `rayextract reconstruct` produces output equivalent
+  to `rayextract trees` on the same input (no-mask case).
+- Any refactor that changes raytrees.cpp must be verified against both paths.
+- New tests for mask parsing and sidecar CSV are deferred until the minimal-diff refactor lands.
+
+## Do not do
+
+- Do not refactor or rename anything inside `getRootsAndSegment` or `connectPointsShortestPath`.
+- Do not add `--seeds` as a separate CLI argument (seeds are loaded from the segmented cloud).
+- Do not add stem_id to the PLY color-encoding path.
+- Do not add sidecar CSV unless `--mask` is active.
+- Do not introduce new abstractions or helper classes beyond what is needed.

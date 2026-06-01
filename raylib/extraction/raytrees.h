@@ -11,9 +11,13 @@
 #include "../rayutils.h"
 #include "raylib/raylibconfig.h"
 #include "raysegment.h"
+#include <map>
 
 namespace ray
 {
+/// Tag type to select the pre-labeled-cloud constructor of Trees.
+struct RAYLIB_EXPORT PreLabeledTag {};
+
 /// structure containing the parameters used in tree reconstruction
 struct RAYLIB_EXPORT TreesParams
 {
@@ -49,8 +53,20 @@ public:
   /// The ground @c mesh defines the ground and @params are used to control the reconstruction
   Trees(Cloud &cloud, const Eigen::Vector3d &offset, const Mesh &mesh, const TreesParams &params, bool verbose);
 
+  /// Reconstruct tree branch structures from a pre-segmented cloud.
+  /// cloud.tree_ids must be populated; cloud.stem_ids is optional (all-0 if absent).
+  /// Runs per-tree Dijkstra from the ground mesh; does not require a seeds file.
+  Trees(Cloud &cloud, const Eigen::Vector3d &offset, const Mesh &mesh,
+        const TreesParams &params, bool verbose, PreLabeledTag);
+
+  /// Build an id_map suitable for passing to save(), mapping contiguous_section_ids_[sec]
+  /// to (tree_id, stem_id) derived from the cloud labels used in the second constructor.
+  /// Returns empty map when called on a Trees built with the legacy first constructor.
+  std::map<int32_t, std::pair<int32_t,int32_t>> buildLabelIdMap() const;
+
   /// save the trees representation to a text file
-  bool save(const std::string &filename, const Eigen::Vector3d &offset, bool verbose) const;
+  bool save(const std::string &filename, const Eigen::Vector3d &offset, bool verbose,
+            const std::map<int32_t, std::pair<int32_t,int32_t>> &id_map = {}) const;
 
   /// save the shortest paths to a PLY file for visualization
   bool saveShortestPaths(const std::string &filename, const Eigen::Vector3d &offset) const;
@@ -106,6 +122,11 @@ private:
   bool removeDistantPoints(std::vector<int> &nodes);
   /// filter out all but the largest diameter trees
   void filterLargestDiameterTrees();
+  /// factor out the branch reconstruction loop (phase 10) so both constructors can share it
+  void reconstructBranches(std::vector<std::vector<int>> &children);
+  /// Trunk estimation loop: radius, taper, and bifurcation for all root sections.
+  /// Pass non-null @c debug_cloud to accumulate verbose diagnostic geometry.
+  void estimateTrunkSections(std::vector<std::vector<int>> &children, Cloud *debug_cloud);
 
   // cached data that is used throughout the processing method
   int sec_;
@@ -115,6 +136,7 @@ private:
   double forest_weight_{0};
   double forest_weight_squared_{0};
   std::vector<int> contiguous_section_ids_; // converts section ids to contiguous (empty trees removed) sectino ids for output
+  std::vector<std::pair<int32_t,int32_t>> sec_labels_; // second constructor only: sections_[i] came from (tree_id, stem_id)
 
 };
 

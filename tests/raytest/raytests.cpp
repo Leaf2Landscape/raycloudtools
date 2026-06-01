@@ -9,6 +9,8 @@
 #include "rayply.h"
 #include "rayforeststructure.h"
 #include <vector>
+#include <fstream>
+#include <string>
 #include <gtest/gtest.h>
 #include <cstdlib>
 
@@ -225,6 +227,100 @@ namespace raytest
     ray::ForestStructure forest3;
     EXPECT_TRUE(forest3.load("forest_trunks.txt"));
     compareMoments(forest3.getMoments(), {21, 20.0797, 1124.61, 1.60427, 0.135159, 0, 0, 0, 0});
-  }  
+  }
+
+  /// Tests rayextract segment + reconstruct split pipeline (new in refactor).
+  /// Uses forest.las since raycreate now writes .las by default.
+  TEST(Basic, RayExtractRefactor)
+  {
+    // Create forest data (las format from current raycreate)
+    EXPECT_EQ(command("raycreate forest 2"), 0);
+    EXPECT_EQ(command("rayextract terrain forest.las"), 0);
+    { ray::Mesh m; EXPECT_TRUE(ray::readPlyMesh("forest_mesh.ply", m)); }
+
+    // --- Test 1: rayextract segment produces segmented cloud + seeds file ---
+    EXPECT_EQ(command("rayextract segment forest.las --ground forest_mesh.ply"), 0);
+
+    ray::Cloud seg_cloud;
+    EXPECT_TRUE(seg_cloud.load("forest_segmented.las"));
+    EXPECT_FALSE(seg_cloud.tree_ids.empty());
+    // Confirm at least some points have valid tree_ids (non -1)
+    int labeled = 0;
+    for (auto tid : seg_cloud.tree_ids)
+      if (tid != -1) labeled++;
+    EXPECT_GT(labeled, 0);
+
+    // Seeds file must exist and have sensible content
+    {
+      std::ifstream ifs("forest_segmented_seeds.txt");
+      EXPECT_TRUE(ifs.is_open());
+    }
+
+    // --- Test 2: rayextract reconstruct from segmented cloud ---
+    EXPECT_EQ(command("rayextract reconstruct forest_segmented.las forest_mesh.ply"), 0);
+
+    ray::ForestStructure recon_forest;
+    EXPECT_TRUE(recon_forest.load("forest_segmented_trees.txt"));
+    // Should reconstruct at least some trees
+    EXPECT_GT(recon_forest.getMoments()[0], 0);
+
+    // The new format must contain tree_id,stem_id header
+    {
+      std::ifstream ifs("forest_segmented_trees.txt");
+      std::string line;
+      bool found_id_header = false;
+      while (std::getline(ifs, line))
+      {
+        if (line.find("tree_id") != std::string::npos &&
+            line.find("stem_id") != std::string::npos)
+        {
+          found_id_header = true;
+          break;
+        }
+      }
+      EXPECT_TRUE(found_id_header);
+    }
+
+    // --- Test 3: legacy rayextract trees (no mask) produces OLD format ---
+    EXPECT_EQ(command("rayextract trees forest.las forest_mesh.ply"), 0);
+    {
+      std::ifstream ifs("forest_trees.txt");
+      EXPECT_TRUE(ifs.is_open());
+      std::string line;
+      bool has_old_header = false;
+      while (std::getline(ifs, line))
+      {
+        if (line.find('#') == std::string::npos && !line.empty())
+        {
+          // Old format header has no tree_id/stem_id prefix
+          if (line.find("tree_id") == std::string::npos)
+            has_old_header = true;
+          break;
+        }
+      }
+      EXPECT_TRUE(has_old_header);
+    }
+  }
+  /// Tests that rayextract reconstruct works without a seeds file by synthesizing seeds from
+  /// the tree_id/stem_id labels already present in the segmented cloud.
+  TEST(Basic, RayReconstructNoSeeds)
+  {
+    EXPECT_EQ(command("raycreate forest 2"), 0);
+    EXPECT_EQ(command("rayextract terrain forest.las"), 0);
+    EXPECT_EQ(command("rayextract segment forest.las --ground forest_mesh.ply"), 0);
+
+    // Remove the auto-generated seeds file to force the synthesis path.
+    EXPECT_EQ(remove("forest_segmented_seeds.txt"), 0);
+
+    // Reconstruct must succeed by synthesizing seeds from cloud labels alone.
+    EXPECT_EQ(command("rayextract reconstruct forest_segmented.las forest_mesh.ply"), 0);
+
+    ray::ForestStructure recon;
+    EXPECT_TRUE(recon.load("forest_segmented_trees.txt"));
+    EXPECT_GT(recon.getMoments()[0], 0);
+
+    std::ifstream mesh_ifs("forest_segmented_trees_mesh.ply");
+    EXPECT_TRUE(mesh_ifs.is_open());
+  }
 #endif  // RAYLIB_WITH_QHULL
 } // raytest

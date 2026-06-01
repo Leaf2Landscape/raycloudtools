@@ -11,6 +11,9 @@
 #include "../rayutils.h"
 #include "raylib/raylibconfig.h"
 
+#include <limits>
+#include <queue>
+#include <vector>
 
 namespace ray
 {
@@ -37,6 +40,33 @@ struct RAYLIB_EXPORT Vertex
   bool visited;
   uint8_t weight;
 };
+
+/// Priority-queue node used in Dijkstra shortest-path-to-ground algorithm.
+struct RAYLIB_EXPORT QueueNode
+{
+  QueueNode(double distance_to_ground, double score, double radius, int root, int index)
+    : distance_to_ground(distance_to_ground), score(score), radius(radius), root(root), id(index)
+  {}
+  double distance_to_ground;
+  double score;
+  double radius;
+  int root;
+  int id;
+};
+
+struct RAYLIB_EXPORT QueueNodeComparator
+{
+  bool operator()(const QueueNode &p1, const QueueNode &p2) { return p1.score > p2.score; }
+};
+
+/// Connect the supplied set of points @c points by shortest path to the ground, filling in their parent indices.
+/// @c closest_node is a seeded priority queue of ground-level root nodes.
+/// @c distance_limit maximum distance between points that can be connected.
+/// @c gravity_factor penalises lateral paths.
+void RAYLIB_EXPORT connectPointsShortestPath(
+  std::vector<Vertex> &points,
+  std::priority_queue<QueueNode, std::vector<QueueNode>, QueueNodeComparator> &closest_node,
+  double distance_limit, double gravity_factor);
 
 /// Converts a ray cloud to a set of points @c points connected by the shortest path to the ground @c mesh
 /// the returned vector of index sets provides the root points for each separated tree
