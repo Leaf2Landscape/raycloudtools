@@ -24,7 +24,7 @@ bool RAYLIB_EXPORT readLas(std::string file_name, std::vector<Eigen::Vector3d> &
 /// Chunk-based version of readLas. This calls @c apply for every @c chunk_size points loaded.
 /// When @c tree_ids_out is non-null and the file contains a tree_id extra attribute, tree IDs are appended to it.
 /// When @c stem_ids_out is non-null and the file contains a stem_id extra attribute, stem IDs are appended to it.
-/// When @c passthrough_out is non-null, 8 standard LAS fields + original sensor extra bytes are appended per point.
+/// When @c passthrough_out is non-null, 10 standard LAS field bytes + original sensor extra bytes are appended per point.
 /// @c orig_extra_size_out receives the per-point byte count of original sensor extra bytes (may be 0).
 /// @c extra_bytes_vlr_out receives the raw EXTRA_BYTES VLR payload for the original sensor attributes.
 bool RAYLIB_EXPORT readLas(const std::string &file_name,

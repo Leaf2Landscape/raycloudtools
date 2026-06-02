@@ -659,12 +659,14 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
     ray::readLas(cloud_name,
       [&](std::vector<Eigen::Vector3d>& starts, std::vector<Eigen::Vector3d>& ends,
           std::vector<double>& times, std::vector<ray::RGBA>& /*colours*/) {
+        if (starts.empty() && !not_raycloud_warned) {
+          std::cerr << "Warning: input is not a ray cloud (no sx,sy,sz ray starts); skipping points." << std::endl;
+          not_raycloud_warned = true;
+        }
         for (size_t i = 0; i < ends.size(); ++i) {
           if (starts.empty() || starts[i] == ends[i]) {
-            if (!not_raycloud_warned) {
-              std::cerr << "Warning: input is not a ray cloud (no sx,sy,sz ray starts); skipping points." << std::endl;
-              not_raycloud_warned = true;
-            }
+            // starts.empty(): non-raycloud file (start == end for every point).
+            // starts[i] == ends[i]: miss ray in a valid raycloud (sx=sy=sz=0); skip silently.
             continue;
           }
           const int32_t bid = (i < beam_ids_chunk.size()) ? beam_ids_chunk[i] : -1;
@@ -736,12 +738,14 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
     ray::readLas(cloud_name,
       [&](std::vector<Eigen::Vector3d>& starts, std::vector<Eigen::Vector3d>& ends,
           std::vector<double>& times, std::vector<ray::RGBA>& /*colours*/) {
+        if (starts.empty() && !not_raycloud_warned) {
+          std::cerr << "Warning: input is not a ray cloud (no sx,sy,sz ray starts); skipping points." << std::endl;
+          not_raycloud_warned = true;
+        }
         for (size_t i = 0; i < ends.size(); ++i) {
           if (starts.empty() || starts[i] == ends[i]) {
-            if (!not_raycloud_warned) {
-              std::cerr << "Warning: input is not a ray cloud (no sx,sy,sz ray starts); skipping points." << std::endl;
-              not_raycloud_warned = true;
-            }
+            // starts.empty(): non-raycloud file (start == end for every point).
+            // starts[i] == ends[i]: miss ray in a valid raycloud (sx=sy=sz=0); skip silently.
             continue;
           }
           const int32_t bid = (i < beam_ids_chunk.size()) ? beam_ids_chunk[i] : -1;
@@ -1013,12 +1017,14 @@ bool OutOfCoreStrategy::createShards(const std::string& cloud_name, VoxelGrid& g
     ray::readLas(cloud_name,
       [&](std::vector<Eigen::Vector3d>& starts, std::vector<Eigen::Vector3d>& ends,
           std::vector<double>& times, std::vector<ray::RGBA>& /*colours*/) {
+        if (starts.empty() && !not_raycloud_warned) {
+          std::cerr << "Warning: input is not a ray cloud (no sx,sy,sz ray starts); skipping points." << std::endl;
+          not_raycloud_warned = true;
+        }
         for (size_t i = 0; i < ends.size(); ++i) {
           if (starts.empty() || starts[i] == ends[i]) {
-            if (!not_raycloud_warned) {
-              std::cerr << "Warning: input is not a ray cloud (no sx,sy,sz ray starts); skipping points." << std::endl;
-              not_raycloud_warned = true;
-            }
+            // starts.empty(): non-raycloud file (start == end for every point).
+            // starts[i] == ends[i]: miss ray in a valid raycloud (sx=sy=sz=0); skip silently.
             continue;
           }
           const int32_t bid = (i < beam_ids_chunk.size()) ? beam_ids_chunk[i] : -1;
