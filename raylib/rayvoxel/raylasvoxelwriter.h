@@ -55,6 +55,12 @@ namespace ray
     double pad_wood = 0.0;
     double transmittance = 1.0;
     double exploration_rate = 0.0;
+    double leaf_g  = 0.0;
+    double wood_g  = 0.0;
+    double plant_g = 0.0;
+    std::string liad;
+    std::string wiad;
+    std::string piad;
   };
 
   // MODIFIED: A type alias for a map that will store the pre-calculated output data,
@@ -65,7 +71,8 @@ namespace ray
   // This function will iterate over the sparse grid once and compute all
   // required output metrics, populating a MetricResultsMap.
   MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const VoxelizationParameters& params,
-                                           const HeightField* dtm, const ClassTable& class_table);
+                                           const HeightField* dtm, const ClassTable& class_table,
+                                           const IadTable& iad_table);
 
   // MODIFIED: All writer function signatures are now refactored to be cleaner.
   // They take the pre-calculated MetricResultsMap and the params object,
@@ -82,7 +89,8 @@ namespace ray
 
   /// @brief Writes the grid to a NetCDF file. Requires RAYLIB_WITH_NETCDF.
   bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, const MetricResultsMap& metrics,
-                       int padding, const Cuboid& user_bounds, const VoxelizationParameters& params, bool filled_only = false);
+                       int padding, const Cuboid& user_bounds, const VoxelizationParameters& params,
+                       const IadTable& iad_table, bool filled_only = false);
 
 } // namespace ray
 

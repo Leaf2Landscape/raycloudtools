@@ -7,35 +7,31 @@
 #include <algorithm>
 #include <fstream>
 #include <limits>
+#include <memory>
+#include <thread>
+#include "raylib/raylasdecode.h"
 #include "raylib/rayprogress.h"
 #include "raylib/rayprogressthread.h"
+#include "raylib/rayvoxel/raylasthreadsafequeue.h"
 #include "rayunused.h"
 
 #if RAYLIB_WITH_LAS
 #include <laszip/laszip_api.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif  // _WIN32
+#if RAYLIB_WITH_LAZPERF
+#include <lazperf/readers.hpp>
+#endif  // RAYLIB_WITH_LAZPERF
 #endif  // RAYLIB_WITH_LAS
 
 namespace ray
 {
-// Read a tree/stem ID extra-byte field of the given LAS data_type and normalise its
-// per-type "unassigned" sentinel to int32_t -1. uint types use 0 as unassigned;
-// int types use -1. IDs exceeding INT32_MAX are narrowed (known limitation).
-static int32_t readLasIdField(const uint8_t *extra, uint16_t off, uint8_t dtype)
-{
-  switch (dtype)
-  {
-    case 1: { uint8_t  v; memcpy(&v, extra + off, 1); return v  == 0u ? -1 : static_cast<int32_t>(v); }
-    case 3: { uint16_t v; memcpy(&v, extra + off, 2); return v  == 0u ? -1 : static_cast<int32_t>(v); }
-    case 5: { uint32_t v; memcpy(&v, extra + off, 4); return v  == 0u ? -1 : static_cast<int32_t>(v); }
-    case 7: { uint64_t v; memcpy(&v, extra + off, 8); return v  == 0u ? -1 : static_cast<int32_t>(v); }
-    case 2: { int8_t   v; memcpy(&v, extra + off, 1); return v  == -1 ? -1 : static_cast<int32_t>(v); }
-    case 4: { int16_t  v; memcpy(&v, extra + off, 2); return v  == -1 ? -1 : static_cast<int32_t>(v); }
-    case 6: { int32_t  v; memcpy(&v, extra + off, 4); return v; }  // raycloudtools native; identity
-    case 8: { int64_t  v; memcpy(&v, extra + off, 8); return v  == -1 ? -1 : static_cast<int32_t>(v); }
-    default: return -1;  // absent (0), float (9/10), or unknown
-  }
-}
-
 bool readLas(const std::string &file_name,
              std::function<void(std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                                 std::vector<double> &times, std::vector<RGBA> &colours)>
@@ -185,6 +181,30 @@ bool readLas(const std::string &file_name,
   if (extra_bytes_vlr_out)
     *extra_bytes_vlr_out = local_orig_vlr;
 
+  // Gather the per-file decode parameters into a single context so the per-point decode is a pure
+  // function of (point record, context). Used by decodePointRecord below and by the parallel paths.
+  DecodeContext ctx;
+  ctx.format = format;
+  ctx.using_colour = using_colour;
+  ctx.is_raycloud = is_raycloud;
+  ctx.max_intensity = max_intensity;
+  ctx.local_skip_size = local_skip_size;
+  ctx.local_orig_extra = local_orig_extra;
+  ctx.tree_id_offset = tree_id_offset;  ctx.tree_id_dtype = tree_id_dtype;
+  ctx.stem_id_offset = stem_id_offset;  ctx.stem_id_dtype = stem_id_dtype;
+  ctx.beam_id_offset = beam_id_offset;  ctx.beam_id_dtype = beam_id_dtype;
+  ctx.alpha_offset = alpha_offset;
+  ctx.scale[0] = header->x_scale_factor;
+  ctx.scale[1] = header->y_scale_factor;
+  ctx.scale[2] = header->z_scale_factor;
+  ctx.offset[0] = header->x_offset;
+  ctx.offset[1] = header->y_offset;
+  ctx.offset[2] = header->z_offset;
+  ctx.point_record_length = header->point_data_record_length;
+  ctx.extra_bytes_total = static_cast<uint16_t>(local_skip_size + local_orig_extra);
+  // The extra-bytes block sits at the tail of each fixed record, immediately after the base fields.
+  ctx.extra_bytes_offset = static_cast<uint16_t>(header->point_data_record_length - ctx.extra_bytes_total);
+
   ray::Progress progress;
   ray::ProgressThread progress_thread(progress);
   const size_t num_chunks = (number_of_points + (chunk_size - 1)) / chunk_size;
@@ -203,7 +223,232 @@ bool readLas(const std::string &file_name,
   colours.reserve(chunk_size);
 
   num_bounded = 0;
-  for (size_t i = 0; i < number_of_points; i++)
+
+  // Index-addressed buffers shared by the parallel/decompressed fast paths. They are pre-sized to
+  // number_of_points so a decode can fill any slot, then drained through @c apply in the same chunk
+  // windows as the sequential path so the callback contract is identical.
+  std::vector<Eigen::Vector3d> all_starts, all_ends;
+  std::vector<double> all_times;
+  std::vector<RGBA> all_colours;
+  std::vector<uint8_t> all_intensities;
+  IndexedDecodeBuffers buf;
+
+  // Populate @c buf and pre-size every active output for an index-addressed decode of all points.
+  auto setup_indexed_buffers = [&]() {
+    all_starts.resize(number_of_points);
+    all_ends.resize(number_of_points);
+    all_times.resize(number_of_points);
+    all_colours.resize(using_colour ? number_of_points : 0);
+    all_intensities.resize(number_of_points);
+    buf.starts = all_starts.data();
+    buf.ends = all_ends.data();
+    buf.times = all_times.data();
+    buf.colours = using_colour ? all_colours.data() : nullptr;
+    buf.intensities = all_intensities.data();
+
+    const uint16_t pstride = static_cast<uint16_t>(10 + local_orig_extra);
+    if (passthrough_out)
+    {
+      passthrough_out->resize(static_cast<size_t>(pstride) * number_of_points);
+      buf.passthrough = passthrough_out->data();
+      buf.passthrough_stride = pstride;
+    }
+    // ID outputs are present iff the sequential path would have produced them. These conditions
+    // depend only on per-file state (num_extra_bytes is constant), so they hold for every point.
+    const bool tree_ok =
+      tree_ids_out && is_raycloud && tree_id_dtype != 0 &&
+      ctx.extra_bytes_total >= tree_id_offset + kExtraTypeSize[tree_id_dtype];
+    const bool stem_ok = stem_ids_out && is_raycloud && tree_id_dtype != 0;  // pushes value or 0
+    const bool beam_ok =
+      beam_ids_out && is_raycloud && beam_id_dtype != 0 &&
+      ctx.extra_bytes_total >= beam_id_offset + kExtraTypeSize[beam_id_dtype];
+    if (tree_ok) { tree_ids_out->resize(number_of_points); buf.tree_ids = tree_ids_out->data(); buf.tree_active = true; }
+    if (stem_ok) { stem_ids_out->resize(number_of_points); buf.stem_ids = stem_ids_out->data(); buf.stem_active = true; }
+    if (beam_ok) { beam_ids_out->resize(number_of_points); buf.beam_ids = beam_ids_out->data(); buf.beam_active = true; }
+  };
+
+  // Drain the index-addressed buffers through @c apply in the same chunk windows (and with the same
+  // colour/alpha handling and progress cadence) as the sequential path.
+  //
+  // Producer-consumer pipeline: a background reader thread assembles each chunk window (the per-chunk
+  // copy out of the bulk-decoded arrays, colourByTime fallback, and alpha merge) into a ChunkBuffer
+  // and hands it to the main thread via a bounded double-buffer queue. The main thread pops each
+  // buffer and invokes @c apply. This overlaps chunk assembly with @c apply while guaranteeing
+  // @c apply only ever runs on the main thread (callers mutate non-thread-safe external state in it).
+  auto flush_indexed = [&]() {
+    // The set of fields apply consumes per chunk; ownership passes from reader thread to main thread.
+    struct ChunkBuffer
+    {
+      std::vector<Eigen::Vector3d> starts, ends;
+      std::vector<double> times;
+      std::vector<RGBA> colours;
+      bool is_last = false;
+    };
+    ThreadSafeQueue<std::shared_ptr<ChunkBuffer>> queue(2);  // double-buffer
+
+    std::thread reader([&]() {
+      for (size_t base = 0; base < number_of_points; base += chunk_size)
+      {
+        const size_t n = std::min(chunk_size, number_of_points - base);
+        auto cb = std::make_shared<ChunkBuffer>();
+        cb->starts.assign(all_starts.begin() + base, all_starts.begin() + base + n);
+        cb->ends.assign(all_ends.begin() + base, all_ends.begin() + base + n);
+        cb->times.assign(all_times.begin() + base, all_times.begin() + base + n);
+        if (using_colour)
+          cb->colours.assign(all_colours.begin() + base, all_colours.begin() + base + n);
+        else
+          colourByTime(cb->times, cb->colours);
+        for (size_t j = 0; j < cb->colours.size(); j++)
+          cb->colours[j].alpha = all_intensities[base + j];
+        cb->is_last = (base + n >= number_of_points);
+        queue.push(std::move(cb));
+      }
+      queue.notify_done();
+    });
+
+    std::shared_ptr<ChunkBuffer> cb;
+    while (queue.pop(cb))
+    {
+      apply(cb->starts, cb->ends, cb->times, cb->colours);
+      progress.increment();
+      cb.reset();  // free the buffer back to the allocator before popping the next
+    }
+    reader.join();
+  };
+
+  // Fast path: for uncompressed LAS with a fixed-layout record we know how to decode, mmap the file
+  // and decode all records in parallel, then drive @c apply in the same chunk windows as the
+  // sequential path. Any unsupported condition or mmap failure falls through to the laszip loop.
+  bool fast_path_done = false;
+  if (!is_compressed && number_of_points > 0 && lasBaseRecordSize(format) != 0 &&
+      !getenv("RAYLAS_NO_MMAP") &&
+      ctx.point_record_length >= lasBaseRecordSize(format) + ctx.extra_bytes_total)
+  {
+#ifdef _WIN32
+    HANDLE fh = CreateFileA(file_name.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE map = nullptr;
+    const uint8_t *mmap_ptr = nullptr;
+    size_t file_size = 0;
+    if (fh != INVALID_HANDLE_VALUE)
+    {
+      LARGE_INTEGER sz;
+      if (GetFileSizeEx(fh, &sz))
+      {
+        file_size = static_cast<size_t>(sz.QuadPart);
+        map = CreateFileMappingA(fh, nullptr, PAGE_READONLY, 0, 0, nullptr);
+        if (map)
+          mmap_ptr = static_cast<const uint8_t *>(MapViewOfFile(map, FILE_MAP_READ, 0, 0, 0));
+      }
+    }
+#else
+    const int fd = ::open(file_name.c_str(), O_RDONLY);
+    const uint8_t *mmap_ptr = nullptr;
+    size_t file_size = 0;
+    if (fd >= 0)
+    {
+      struct stat st;
+      if (::fstat(fd, &st) == 0)
+      {
+        file_size = static_cast<size_t>(st.st_size);
+        void *p = ::mmap(nullptr, file_size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
+        if (p != MAP_FAILED)
+          mmap_ptr = static_cast<const uint8_t *>(p);
+      }
+    }
+#endif
+    const size_t record_len = ctx.point_record_length;
+    const size_t data_off = static_cast<size_t>(header->offset_to_point_data);
+    const bool bounds_ok =
+      mmap_ptr != nullptr && file_size >= data_off + record_len * number_of_points;
+
+    if (bounds_ok)
+    {
+      const uint8_t *raw = mmap_ptr + data_off;
+      setup_indexed_buffers();
+
+      size_t bounded_count = 0;
+#pragma omp parallel reduction(+ : bounded_count)
+      {
+        laszip_point_struct pt;
+        std::memset(&pt, 0, sizeof(pt));
+        std::vector<uint8_t> extra_scratch(ctx.extra_bytes_total ? ctx.extra_bytes_total : 1);
+#pragma omp for schedule(static)
+        for (laszip_I64 i = 0; i < static_cast<laszip_I64>(number_of_points); ++i)
+        {
+          const uint8_t *rec = raw + static_cast<size_t>(i) * record_len;
+          fillPointFromRecord(rec, ctx, pt, extra_scratch.data());
+          int32_t xi = pt.X, yi = pt.Y, zi = pt.Z;
+          Eigen::Vector3d position(xi * ctx.scale[0] + ctx.offset[0], yi * ctx.scale[1] + ctx.offset[1],
+                                   zi * ctx.scale[2] + ctx.offset[2]);
+          uint8_t bounded;
+          decodePointRecordIndexed(&pt, ctx, position, static_cast<size_t>(i), buf, bounded);
+          bounded_count += bounded;
+        }
+      }
+      num_bounded = bounded_count;
+
+      flush_indexed();
+      fast_path_done = true;
+    }
+
+    // Release the mapping regardless of whether decode succeeded.
+#ifdef _WIN32
+    if (mmap_ptr) UnmapViewOfFile(const_cast<uint8_t *>(mmap_ptr));
+    if (map) CloseHandle(map);
+    if (fh != INVALID_HANDLE_VALUE) CloseHandle(fh);
+#else
+    if (mmap_ptr) ::munmap(const_cast<uint8_t *>(mmap_ptr), file_size);
+    if (fd >= 0) ::close(fd);
+#endif
+  }
+
+#if RAYLIB_WITH_LAZPERF
+  // Fast path for compressed (LAZ) files: decompress records via laz-perf instead of the laszip
+  // per-point loop, then decode each fixed record with the shared decode core. Single-threaded
+  // decompression here; the producer-consumer pipeline overlaps it with apply in a later phase.
+  if (is_compressed && !fast_path_done && number_of_points > 0 && lasBaseRecordSize(format) != 0 &&
+      !getenv("RAYLAS_NO_LAZPERF") &&
+      ctx.point_record_length >= lasBaseRecordSize(format) + ctx.extra_bytes_total)
+  {
+    try
+    {
+      lazperf::reader::named_file lazf(file_name);
+      const auto &lazhdr = lazf.header();
+      if (lazhdr.point_record_length == ctx.point_record_length &&
+          lazhdr.point_count == number_of_points)
+      {
+        setup_indexed_buffers();
+        std::vector<uint8_t> record(ctx.point_record_length);
+        std::vector<uint8_t> extra_scratch(ctx.extra_bytes_total ? ctx.extra_bytes_total : 1);
+        laszip_point_struct pt;
+        std::memset(&pt, 0, sizeof(pt));
+        size_t bounded_count = 0;
+        for (size_t i = 0; i < number_of_points; ++i)
+        {
+          lazf.readPoint(reinterpret_cast<char *>(record.data()));
+          fillPointFromRecord(record.data(), ctx, pt, extra_scratch.data());
+          int32_t xi = pt.X, yi = pt.Y, zi = pt.Z;
+          Eigen::Vector3d position(xi * ctx.scale[0] + ctx.offset[0], yi * ctx.scale[1] + ctx.offset[1],
+                                   zi * ctx.scale[2] + ctx.offset[2]);
+          uint8_t bounded;
+          decodePointRecordIndexed(&pt, ctx, position, i, buf, bounded);
+          bounded_count += bounded;
+        }
+        num_bounded = bounded_count;
+        flush_indexed();
+        fast_path_done = true;
+      }
+    }
+    catch (const std::exception &e)
+    {
+      // Any laz-perf failure falls through to the laszip per-point loop below.
+      std::cerr << "readLas: laz-perf decode failed (" << e.what() << "), using laszip" << std::endl;
+    }
+  }
+#endif  // RAYLIB_WITH_LAZPERF
+
+  for (size_t i = 0; !fast_path_done && i < number_of_points; i++)
   {
     if (laszip_read_point(reader))
     {
@@ -217,122 +462,8 @@ bool readLas(const std::string &file_name,
     laszip_get_coordinates(reader, coords);
     Eigen::Vector3d position(coords[0], coords[1], coords[2]);
 
-    ends.push_back(position);
-
-    if (is_raycloud && point->num_extra_bytes >= 12)
-    {
-      // Reconstruct ray start from the stored (start - end) float32 offset.
-      float sx, sy, sz;
-      memcpy(&sx, point->extra_bytes, 4);
-      memcpy(&sy, point->extra_bytes + 4, 4);
-      memcpy(&sz, point->extra_bytes + 8, 4);
-      starts.push_back({ position[0] + sx, position[1] + sy, position[2] + sz });
-      if (tree_ids_out && tree_id_dtype != 0 &&
-          point->num_extra_bytes >= tree_id_offset + kExtraTypeSize[tree_id_dtype])
-        tree_ids_out->push_back(readLasIdField(point->extra_bytes, tree_id_offset, tree_id_dtype));
-      if (stem_ids_out && stem_id_dtype != 0 &&
-          point->num_extra_bytes >= stem_id_offset + kExtraTypeSize[stem_id_dtype])
-        stem_ids_out->push_back(readLasIdField(point->extra_bytes, stem_id_offset, stem_id_dtype));
-      else if (stem_ids_out && tree_id_dtype != 0 && stem_id_dtype == 0)
-        stem_ids_out->push_back(0);
-      if (beam_ids_out && beam_id_dtype != 0 &&
-          point->num_extra_bytes >= beam_id_offset + kExtraTypeSize[beam_id_dtype])
-        beam_ids_out->push_back(readLasIdField(point->extra_bytes, beam_id_offset, beam_id_dtype));
-    }
-    else
-    {
-      starts.push_back(position);
-    }
-
-    // Pack 10 bytes of LAS fields per point into passthrough, followed by sensor extras.
-    // Layout: [0] ext_return[0:3]|ext_num_returns[4:7]
-    //         [1] class_flags[0:3]|scanner_chan[4:5]|scan_dir[6]|edge[7]
-    //         [2] extended_classification
-    //         [3] user_data
-    //         [4-5] extended_scan_angle (int16 LE, 0.006 deg units)
-    //         [6-7] point_source_ID (uint16 LE)
-    //         [8-9] original intensity (uint16 LE)
-    if (passthrough_out)
-    {
-      uint8_t b0, b1, b2;
-      int16_t ext_angle;
-      if (format >= 6)
-      {
-        b0 = static_cast<uint8_t>(point->extended_return_number & 0x0F) |
-             static_cast<uint8_t>((point->extended_number_of_returns & 0x0F) << 4);
-        b1 = static_cast<uint8_t>(point->extended_classification_flags & 0x0F) |
-             static_cast<uint8_t>((point->extended_scanner_channel & 0x03) << 4) |
-             static_cast<uint8_t>((point->scan_direction_flag & 0x1) << 6) |
-             static_cast<uint8_t>((point->edge_of_flight_line & 0x1) << 7);
-        b2 = point->extended_classification;
-        ext_angle = point->extended_scan_angle;
-      }
-      else
-      {
-        // Convert LAS 1.2 legacy fields to LAS 1.4 extended layout.
-        b0 = static_cast<uint8_t>(point->return_number & 0x0F) |
-             static_cast<uint8_t>((point->number_of_returns & 0x0F) << 4);
-        b1 = static_cast<uint8_t>(point->synthetic_flag & 0x1) |
-             static_cast<uint8_t>((point->keypoint_flag & 0x1) << 1) |
-             static_cast<uint8_t>((point->withheld_flag & 0x1) << 2) |
-             static_cast<uint8_t>((point->scan_direction_flag & 0x1) << 6) |
-             static_cast<uint8_t>((point->edge_of_flight_line & 0x1) << 7);
-        b2 = static_cast<uint8_t>(point->classification & 0x1F);
-        // scan_angle_rank is integer degrees; extended_scan_angle is 0.006 deg units
-        ext_angle = static_cast<int16_t>(static_cast<int>(point->scan_angle_rank) * 167);
-      }
-      passthrough_out->push_back(b0);
-      passthrough_out->push_back(b1);
-      passthrough_out->push_back(b2);
-      passthrough_out->push_back(point->user_data);
-      passthrough_out->push_back(static_cast<uint8_t>(static_cast<uint16_t>(ext_angle) & 0xFFu));
-      passthrough_out->push_back(static_cast<uint8_t>(static_cast<uint16_t>(ext_angle) >> 8));
-      passthrough_out->push_back(static_cast<uint8_t>(point->point_source_ID & 0xFFu));
-      passthrough_out->push_back(static_cast<uint8_t>(point->point_source_ID >> 8));
-      // Original intensity (uint16 LE) — preserved so the output keeps the sensor value.
-      passthrough_out->push_back(static_cast<uint8_t>(point->intensity & 0xFFu));
-      passthrough_out->push_back(static_cast<uint8_t>(point->intensity >> 8));
-      // Append original sensor extra bytes (after skipping our raycloud-owned attributes).
-      if (local_orig_extra > 0 && point->num_extra_bytes >= local_skip_size + local_orig_extra)
-        passthrough_out->insert(passthrough_out->end(),
-                                point->extra_bytes + local_skip_size,
-                                point->extra_bytes + local_skip_size + local_orig_extra);
-      else if (local_orig_extra > 0)
-        passthrough_out->insert(passthrough_out->end(), local_orig_extra, 0);
-    }
-
-    if (using_colour)
-    {
-      RGBA col;
-      // RGB stored as uint8 * 257 in the 16-bit field; low byte recovers original value.
-      col.red = static_cast<uint8_t>(point->rgb[0]);
-      col.green = static_cast<uint8_t>(point->rgb[1]);
-      col.blue = static_cast<uint8_t>(point->rgb[2]);
-      colours.push_back(col);
-    }
-    times.push_back(point->gps_time);
-
-    uint8_t intensity;
-    if (is_raycloud)
-    {
-      // Alpha is stored in extra_bytes at position 12 (or 16 with tree_id, or 20 with tree_id+stem_id).
-      // Prefer extra_bytes so the intensity field is free to carry the original sensor value.
-      const uint16_t alpha_pos = alpha_offset;
-      intensity = (point->num_extra_bytes > alpha_pos)
-                    ? point->extra_bytes[alpha_pos]
-                    : static_cast<uint8_t>(point->intensity);  // fallback for old files
-    }
-    else
-    {
-      const double normalised = (max_intensity > 0) ? (255.0 * point->intensity) / max_intensity : 255.0;
-      intensity = static_cast<uint8_t>(std::min(normalised, 255.0));
-      // Ensure any non-zero raw intensity maps to at least alpha=1 (bounded ray).
-      if (intensity == 0 && point->intensity > 0)
-        intensity = 1;
-    }
-    if (intensity > 0)
-      num_bounded++;
-    intensities.push_back(intensity);
+    decodePointRecord(point, ctx, position, starts, ends, times, colours, intensities, num_bounded,
+                      tree_ids_out, passthrough_out, stem_ids_out, beam_ids_out);
 
     if (ends.size() == chunk_size || i == number_of_points - 1)
     {

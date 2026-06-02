@@ -174,6 +174,13 @@ namespace ray
   // Populated in a separate post-traversal pass; only hit voxels have entries.
   using ClassTable = std::unordered_map<int64_t, std::array<float, 256>>;
 
+  struct IadData {
+    std::vector<double> bin_centres;       // radians, size n_iad_bins
+    std::vector<double> liad, wiad, piad;  // normalized histograms, size n_iad_bins
+    double leaf_g = 0.0, wood_g = 0.0, plant_g = 0.0;
+  };
+  using IadTable = std::unordered_map<int64_t, IadData>;
+
   // --- Inline Voxel Operator Implementations ---
 
   inline void VoxelGrid::Voxel::operator+=(const VoxelGrid::Voxel &other)

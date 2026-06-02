@@ -26,6 +26,8 @@
 #include "raylib/rayvoxel/raylasheightfield.h"
 #include "raylib/rayvoxel/raylasbinaryio.h"
 
+#include <nabo/nabo.h>
+
 #include <iostream>
 #include <iomanip>
 #include <stdexcept>
@@ -255,6 +257,169 @@ static ClassTable buildClassTable(const std::string& cloud_name, const VoxelGrid
     }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, &pt_extra);
 
   return class_table;
+}
+
+// Reads the cloud endpoints (same I/O pattern as buildClassTable), estimates a
+// per-point normal inclination angle via KNN PCA, and accumulates per-voxel
+// inclination angle distributions (LIAD/WIAD/PIAD) plus empirical G factors.
+static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& grid,
+                              const VoxelizationParameters& params)
+{
+  IadTable iad_table;
+
+  uint16_t orig_extra_size = 0;
+  std::vector<uint8_t> extra_bytes_vlr;
+  readLasExtraBytesVlr(cloud_name, orig_extra_size, extra_bytes_vlr);
+  const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + orig_extra_size);
+
+  const Cuboid& bounds    = grid.getBounds();
+  const double vox_width  = grid.getVoxelWidth();
+  const auto& dims        = grid.getDimensions();
+
+  // Collect endpoints, classifications and flat voxel indices (same filtering as buildClassTable).
+  std::vector<Eigen::Vector3d> positions;
+  std::vector<uint8_t> classes;
+  std::vector<int64_t> flat_indices;
+
+  size_t num_bounded = 0;
+  std::vector<uint8_t> passthrough;
+  uint16_t pt_extra = 0;
+
+  ray::readLas(cloud_name,
+    [&](std::vector<Eigen::Vector3d>& /*starts*/, std::vector<Eigen::Vector3d>& ends,
+        std::vector<double>& /*times*/, std::vector<ray::RGBA>& /*colours*/) {
+      for (size_t i = 0; i < ends.size(); ++i) {
+        const size_t base = i * stride;
+        if (passthrough.size() < base + stride) continue;
+        const uint8_t return_number = passthrough[base + 0] & 0x0F;
+        if (return_number == 0) continue;  // miss ray, not a real return
+
+        const uint8_t classification = passthrough[base + 2];
+        const Eigen::Vector3d vox = (ends[i] - bounds.min_bound_) / vox_width;
+        const int64_t ix = static_cast<int64_t>(vox.x());
+        const int64_t iy = static_cast<int64_t>(vox.y());
+        const int64_t iz = static_cast<int64_t>(vox.z());
+        if (ix < 0 || ix >= dims[0] || iy < 0 || iy >= dims[1] || iz < 0 || iz >= dims[2]) continue;
+        positions.push_back(ends[i]);
+        classes.push_back(classification);
+        flat_indices.push_back(grid.flatIndex(ix, iy, iz));
+      }
+      passthrough.clear();
+    }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, &pt_extra);
+
+  if (positions.size() < 2) return iad_table;
+
+  // Build a libnabo KD-tree over the collected endpoints (mirrors rayellipsoid.cpp idiom).
+  const int K = std::min(params.knn_normal, static_cast<int>(positions.size()) - 1);
+  Eigen::MatrixXd points_p(3, positions.size());
+  for (size_t i = 0; i < positions.size(); ++i) points_p.col(i) = positions[i];
+  std::unique_ptr<Nabo::NNSearchD> nns(Nabo::NNSearchD::createKDTreeLinearHeap(points_p, 3));
+
+  Eigen::MatrixXi indices;
+  Eigen::MatrixXd dists2;
+  indices.resize(K, positions.size());
+  dists2.resize(K, positions.size());
+  nns->knn(points_p, indices, dists2, K, kNearestNeighbourEpsilon, 0);
+  nns.reset(nullptr);
+
+  // Parse leaf/wood class sets (duplicate of the minimal comma-parsing fragment).
+  std::set<int> leaf_set, wood_set;
+  {
+    std::stringstream ss(params.leaf_classes_str);
+    std::string item;
+    while (std::getline(ss, item, ',')) { try { leaf_set.insert(std::stoi(item)); } catch (...) {} }
+  }
+  {
+    std::stringstream ss(params.wood_classes_str);
+    std::string item;
+    while (std::getline(ss, item, ',')) { try { wood_set.insert(std::stoi(item)); } catch (...) {} }
+  }
+
+  // Per-voxel histogram accumulators, keyed by flat index.
+  std::unordered_map<int64_t, std::vector<double>> all_hist, leaf_hist, wood_hist;
+
+  for (size_t i = 0; i < positions.size(); ++i) {
+    // Compute covariance over the K nearest neighbours.
+    Eigen::Vector3d centroid(0, 0, 0);
+    int num_neighbours = 0;
+    for (int j = 0; j < K && indices(j, i) != Nabo::NNSearchD::InvalidIndex; ++j) {
+      centroid += positions[indices(j, i)];
+      ++num_neighbours;
+    }
+    if (num_neighbours < 3) continue;
+    centroid /= static_cast<double>(num_neighbours);
+    Eigen::Matrix3d scatter = Eigen::Matrix3d::Zero();
+    for (int j = 0; j < K && indices(j, i) != Nabo::NNSearchD::InvalidIndex; ++j) {
+      Eigen::Vector3d offset = positions[indices(j, i)] - centroid;
+      scatter += offset * offset.transpose();
+    }
+    scatter /= static_cast<double>(num_neighbours);
+
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eigen_solver(scatter);
+    // Normal = eigenvector of smallest eigenvalue (eigenvalues are sorted ascending).
+    const Eigen::Vector3d normal = eigen_solver.eigenvectors().col(0);
+    const double theta = std::acos(std::min(1.0, std::abs(normal.z())));
+
+    int bin = static_cast<int>(theta / (kPi / 2.0) * params.n_iad_bins);
+    bin = std::clamp(bin, 0, params.n_iad_bins - 1);
+
+    const int64_t flat_idx = flat_indices[i];
+    auto& ah = all_hist[flat_idx];
+    if (ah.empty()) ah.assign(params.n_iad_bins, 0.0);
+    ah[bin] += 1.0;
+
+    if (leaf_set.count(classes[i])) {
+      auto& lh = leaf_hist[flat_idx];
+      if (lh.empty()) lh.assign(params.n_iad_bins, 0.0);
+      lh[bin] += 1.0;
+    }
+    if (wood_set.count(classes[i])) {
+      auto& wh = wood_hist[flat_idx];
+      if (wh.empty()) wh.assign(params.n_iad_bins, 0.0);
+      wh[bin] += 1.0;
+    }
+  }
+
+  // L1-normalize each histogram (leave all-zero if its sum is zero).
+  auto normalize = [](std::vector<double>& h) {
+    double sum = 0.0;
+    for (double v : h) sum += v;
+    if (sum > 0.0) for (double& v : h) v /= sum;
+  };
+
+  std::vector<double> bin_centres(params.n_iad_bins);
+  for (int b = 0; b < params.n_iad_bins; ++b)
+    bin_centres[b] = (b + 0.5) * (kPi / 2.0) / params.n_iad_bins;
+
+  for (auto& pair : all_hist) {
+    const int64_t flat_idx = pair.first;
+    IadData iad;
+    iad.bin_centres = bin_centres;
+    iad.piad = pair.second;  // all points -> plant
+    auto lit = leaf_hist.find(flat_idx);
+    iad.liad = (lit != leaf_hist.end()) ? lit->second : std::vector<double>(params.n_iad_bins, 0.0);
+    auto wit = wood_hist.find(flat_idx);
+    iad.wiad = (wit != wood_hist.end()) ? wit->second : std::vector<double>(params.n_iad_bins, 0.0);
+
+    normalize(iad.liad);
+    normalize(iad.wiad);
+    normalize(iad.piad);
+
+    // Mean zenith angle of rays passing through this voxel.
+    const int64_t ci = flat_idx % dims[0];
+    const int64_t cj = (flat_idx / dims[0]) % dims[1];
+    const int64_t ck = flat_idx / (dims[0] * dims[1]);
+    const VoxelGrid::Voxel& v = grid.getVoxel(ci, cj, ck);
+    const double mean_zenith = (v.num_rays_observed > 0) ? (v.sum_of_angles / v.num_rays_observed) : 0.0;
+
+    iad.leaf_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.liad);
+    iad.wood_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.wiad);
+    iad.plant_g = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.piad);
+
+    iad_table[flat_idx] = std::move(iad);
+  }
+
+  return iad_table;
 }
 
 // ==================================================================================
@@ -985,8 +1150,14 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
     std::cout << "Building classification table..." << std::endl;
     ClassTable class_table = buildClassTable(params.cloud_name, grid);
 
+    IadTable iad_table;
+    if (params.calc_inclination_dist) {
+      std::cout << "Building inclination angle distributions..." << std::endl;
+      iad_table = buildIadTable(params.cloud_name, grid, params);
+    }
+
     std::cout << "Calculating output metrics..." << std::endl;
-    MetricResultsMap metrics = calculateOutputMetrics(grid, params, dtm_ptr.get(), class_table);
+    MetricResultsMap metrics = calculateOutputMetrics(grid, params, dtm_ptr.get(), class_table, iad_table);
 
     // Pass the pre-calculated metrics to the writer functions.
     std::string base_name_stub = getFileNameStub(params.cloud_name);
@@ -1003,7 +1174,7 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
     if (primary_params.output_format == "text") {
         primary_success = writeTextFile(primary_name_stub, grid, metrics, padding, user_bounds, primary_params);
     } else if (primary_params.output_format == "netcdf") {
-        primary_success = writeNetcdfFile(primary_name_stub, grid, metrics, padding, user_bounds, primary_params);
+        primary_success = writeNetcdfFile(primary_name_stub, grid, metrics, padding, user_bounds, primary_params, iad_table);
     } else if (primary_params.output_format == "amapvox") {
         primary_success = writeAmapVoxFile(primary_name_stub, grid, metrics, padding, user_bounds, primary_params);
     } else {
@@ -1022,7 +1193,7 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
         if (filled_params.output_format == "text") {
             filled_success = writeTextFile(filled_name_stub, grid, metrics, padding, user_bounds, filled_params, true);
         } else if (filled_params.output_format == "netcdf") {
-            filled_success = writeNetcdfFile(filled_name_stub, grid, metrics, padding, user_bounds, filled_params, true);
+            filled_success = writeNetcdfFile(filled_name_stub, grid, metrics, padding, user_bounds, filled_params, iad_table, true);
         } else if (filled_params.output_format == "amapvox") {
             filled_success = writeAmapVoxFile(filled_name_stub, grid, metrics, padding, user_bounds, filled_params, true);
         }

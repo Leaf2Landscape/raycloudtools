@@ -59,6 +59,10 @@ namespace ray
     std::string lad = "spherical";
     std::string lad_params_str;
 
+    bool calc_inclination_dist = false;
+    int  n_iad_bins = 18;
+    int  knn_normal = 10;
+
     bool calc_beam_metrics = false;
     std::string laser_spec_name;
     Eigen::Vector2d beam_params = {0.0, 0.0};

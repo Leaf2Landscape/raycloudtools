@@ -14,6 +14,8 @@
 #include <vector>
 #include <stdexcept>
 #include <algorithm>
+#include <sstream>
+#include <iomanip>
 
 namespace ray
 {
@@ -99,6 +101,17 @@ double dtwoParamBeta(double thetaL, double mu, double nu) {
     return dbeta(t, mu, nu) * (2.0 / kPi);
 }
 
+// G-function projection kernel A(theta, thetaL). Extracted so it can be reused
+// by computeGFromHistogram without re-implementing the projection geometry.
+static double projectionKernelA(double theta, double thetaL) {
+  double cotcot = 1.0 / (std::tan(theta) * std::tan(thetaL));
+  if (std::abs(cotcot) > 1.0 || std::isinf(cotcot)) {
+    return std::cos(theta) * std::cos(thetaL);
+  }
+  double acos_cotcot = std::acos(cotcot);
+  return std::cos(theta) * std::cos(thetaL) * (1.0 + (2.0 / kPi) * (std::tan(acos_cotcot) - acos_cotcot));
+}
+
 } // anonymous namespace
 
 
@@ -121,15 +134,7 @@ double computeG(double theta, const std::string& lad, double param1, double para
   }
 
   // Define the G-function kernel, A(theta, thetaL)
-  auto A = [theta](double thetaL) -> double {
-      double cotcot = 1.0 / (tan(theta) * tan(thetaL));
-      if (std::abs(cotcot) > 1.0 || std::isinf(cotcot)) {
-          return cos(theta) * cos(thetaL);
-      } else {
-          double acos_cotcot = acos(cotcot);
-          return cos(theta) * cos(thetaL) * (1.0 + (2.0 / kPi) * (tan(acos_cotcot) - acos_cotcot));
-      }
-  };
+  auto A = [theta](double thetaL){ return projectionKernelA(theta, thetaL); };
 
   // Define the full function to be integrated: A(theta, thetaL) * g_L(thetaL)
   std::function<double(double)> integrand;
@@ -153,6 +158,37 @@ double computeG(double theta, const std::string& lad, double param1, double para
   // The number of steps (180) is chosen to match amapvox for consistency.
   int integration_steps = 180;
   return trapezoidal_integral(integrand, 0.0, kPi / 2.0, integration_steps);
+}
+
+double computeGFromHistogram(double theta_beam,
+                             const std::vector<double>& bin_centres,
+                             const std::vector<double>& liad)
+{
+  if (bin_centres.empty() || liad.empty() || bin_centres.size() != liad.size())
+    return 0.5;
+  theta_beam = std::fmod(theta_beam, kPi);
+  if (theta_beam > (kPi / 2.0)) theta_beam = kPi - theta_beam;
+  if (theta_beam >= kPi / 2.0)  theta_beam = kPi / 2.0 - 1e-9;
+  double G = 0.0;
+  for (size_t b = 0; b < bin_centres.size(); ++b)
+    G += projectionKernelA(theta_beam, bin_centres[b]) * liad[b];
+  return G;
+}
+
+std::string encodeIadToJson(const std::vector<double>& bin_centres_deg,
+                            const std::vector<double>& values)
+{
+  if (bin_centres_deg.empty() || values.empty() || bin_centres_deg.size() != values.size())
+    return "{}";
+  std::ostringstream oss;
+  oss << "{";
+  for (size_t i = 0; i < bin_centres_deg.size(); ++i) {
+    if (i > 0) oss << ",";
+    oss << "\"" << std::fixed << std::setprecision(1) << bin_centres_deg[i] << "\":"
+        << std::fixed << std::setprecision(6) << values[i];
+  }
+  oss << "}";
+  return oss.str();
 }
 
 LaserSpecManager::LaserSpecManager()

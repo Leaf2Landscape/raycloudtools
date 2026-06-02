@@ -12,6 +12,7 @@
 
 #include <string>
 #include <map>
+#include <vector>
 
 namespace ray
 {
@@ -26,6 +27,16 @@ namespace ray
   /// @param param2 Secondary parameter for the LAD (e.g., nu for beta).
   /// @return The G(theta) value.
   double computeG(double theta, const std::string& lad = "spherical", double param1 = 0.0, double param2 = 0.0);
+
+  /// @brief Computes G(theta) via dot-product of projection kernel A against an
+  /// empirical inclination histogram. Returns 0.5 for empty or degenerate input.
+  double computeGFromHistogram(double theta_beam,
+                               const std::vector<double>& bin_centres,
+                               const std::vector<double>& liad);
+
+  /// @brief Serializes a histogram as {"angle_deg": fraction, ...} JSON. Returns "{}" for empty.
+  std::string encodeIadToJson(const std::vector<double>& bin_centres_deg,
+                              const std::vector<double>& values);
 
   /// @struct LaserSpecification
   /// @brief Holds the physical properties of a laser scanner's beam.
