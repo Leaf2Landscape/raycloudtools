@@ -16,6 +16,7 @@
 #include "raylib/rayunused.h"
 #include "raylib/rayply.h"
 #include "raylib/raylaz.h"
+#include "raylib/raysysinfo.h"
 #include "raylib/rayvoxel/rayvox.h"
 #include "raylib/rayvoxel/raylasvoxelise.h"
 #include "raylib/rayvoxel/raylasvoxelwriter.h"
@@ -161,21 +162,6 @@ double VoxelGrid::Voxel::transmittance() const
 // ==================================================================================
 
 namespace {
-
-// Query MemAvailable from /proc/meminfo; fall back to 512 MB if unavailable.
-static size_t getAvailableRamBytes()
-{
-  std::ifstream f("/proc/meminfo");
-  std::string line;
-  while (std::getline(f, line)) {
-    if (line.find("MemAvailable:") == 0) {
-      size_t kb = 0;
-      sscanf(line.c_str(), "MemAvailable: %zu kB", &kb);
-      return kb * 1024ULL;
-    }
-  }
-  return 512ULL * 1024 * 1024;
-}
 
 // Beams are queued in fixed-size batches to amortise mutex overhead.
 // 32 beams/batch → 32× fewer lock acquisitions vs one-beam-per-slot.
@@ -578,7 +564,7 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
     // --- OPTION 2: Parallel Producer-Consumer Implementation ---
 
     // Scale queue depth to available RAM: use up to 1 GB, minimum 8 batches/thread.
-    const size_t avail_ram    = getAvailableRamBytes();
+    const size_t avail_ram    = ray::queryAvailableMemoryBytes();
     const size_t queue_budget = std::min(avail_ram / 20, size_t(1) * 1024 * 1024 * 1024);
     const size_t queue_depth  = std::max(queue_budget / sizeof(BeamBatch),
                                          resolved_threads * 8);

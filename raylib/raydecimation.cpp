@@ -10,6 +10,7 @@
 #include "raycloudwriter.h"
 #include "rayparse.h"
 #include "raylaz.h"
+#include "raysysinfo.h"
 
 namespace ray
 {
@@ -39,7 +40,7 @@ static bool readWithPassthrough(const std::string &file_name, const std::string 
   if ((ext == "las" || ext == "laz") && passthrough_buf)
   {
     size_t num_bounded;
-    return readLas(file_name, apply, num_bounded, 1.0, nullptr, 1000000, nullptr, passthrough_buf);
+    return readLas(file_name, apply, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, passthrough_buf);
   }
   return Cloud::read(file_name, apply);
 }

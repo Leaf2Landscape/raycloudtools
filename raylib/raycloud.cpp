@@ -10,6 +10,7 @@
 #include "rayply.h"
 #include "raycloudwriter.h"
 #include "rayprogress.h"
+#include "raysysinfo.h"
 
 #include <nabo/nabo.h>
 
@@ -69,7 +70,7 @@ bool Cloud::loadLas(const std::string &file, int min_num_rays)
     colours.insert(colours.end(), colour_pts.begin(), colour_pts.end());
   };
   size_t num_bounded;
-  bool res = readLas(file, apply, num_bounded, 1.0, nullptr, 1000000, &ids, &pass, &orig_extra, &orig_vlr, &sids);
+  bool res = readLas(file, apply, num_bounded, 1.0, nullptr, computeReadChunkSize(), &ids, &pass, &orig_extra, &orig_vlr, &sids);
   if (!ids.empty())
     tree_ids = std::move(ids);
   if (!sids.empty())
@@ -632,7 +633,7 @@ bool convertCloud(const std::string &in_name, const std::string &out_name,
   if (is_las)
   {
     size_t num_bounded;
-    res = readLas(in_name, applyToChunk, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf);
+    res = readLas(in_name, applyToChunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
   }
   else
   {

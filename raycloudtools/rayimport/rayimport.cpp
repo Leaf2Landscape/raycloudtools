@@ -12,6 +12,7 @@
 #include "raylib/raycloud.h"
 #include "raylib/raycloudwriter.h"
 #include "raylib/raylaz.h"
+#include "raylib/raysysinfo.h"
 #include "raylib/rayparse.h"
 #include "raylib/rayply.h"
 
@@ -122,7 +123,7 @@ int rayImport(int argc, char *argv[])
       for (const double t : scan_times)
         if (beam_id_map.emplace(t, next_id).second)
           ++next_id;
-    }, dummy_bounded, maximum_intensity, nullptr, 1000000, nullptr, nullptr);
+    }, dummy_bounded, maximum_intensity, nullptr, ray::computeReadChunkSize(), nullptr, nullptr);
   }
 
   ray::CloudWriter writer;
@@ -309,7 +310,7 @@ int rayImport(int argc, char *argv[])
   }
   else if (cloud_file.nameExt() == "laz" || cloud_file.nameExt() == "las")
   {
-    if (!ray::readLas(cloud_file.name(), add_chunk, num_bounded, maximum_intensity, offset, 1000000, nullptr,
+    if (!ray::readLas(cloud_file.name(), add_chunk, num_bounded, maximum_intensity, offset, ray::computeReadChunkSize(), nullptr,
                       &all_passthrough))
     {
       usage();

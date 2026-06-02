@@ -8,6 +8,7 @@
 #include "raylib/raycloudwriter.h"
 #include "raylib/rayparse.h"
 #include "raylib/raylaz.h"
+#include "raylib/raysysinfo.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "raylib/imageread.h"
 
@@ -98,7 +99,7 @@ void colourFromImage(const std::string &cloud_file, const std::string &image_fil
   if (ext == "las" || ext == "laz")
   {
     size_t num_bounded;
-    if (!ray::readLas(cloud_file, colour_from_image, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf))
+    if (!ray::readLas(cloud_file, colour_from_image, num_bounded, 1.0, nullptr, ray::computeReadChunkSize(), nullptr, &passthrough_buf))
       usage();
   }
   else if (!ray::Cloud::read(cloud_file, colour_from_image))
@@ -204,7 +205,7 @@ int rayColour(int argc, char *argv[])
     else if (ext == "las" || ext == "laz")
     {
       size_t num_bounded;
-      if (!ray::readLas(cloud_file.name(), colour_rays, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf))
+      if (!ray::readLas(cloud_file.name(), colour_rays, num_bounded, 1.0, nullptr, ray::computeReadChunkSize(), nullptr, &passthrough_buf))
         usage();
     }
     else if (!ray::Cloud::read(cloud_file.name(), colour_rays))

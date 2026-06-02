@@ -13,6 +13,7 @@
 #include "extraction/raytrees.h"
 #include "rayparse.h"
 #include "raylaz.h"
+#include "raysysinfo.h"
 
 namespace ray
 {
@@ -73,7 +74,7 @@ bool split(const std::string &file_name, const std::string &in_name, const std::
   if (is_las)
   {
     size_t num_bounded;
-    res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf);
+    res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
   }
   else
   {
@@ -176,7 +177,7 @@ bool splitPlane(const std::string &file_name, const std::string &in_name, const 
   if (is_las)
   {
     size_t num_bounded;
-    res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf);
+    res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
   }
   else
   {
@@ -354,7 +355,7 @@ bool splitCapsule(const std::string &file_name, const std::string &in_name, cons
   if (is_las)
   {
     size_t num_bounded;
-    res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf);
+    res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
   }
   else
   {
@@ -460,7 +461,7 @@ bool splitBox(const std::string &file_name, const std::string &in_name, const st
   if (is_las)
   {
     size_t num_bounded;
-    res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf);
+    res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
   }
   else
   {
@@ -660,7 +661,7 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
     if (is_las)
     {
       size_t num_bounded;
-      res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf);
+      res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
     }
     else
     {
@@ -808,7 +809,7 @@ bool splitColour(const std::string &file_name, const std::string &cloud_name_stu
     if (is_las)
     {
       size_t num_bounded;
-      res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf);
+      res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
     }
     else
     {

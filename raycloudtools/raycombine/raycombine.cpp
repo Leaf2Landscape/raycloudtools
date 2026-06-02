@@ -12,6 +12,7 @@
 #include "raylib/raythreads.h"
 #include "raylib/raycloudwriter.h"
 #include "raylib/raylaz.h"
+#include "raylib/raysysinfo.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -150,7 +151,7 @@ int rayCombine(int argc, char *argv[])
       if (fext == "las" || fext == "laz")
       {
         size_t num_bounded;
-        if (!ray::readLas(fname, concatenate, num_bounded, 1.0, nullptr, 1000000, nullptr, &passthrough_buf))
+        if (!ray::readLas(fname, concatenate, num_bounded, 1.0, nullptr, ray::computeReadChunkSize(), nullptr, &passthrough_buf))
           usage();
       }
       else
