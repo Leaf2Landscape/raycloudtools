@@ -62,7 +62,8 @@ void usage()
   std::cout << "  --laser_spec <name>             Select a predefined laser specification (e.g., VZ-400)." << std::endl;
   std::cout << "  --beam_params <diam,div>        Manually specify beam diameter (m) and divergence (rad)." << std::endl;
   std::cout << "  --subvoxel_split <N>            Enable exploration rate calculation with an N x N x N grid (N=2,3,4). Default: 0 (off)." << std::endl;
-  std::cout << "  --inclination_dist              Compute per-voxel LIAD/WIAD/PIAD histograms and empirical G factors. Requires --veg_metrics." << std::endl;
+  std::cout << "  --inclination_dist              Compute per-voxel LIAD/WIAD/PIAD histograms and empirical G factors. On by default with --veg_metrics; implies --veg_metrics if passed standalone." << std::endl;
+  std::cout << "  --no_inclination_dist           Disable the inclination-distribution pass (skips KNN normal estimation) while keeping --veg_metrics." << std::endl;
   std::cout << "  --n_iad_bins <N>                Number of inclination-angle histogram bins over [0, pi/2]. Default: 18." << std::endl;
   std::cout << "  --knn_normal <N>                Number of nearest neighbours used for per-point normal estimation. Default: 10." << std::endl;
   exit(1);
@@ -133,6 +134,7 @@ int main_function(int argc, char *argv[])
   IntArgument subvoxel_split_val(0, 4, 0);
   OptionalKeyValueArgument subvoxel_split("subvoxel_split", '\0', &subvoxel_split_val);
   OptionalFlagArgument inclination_dist("inclination_dist", '\0');
+  OptionalFlagArgument no_inclination_dist("no_inclination_dist", '\0');
   IntArgument n_iad_bins_val(1, 180, 18);
   OptionalKeyValueArgument n_iad_bins("n_iad_bins", '\0', &n_iad_bins_val);
   IntArgument knn_normal_val(2, 1000, 10);
@@ -148,7 +150,7 @@ int main_function(int argc, char *argv[])
       &flat_top_compensation, &neighbour_priors,
       &veg_metrics, &leaf_classes, &wood_classes, &lad, &lad_params,
       &beam_metrics, &laser_spec, &beam_params, &subvoxel_split,
-      &inclination_dist, &n_iad_bins, &knn_normal };
+      &inclination_dist, &no_inclination_dist, &n_iad_bins, &knn_normal };
 
   if (!parseCommandLine(argc, argv, fixed_args, optional_args)) {
     usage();
@@ -176,10 +178,6 @@ int main_function(int argc, char *argv[])
   if (dtm_file.isSet() && dtm_from_class.isSet()) {
       std::cerr << "Error: --dtm and --dtm_from_class are mutually exclusive. Please specify only one." << std::endl; usage();
   }
-  if (inclination_dist.isSet() && !veg_metrics.isSet()) {
-      std::cerr << "Error: --inclination_dist requires --veg_metrics." << std::endl;
-      return 1;
-  }
 
   // --- Populate Parameters Struct ---
   // All command-line arguments are now consolidated into a single
@@ -201,6 +199,8 @@ int main_function(int argc, char *argv[])
   params.neighbour_prior_min_rays = neighbour_priors_val.value();
   params.write_filled = write_filled.isSet();
   params.calc_veg_metrics = veg_metrics.isSet();
+  // --inclination_dist implies --veg_metrics: if passed standalone, silently enable veg_metrics.
+  if (inclination_dist.isSet()) params.calc_veg_metrics = true;
   params.leaf_classes_str = leaf_classes_val.text();
   params.wood_classes_str = wood_classes_val.text();
   params.lad = lad_val.text();
@@ -211,7 +211,8 @@ int main_function(int argc, char *argv[])
     params.beam_params = beam_params_val.value();
   }
   params.subvoxel_split = subvoxel_split_val.value();
-  params.calc_inclination_dist = inclination_dist.isSet();
+  // IAD is on by default whenever vegetation metrics are active; --no_inclination_dist opts out.
+  params.calc_inclination_dist = (veg_metrics.isSet() || inclination_dist.isSet()) && !no_inclination_dist.isSet();
   params.n_iad_bins = n_iad_bins_val.value();
   params.knn_normal = knn_normal_val.value();
   params.reserve_size = static_cast<size_t>(reserve_size_val.value());

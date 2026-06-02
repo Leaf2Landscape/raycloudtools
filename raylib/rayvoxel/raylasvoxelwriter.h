@@ -61,6 +61,9 @@ namespace ray
     std::string liad;
     std::string wiad;
     std::string piad;
+    double pad = 0.0;  // PAD using empirical plant_G (PIAD)
+    double lad = 0.0;  // LAD using empirical leaf_G  (LIAD)
+    double wad = 0.0;  // WAD using empirical wood_G  (WIAD)
   };
 
   // MODIFIED: A type alias for a map that will store the pre-calculated output data,

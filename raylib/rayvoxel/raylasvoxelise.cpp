@@ -491,6 +491,205 @@ static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& gr
   return iad_table;
 }
 
+// Unified post-traversal pass: builds both the ClassTable and the IadTable in a single
+// readLas scan. This is equivalent to running buildClassTable() followed by buildIadTable()
+// but reads the file once instead of twice. Used whenever calc_inclination_dist is active.
+// The class_table_out and iad_table_out arguments receive the same values the standalone
+// functions would have produced.
+static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid& grid,
+                                  const VoxelizationParameters& params,
+                                  ClassTable& class_table_out, IadTable& iad_table_out)
+{
+  ClassTable class_table;
+  IadTable iad_table;
+
+  uint16_t orig_extra_size = 0;
+  std::vector<uint8_t> extra_bytes_vlr;
+  readLasExtraBytesVlr(cloud_name, orig_extra_size, extra_bytes_vlr);
+  const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + orig_extra_size);
+
+  const Cuboid& bounds    = grid.getBounds();
+  const double vox_width  = grid.getVoxelWidth();
+  const auto& dims        = grid.getDimensions();
+
+  // Resolve the leaf/wood classification source fields. Syntax: "[<field>:]c1,c2,...".
+  // An optional "<field>:" prefix selects a named LAS extra-byte field; without it the
+  // standard Classification byte is used. Leaf and wood resolve independently.
+  auto split_field_codes = [](const std::string& s, std::string& field, std::string& codes) {
+    auto colon = s.find(':');
+    if (colon != std::string::npos) { field = s.substr(0, colon); codes = s.substr(colon + 1); }
+    else { field.clear(); codes = s; }
+  };
+  std::string leaf_field, leaf_codes_str, wood_field, wood_codes_str;
+  split_field_codes(params.leaf_classes_str, leaf_field, leaf_codes_str);
+  split_field_codes(params.wood_classes_str, wood_field, wood_codes_str);
+
+  const ClassFieldSource leaf_src = resolveClassField(leaf_field, extra_bytes_vlr);
+  const ClassFieldSource wood_src = resolveClassField(wood_field, extra_bytes_vlr);
+
+  // Collect endpoints, classifications and flat voxel indices (same filtering as buildClassTable).
+  // leaf_vals/wood_vals hold the class value read from each point's resolved field (these may
+  // come from different fields, hence two separate vectors rather than one shared `classes`).
+  std::vector<Eigen::Vector3d> positions;
+  std::vector<uint8_t> leaf_vals;
+  std::vector<uint8_t> wood_vals;
+  std::vector<int64_t> flat_indices;
+
+  size_t num_bounded = 0;
+  std::vector<uint8_t> passthrough;
+  uint16_t pt_extra = 0;
+
+  ray::readLas(cloud_name,
+    [&](std::vector<Eigen::Vector3d>& /*starts*/, std::vector<Eigen::Vector3d>& ends,
+        std::vector<double>& /*times*/, std::vector<ray::RGBA>& /*colours*/) {
+      for (size_t i = 0; i < ends.size(); ++i) {
+        const size_t base = i * stride;
+        if (passthrough.size() < base + stride) continue;
+        const uint8_t return_number = passthrough[base + 0] & 0x0F;
+        if (return_number == 0) continue;  // miss ray, not a real return
+
+        const Eigen::Vector3d vox = (ends[i] - bounds.min_bound_) / vox_width;
+        const int64_t ix = static_cast<int64_t>(vox.x());
+        const int64_t iy = static_cast<int64_t>(vox.y());
+        const int64_t iz = static_cast<int64_t>(vox.z());
+        if (ix < 0 || ix >= dims[0] || iy < 0 || iy >= dims[1] || iz < 0 || iz >= dims[2]) continue;
+
+        // ClassTable work (same as buildClassTable): per-voxel standard-classification counts.
+        const uint8_t classification = passthrough[base + 2];
+        const int64_t flat_idx = grid.flatIndex(ix, iy, iz);
+        class_table[flat_idx][classification] += 1.0f;
+
+        // IadTable collection (same as buildIadTable): leaf/wood field values + flat index.
+        const int lv = readClassValue(&passthrough[base], leaf_src);
+        const int wv = readClassValue(&passthrough[base], wood_src);
+        positions.push_back(ends[i]);
+        leaf_vals.push_back(static_cast<uint8_t>(std::clamp(lv, 0, 255)));
+        wood_vals.push_back(static_cast<uint8_t>(std::clamp(wv, 0, 255)));
+        flat_indices.push_back(flat_idx);
+      }
+      passthrough.clear();
+    }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, &pt_extra);
+
+  if (positions.size() < 2) {
+    class_table_out = std::move(class_table);
+    iad_table_out = std::move(iad_table);
+    return;
+  }
+
+  // Build a libnabo KD-tree over the collected endpoints (mirrors rayellipsoid.cpp idiom).
+  const int K = std::min(params.knn_normal, static_cast<int>(positions.size()) - 1);
+  Eigen::MatrixXd points_p(3, positions.size());
+  for (size_t i = 0; i < positions.size(); ++i) points_p.col(i) = positions[i];
+  std::unique_ptr<Nabo::NNSearchD> nns(Nabo::NNSearchD::createKDTreeLinearHeap(points_p, 3));
+
+  Eigen::MatrixXi indices;
+  Eigen::MatrixXd dists2;
+  indices.resize(K, positions.size());
+  dists2.resize(K, positions.size());
+  nns->knn(points_p, indices, dists2, K, kNearestNeighbourEpsilon, 0);
+  nns.reset(nullptr);
+
+  // Parse leaf/wood class sets (duplicate of the minimal comma-parsing fragment).
+  std::set<int> leaf_set, wood_set;
+  {
+    std::stringstream ss(leaf_codes_str);
+    std::string item;
+    while (std::getline(ss, item, ',')) { try { leaf_set.insert(std::stoi(item)); } catch (...) {} }
+  }
+  {
+    std::stringstream ss(wood_codes_str);
+    std::string item;
+    while (std::getline(ss, item, ',')) { try { wood_set.insert(std::stoi(item)); } catch (...) {} }
+  }
+
+  // Per-voxel histogram accumulators, keyed by flat index.
+  std::unordered_map<int64_t, std::vector<double>> all_hist, leaf_hist, wood_hist;
+
+  for (size_t i = 0; i < positions.size(); ++i) {
+    // Compute covariance over the K nearest neighbours.
+    Eigen::Vector3d centroid(0, 0, 0);
+    int num_neighbours = 0;
+    for (int j = 0; j < K && indices(j, i) != Nabo::NNSearchD::InvalidIndex; ++j) {
+      centroid += positions[indices(j, i)];
+      ++num_neighbours;
+    }
+    if (num_neighbours < 3) continue;
+    centroid /= static_cast<double>(num_neighbours);
+    Eigen::Matrix3d scatter = Eigen::Matrix3d::Zero();
+    for (int j = 0; j < K && indices(j, i) != Nabo::NNSearchD::InvalidIndex; ++j) {
+      Eigen::Vector3d offset = positions[indices(j, i)] - centroid;
+      scatter += offset * offset.transpose();
+    }
+    scatter /= static_cast<double>(num_neighbours);
+
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eigen_solver(scatter);
+    // Normal = eigenvector of smallest eigenvalue (eigenvalues are sorted ascending).
+    const Eigen::Vector3d normal = eigen_solver.eigenvectors().col(0);
+    const double theta = std::acos(std::min(1.0, std::abs(normal.z())));
+
+    int bin = static_cast<int>(theta / (kPi / 2.0) * params.n_iad_bins);
+    bin = std::clamp(bin, 0, params.n_iad_bins - 1);
+
+    const int64_t flat_idx = flat_indices[i];
+    auto& ah = all_hist[flat_idx];
+    if (ah.empty()) ah.assign(params.n_iad_bins, 0.0);
+    ah[bin] += 1.0;
+
+    if (leaf_set.count(leaf_vals[i])) {
+      auto& lh = leaf_hist[flat_idx];
+      if (lh.empty()) lh.assign(params.n_iad_bins, 0.0);
+      lh[bin] += 1.0;
+    }
+    if (wood_set.count(wood_vals[i])) {
+      auto& wh = wood_hist[flat_idx];
+      if (wh.empty()) wh.assign(params.n_iad_bins, 0.0);
+      wh[bin] += 1.0;
+    }
+  }
+
+  // L1-normalize each histogram (leave all-zero if its sum is zero).
+  auto normalize = [](std::vector<double>& h) {
+    double sum = 0.0;
+    for (double v : h) sum += v;
+    if (sum > 0.0) for (double& v : h) v /= sum;
+  };
+
+  std::vector<double> bin_centres(params.n_iad_bins);
+  for (int b = 0; b < params.n_iad_bins; ++b)
+    bin_centres[b] = (b + 0.5) * (kPi / 2.0) / params.n_iad_bins;
+
+  for (auto& pair : all_hist) {
+    const int64_t flat_idx = pair.first;
+    IadData iad;
+    iad.bin_centres = bin_centres;
+    iad.piad = pair.second;  // all points -> plant
+    auto lit = leaf_hist.find(flat_idx);
+    iad.liad = (lit != leaf_hist.end()) ? lit->second : std::vector<double>(params.n_iad_bins, 0.0);
+    auto wit = wood_hist.find(flat_idx);
+    iad.wiad = (wit != wood_hist.end()) ? wit->second : std::vector<double>(params.n_iad_bins, 0.0);
+
+    normalize(iad.liad);
+    normalize(iad.wiad);
+    normalize(iad.piad);
+
+    // Mean zenith angle of rays passing through this voxel.
+    const int64_t ci = flat_idx % dims[0];
+    const int64_t cj = (flat_idx / dims[0]) % dims[1];
+    const int64_t ck = flat_idx / (dims[0] * dims[1]);
+    const VoxelGrid::Voxel& v = grid.getVoxel(ci, cj, ck);
+    const double mean_zenith = (v.num_rays_observed > 0) ? (v.sum_of_angles / v.num_rays_observed) : 0.0;
+
+    iad.leaf_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.liad);
+    iad.wood_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.wiad);
+    iad.plant_g = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.piad);
+
+    iad_table[flat_idx] = std::move(iad);
+  }
+
+  class_table_out = std::move(class_table);
+  iad_table_out = std::move(iad_table);
+}
+
 // ==================================================================================
 // Processing Strategy Implementations
 // ==================================================================================
@@ -1055,6 +1254,46 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
     auto isZeroVector = [](const Eigen::Vector3d &vec) -> bool { return vec.isApprox(Eigen::Vector3d::Zero()); };
     Cuboid user_bounds;
 
+    // Combined pre-scan result: a single endpoint-only readLas pass can serve both the
+    // auto-bounds detection and the auto-reserve-size count, since both are lightweight
+    // endpoint reads over the same file.
+    struct PreScanResult {
+      Eigen::Vector3d bounds_min = Eigen::Vector3d::Constant(std::numeric_limits<double>::max());
+      Eigen::Vector3d bounds_max = Eigen::Vector3d::Constant(std::numeric_limits<double>::lowest());
+      size_t point_count = 0;
+    };
+
+    // Whether each half of the pre-scan is needed. Auto-bounds is needed only when the user
+    // supplied no explicit grid bounds; the reserve count is needed only for in-memory modes
+    // without an explicit --reserve_size.
+    const bool need_auto_bounds = isZeroVector(params.grid_bounds_min) && isZeroVector(params.grid_bounds_max);
+    const bool need_reserve_count = (params.reserve_size == 0) && !params.use_ooc;
+
+    auto preScanCloud = [&](const std::string& cloud_name, PreScanResult& result) -> bool {
+      size_t num_bounded = 0;
+      return ray::readLas(cloud_name,
+          [&](std::vector<Eigen::Vector3d>& /*starts*/, std::vector<Eigen::Vector3d>& ends,
+              std::vector<double>& /*times*/, std::vector<ray::RGBA>& /*colours*/) {
+            for (auto& e : ends) {
+              result.bounds_min = result.bounds_min.cwiseMin(e);
+              result.bounds_max = result.bounds_max.cwiseMax(e);
+            }
+            result.point_count += ends.size();
+          }, num_bounded, 255.0, nullptr);
+    };
+
+    // Run the pre-scan once if either half is needed; reuse its results below.
+    PreScanResult pre_scan;
+    if (need_auto_bounds || need_reserve_count) {
+      if (need_auto_bounds) {
+        std::cout << "Auto-detecting grid bounds from file..." << std::endl;
+      }
+      if (!preScanCloud(params.cloud_name, pre_scan)) {
+        std::cerr << "Error: Could not read LAS/LAZ file to pre-scan the cloud." << std::endl;
+        return false;
+      }
+    }
+
     double beam_diameter = 0.0;
     double beam_divergence = 0.0;
 
@@ -1077,28 +1316,13 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
         }
     }
 
-    if (isZeroVector(params.grid_bounds_min) && isZeroVector(params.grid_bounds_max)) {
-        std::cout << "Auto-detecting grid bounds from file..." << std::endl;
-        Eigen::Vector3d bounds_min = Eigen::Vector3d::Constant(std::numeric_limits<double>::max());
-        Eigen::Vector3d bounds_max = Eigen::Vector3d::Constant(std::numeric_limits<double>::lowest());
-        size_t num_bounded = 0;
-        if (!ray::readLas(params.cloud_name,
-              [&](std::vector<Eigen::Vector3d>& /*starts*/, std::vector<Eigen::Vector3d>& ends,
-                  std::vector<double>& /*times*/, std::vector<ray::RGBA>& /*colours*/) {
-                for (auto& e : ends) {
-                  bounds_min = bounds_min.cwiseMin(e);
-                  bounds_max = bounds_max.cwiseMax(e);
-                }
-              }, num_bounded, 255.0, nullptr)) {
-            std::cerr << "Error: Could not read LAS/LAZ file to determine bounds." << std::endl;
-            return false;
-        }
-        if (bounds_min.x() > bounds_max.x()) {
+    if (need_auto_bounds) {
+        if (pre_scan.bounds_min.x() > pre_scan.bounds_max.x()) {
             std::cerr << "Error: No points found to determine bounds." << std::endl;
             return false;
         }
-        user_bounds.min_bound_ = bounds_min;
-        user_bounds.max_bound_ = bounds_max;
+        user_bounds.min_bound_ = pre_scan.bounds_min;
+        user_bounds.max_bound_ = pre_scan.bounds_max;
         std::cout << "Detected bounds min: " << format_vec_string(user_bounds.min_bound_)
                   << ", max: " << format_vec_string(user_bounds.max_bound_) << std::endl;
     } else {
@@ -1168,15 +1392,11 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
         processing_bounds.max_bound_ += padding_vec;
     }
 
-    // Handle auto-detection of reservation size here.
+    // Handle auto-detection of reservation size here. The point count was already gathered
+    // by the combined pre-scan pass above (need_reserve_count mirrors that pass's trigger).
     size_t final_reserve_size = params.reserve_size;
-    if (final_reserve_size == 0 && !params.use_ooc) {
-        size_t num_bounded = 0;
-        ray::readLas(params.cloud_name,
-            [&](std::vector<Eigen::Vector3d>& /*starts*/, std::vector<Eigen::Vector3d>& ends,
-                std::vector<double>& /*times*/, std::vector<ray::RGBA>& /*colours*/) {
-              final_reserve_size += ends.size();
-            }, num_bounded, 255.0, nullptr);
+    if (need_reserve_count) {
+        final_reserve_size += pre_scan.point_count;
     }
     // For OOC, we never reserve in the final grid, as it's populated at the end.
     if (params.use_ooc) { final_reserve_size = 0; }
@@ -1222,13 +1442,16 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
     }
 
     // Build the classification table in a separate O(N_points) pass (no ray walking).
-    std::cout << "Building classification table..." << std::endl;
-    ClassTable class_table = buildClassTable(params.cloud_name, grid);
-
+    // When inclination distributions are active, the class and IAD tables share an
+    // identical I/O scan, so build them together in a single readLas pass.
+    ClassTable class_table;
     IadTable iad_table;
     if (params.calc_inclination_dist) {
-      std::cout << "Building inclination angle distributions..." << std::endl;
-      iad_table = buildIadTable(params.cloud_name, grid, params);
+      std::cout << "Building classification table and inclination angle distributions..." << std::endl;
+      buildClassAndIadTable(params.cloud_name, grid, params, class_table, iad_table);
+    } else {
+      std::cout << "Building classification table..." << std::endl;
+      class_table = buildClassTable(params.cloud_name, grid);
     }
 
     std::cout << "Calculating output metrics..." << std::endl;

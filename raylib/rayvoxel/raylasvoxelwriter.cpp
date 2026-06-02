@@ -189,15 +189,19 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
                 data.distance_from_ground = data.z - ground_height;
         }
 
+        // Leaf/wood hit counts are shared by both the parametric and empirical metric blocks.
+        float leaf_hits = 0.0f, wood_hits = 0.0f;
+        if (params.calc_veg_metrics || params.calc_inclination_dist) {
+            for (int code : leaf_classes)
+                if (code >= 0 && code <= 255) leaf_hits += data.classification_hits[code];
+            for (int code : wood_classes)
+                if (code >= 0 && code <= 255) wood_hits += data.classification_hits[code];
+        }
+
         if (params.calc_veg_metrics && v.path_length_observed > 0) {
             double g_theta = computeG(data.mean_zenith_angle_rad, params.lad, lad_param1, lad_param2);
             if (g_theta > 0) {
                 data.pad_g_corrected = v.num_hits / (g_theta * v.path_length_observed);
-                float leaf_hits = 0.0f, wood_hits = 0.0f;
-                for (int code : leaf_classes)
-                    if (code >= 0 && code <= 255) leaf_hits += data.classification_hits[code];
-                for (int code : wood_classes)
-                    if (code >= 0 && code <= 255) wood_hits += data.classification_hits[code];
                 data.pad_leaf = leaf_hits / (g_theta * v.path_length_observed);
                 data.pad_wood = wood_hits / (g_theta * v.path_length_observed);
             }
@@ -216,6 +220,11 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
             data.liad = encodeIadToJson(centres_deg, iad.liad);
             data.wiad = encodeIadToJson(centres_deg, iad.wiad);
             data.piad = encodeIadToJson(centres_deg, iad.piad);
+            if (v.path_length_observed > 0) {
+              if (iad.plant_g > 0) data.pad = v.num_hits / (iad.plant_g * v.path_length_observed);
+              if (iad.leaf_g  > 0) data.lad = leaf_hits  / (iad.leaf_g  * v.path_length_observed);
+              if (iad.wood_g  > 0) data.wad = wood_hits  / (iad.wood_g  * v.path_length_observed);
+            }
           }
         }
 
@@ -280,7 +289,7 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
     colnames += " bsEntering bsIntercepted";
   }
   if (params.calc_inclination_dist)
-    colnames += " leaf_g wood_g plant_g liad wiad piad";
+    colnames += " leaf_g wood_g plant_g liad wiad piad pad lad wad";
   space.header["colnames"] = colnames;
 
   auto process_voxel = [&](int64_t i, int64_t j, int64_t k, const VoxelOutputData* data) {
@@ -314,6 +323,9 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
       v_data.variables.push_back(data ? data->liad : "{}");
       v_data.variables.push_back(data ? data->wiad : "{}");
       v_data.variables.push_back(data ? data->piad : "{}");
+      v_data.variables.push_back(std::to_string(data ? data->pad : 0.0));
+      v_data.variables.push_back(std::to_string(data ? data->lad : 0.0));
+      v_data.variables.push_back(std::to_string(data ? data->wad : 0.0));
     }
     space.voxels.push_back(v_data);
   };
@@ -358,7 +370,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
   if (params.calc_veg_metrics) header += " pad_g_corrected pad_leaf pad_wood";
   if (params.calc_beam_metrics) header += " transmittance";
   if (params.subvoxel_split > 0) header += " exploration_rate";
-  if (params.calc_inclination_dist) header += " leaf_g wood_g plant_g liad wiad piad";
+  if (params.calc_inclination_dist) header += " leaf_g wood_g plant_g liad wiad piad pad lad wad";
   header += " classification_hits\n";
   outfile << header;
 
@@ -384,7 +396,8 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
     if (params.subvoxel_split > 0) outfile << " " << data.exploration_rate;
     if (params.calc_inclination_dist)
       outfile << " " << data.leaf_g << " " << data.wood_g << " " << data.plant_g
-              << " " << data.liad << " " << data.wiad << " " << data.piad;
+              << " " << data.liad << " " << data.wiad << " " << data.piad
+              << " " << data.pad << " " << data.lad << " " << data.wad;
     outfile << " " << formatClassificationHits(data.classification_hits) << "\n";
     point_count++;
   };
@@ -544,7 +557,7 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
     }
 
     std::vector<float> liad_flat, wiad_flat, piad_flat;
-    std::vector<double> leaf_g_data, wood_g_data, plant_g_data;
+    std::vector<double> leaf_g_data, wood_g_data, plant_g_data, pad_iad_data, lad_data, wad_data;
     if (params.calc_inclination_dist) {
         liad_flat.reserve(metrics.size() * params.n_iad_bins);
         wiad_flat.reserve(metrics.size() * params.n_iad_bins);
@@ -590,6 +603,9 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
             leaf_g_data.push_back(data.leaf_g);
             wood_g_data.push_back(data.wood_g);
             plant_g_data.push_back(data.plant_g);
+            pad_iad_data.push_back(data.pad);
+            lad_data.push_back(data.lad);
+            wad_data.push_back(data.wad);
         }
 
         for (int c = 0; c < 256; ++c) {
@@ -639,6 +655,9 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
         dataFile.addVar("leaf_g",  netCDF::ncDouble, {nPoints}).putVar(leaf_g_data.data());
         dataFile.addVar("wood_g",  netCDF::ncDouble, {nPoints}).putVar(wood_g_data.data());
         dataFile.addVar("plant_g", netCDF::ncDouble, {nPoints}).putVar(plant_g_data.data());
+        dataFile.addVar("pad",     netCDF::ncDouble, {nPoints}).putVar(pad_iad_data.data());
+        dataFile.addVar("lad",     netCDF::ncDouble, {nPoints}).putVar(lad_data.data());
+        dataFile.addVar("wad",     netCDF::ncDouble, {nPoints}).putVar(wad_data.data());
     }
 
     std::cout << "Wrote " << point_count << " voxels to " << filename << std::endl;
