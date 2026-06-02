@@ -142,8 +142,13 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
     const Eigen::Vector3d& bmin = grid.getBounds().min_bound_;
     const auto& dims = grid.getDimensions();
 
-    const std::vector<int> leaf_classes = parseClasses(params.leaf_classes_str);
-    const std::vector<int> wood_classes = parseClasses(params.wood_classes_str);
+    // Strip optional "field:" prefix before parsing numeric class codes
+    auto strip_field_prefix = [](const std::string& s) -> std::string {
+        auto colon = s.find(':');
+        return (colon != std::string::npos) ? s.substr(colon + 1) : s;
+    };
+    const std::vector<int> leaf_classes = parseClasses(strip_field_prefix(params.leaf_classes_str));
+    const std::vector<int> wood_classes = parseClasses(strip_field_prefix(params.wood_classes_str));
     double lad_param1, lad_param2;
     parseLadParams(params.lad_params_str, lad_param1, lad_param2);
 
@@ -214,12 +219,9 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
             data.leaf_g  = iad.leaf_g;
             data.wood_g  = iad.wood_g;
             data.plant_g = iad.plant_g;
-            std::vector<double> centres_deg(iad.bin_centres.size());
-            for (size_t b = 0; b < centres_deg.size(); ++b)
-              centres_deg[b] = iad.bin_centres[b] * 180.0 / kPi;
-            data.liad = encodeIadToJson(centres_deg, iad.liad);
-            data.wiad = encodeIadToJson(centres_deg, iad.wiad);
-            data.piad = encodeIadToJson(centres_deg, iad.piad);
+            data.liad = iad.liad;
+            data.wiad = iad.wiad;
+            data.piad = iad.piad;
             if (v.path_length_observed > 0) {
               if (iad.plant_g > 0) data.pad = v.num_hits / (iad.plant_g * v.path_length_observed);
               if (iad.leaf_g  > 0) data.lad = leaf_hits  / (iad.leaf_g  * v.path_length_observed);
@@ -288,8 +290,13 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
   if (params.calc_beam_metrics) {
     colnames += " bsEntering bsIntercepted";
   }
-  if (params.calc_inclination_dist)
-    colnames += " leaf_g wood_g plant_g liad wiad piad pad lad wad";
+  if (params.calc_inclination_dist) {
+    colnames += " leaf_g wood_g plant_g";
+    for (int b = 0; b < params.n_iad_bins; ++b) colnames += " liad_" + std::to_string(b);
+    for (int b = 0; b < params.n_iad_bins; ++b) colnames += " wiad_" + std::to_string(b);
+    for (int b = 0; b < params.n_iad_bins; ++b) colnames += " piad_" + std::to_string(b);
+    colnames += " pad lad wad";
+  }
   space.header["colnames"] = colnames;
 
   auto process_voxel = [&](int64_t i, int64_t j, int64_t k, const VoxelOutputData* data) {
@@ -320,9 +327,12 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
       v_data.variables.push_back(std::to_string(data ? data->leaf_g  : 0.0));
       v_data.variables.push_back(std::to_string(data ? data->wood_g  : 0.0));
       v_data.variables.push_back(std::to_string(data ? data->plant_g : 0.0));
-      v_data.variables.push_back(data ? data->liad : "{}");
-      v_data.variables.push_back(data ? data->wiad : "{}");
-      v_data.variables.push_back(data ? data->piad : "{}");
+      for (int b = 0; b < params.n_iad_bins; ++b)
+        v_data.variables.push_back(std::to_string(data && b < static_cast<int>(data->liad.size()) ? data->liad[b] : 0.0));
+      for (int b = 0; b < params.n_iad_bins; ++b)
+        v_data.variables.push_back(std::to_string(data && b < static_cast<int>(data->wiad.size()) ? data->wiad[b] : 0.0));
+      for (int b = 0; b < params.n_iad_bins; ++b)
+        v_data.variables.push_back(std::to_string(data && b < static_cast<int>(data->piad.size()) ? data->piad[b] : 0.0));
       v_data.variables.push_back(std::to_string(data ? data->pad : 0.0));
       v_data.variables.push_back(std::to_string(data ? data->lad : 0.0));
       v_data.variables.push_back(std::to_string(data ? data->wad : 0.0));
@@ -370,7 +380,13 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
   if (params.calc_veg_metrics) header += " pad_g_corrected pad_leaf pad_wood";
   if (params.calc_beam_metrics) header += " transmittance";
   if (params.subvoxel_split > 0) header += " exploration_rate";
-  if (params.calc_inclination_dist) header += " leaf_g wood_g plant_g liad wiad piad pad lad wad";
+  if (params.calc_inclination_dist) {
+    header += " leaf_g wood_g plant_g";
+    for (int b = 0; b < params.n_iad_bins; ++b) header += " liad_" + std::to_string(b);
+    for (int b = 0; b < params.n_iad_bins; ++b) header += " wiad_" + std::to_string(b);
+    for (int b = 0; b < params.n_iad_bins; ++b) header += " piad_" + std::to_string(b);
+    header += " pad lad wad";
+  }
   header += " classification_hits\n";
   outfile << header;
 
@@ -394,10 +410,16 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
     if (params.calc_veg_metrics) outfile << " " << data.pad_g_corrected << " " << data.pad_leaf << " " << data.pad_wood;
     if (params.calc_beam_metrics) outfile << " " << data.transmittance;
     if (params.subvoxel_split > 0) outfile << " " << data.exploration_rate;
-    if (params.calc_inclination_dist)
-      outfile << " " << data.leaf_g << " " << data.wood_g << " " << data.plant_g
-              << " " << data.liad << " " << data.wiad << " " << data.piad
-              << " " << data.pad << " " << data.lad << " " << data.wad;
+    if (params.calc_inclination_dist) {
+      outfile << " " << data.leaf_g << " " << data.wood_g << " " << data.plant_g;
+      for (int b = 0; b < params.n_iad_bins; ++b)
+        outfile << " " << (b < static_cast<int>(data.liad.size()) ? data.liad[b] : 0.0);
+      for (int b = 0; b < params.n_iad_bins; ++b)
+        outfile << " " << (b < static_cast<int>(data.wiad.size()) ? data.wiad[b] : 0.0);
+      for (int b = 0; b < params.n_iad_bins; ++b)
+        outfile << " " << (b < static_cast<int>(data.piad.size()) ? data.piad[b] : 0.0);
+      outfile << " " << data.pad << " " << data.lad << " " << data.wad;
+    }
     outfile << " " << formatClassificationHits(data.classification_hits) << "\n";
     point_count++;
   };

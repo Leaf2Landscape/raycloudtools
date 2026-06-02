@@ -58,9 +58,9 @@ namespace ray
     double leaf_g  = 0.0;
     double wood_g  = 0.0;
     double plant_g = 0.0;
-    std::string liad;
-    std::string wiad;
-    std::string piad;
+    std::vector<double> liad;
+    std::vector<double> wiad;
+    std::vector<double> piad;
     double pad = 0.0;  // PAD using empirical plant_G (PIAD)
     double lad = 0.0;  // LAD using empirical leaf_G  (LIAD)
     double wad = 0.0;  // WAD using empirical wood_G  (WIAD)
