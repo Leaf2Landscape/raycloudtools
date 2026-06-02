@@ -144,10 +144,12 @@ int64_t VoxelGrid::getIndex(int64_t i, int64_t j, int64_t k) const {
 
 double VoxelGrid::Voxel::pad_bv_total() const
 {
-  const double eps = 1e-10; // Avoid division by zero
+  // AMAPVox BV formula: bias-corrected MLE assuming spherical LAD (G=0.5).
+  // Equivalent to (2/G) * (N-1)/N * num_hits / path_length_observed.
+  // Independent of --attenuation_method; kept for AMAPVox output compatibility.
+  const double eps = 1e-10;
   if (num_rays_observed < 2.0f) return 0.0;
-  const double spherical_distribution_scale = 2.0;
-  return spherical_distribution_scale * (num_rays_observed - 1.0f) * num_hits / (eps + num_rays_observed * path_length_observed);
+  return 2.0 * (num_rays_observed - 1.0f) * num_hits / (eps + num_rays_observed * path_length_observed);
 }
 
 double VoxelGrid::Voxel::transmittance() const
@@ -351,6 +353,7 @@ static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& gr
   std::vector<int> leaf_vals;
   std::vector<int> wood_vals;
   std::vector<int64_t> flat_indices;
+  std::vector<double> beam_angles;  // zenith angle [0, pi/2] of each point's inbound ray
 
   size_t num_bounded = 0;
   std::vector<uint8_t> passthrough;
@@ -358,7 +361,7 @@ static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& gr
   size_t global_chunk_start = 0;
 
   ray::readLas(cloud_name,
-    [&](std::vector<Eigen::Vector3d>& /*starts*/, std::vector<Eigen::Vector3d>& ends,
+    [&](std::vector<Eigen::Vector3d>& starts, std::vector<Eigen::Vector3d>& ends,
         std::vector<double>& /*times*/, std::vector<ray::RGBA>& /*colours*/) {
       for (size_t i = 0; i < ends.size(); ++i) {
         const size_t base = (global_chunk_start + i) * stride;
@@ -373,10 +376,14 @@ static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& gr
         if (ix < 0 || ix >= dims[0] || iy < 0 || iy >= dims[1] || iz < 0 || iz >= dims[2]) continue;
         const int lv = readClassValue(&passthrough[base], leaf_src);
         const int wv = readClassValue(&passthrough[base], wood_src);
+        const Eigen::Vector3d dir = ends[i] - starts[i];
+        const double len2 = dir.squaredNorm();
+        const double bz = (len2 > 1e-12) ? std::acos(std::min(1.0, std::abs(dir.z() / std::sqrt(len2)))) : 0.0;
         positions.push_back(ends[i]);
         leaf_vals.push_back(lv);  // preserve sign: -1 means "neither", must not be clamped to 0
         wood_vals.push_back(wv);
         flat_indices.push_back(grid.flatIndex(ix, iy, iz));
+        beam_angles.push_back(bz);
       }
       global_chunk_start += ends.size();
     }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, &pt_extra);
@@ -410,7 +417,7 @@ static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& gr
   }
 
   // Per-voxel histogram accumulators, keyed by flat index.
-  std::unordered_map<int64_t, std::vector<double>> all_hist, leaf_hist, wood_hist;
+  std::unordered_map<int64_t, std::vector<double>> all_hist, leaf_hist, wood_hist, beam_hist;
 
   for (size_t i = 0; i < positions.size(); ++i) {
     // Compute covariance over the K nearest neighbours.
@@ -441,6 +448,14 @@ static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& gr
     auto& ah = all_hist[flat_idx];
     if (ah.empty()) ah.assign(params.n_iad_bins, 0.0);
     ah[bin] += 1.0;
+
+    {
+      int bbin = static_cast<int>(beam_angles[i] / (kPi / 2.0) * params.n_iad_bins);
+      bbin = std::clamp(bbin, 0, params.n_iad_bins - 1);
+      auto& bh = beam_hist[flat_idx];
+      if (bh.empty()) bh.assign(params.n_iad_bins, 0.0);
+      bh[bbin] += 1.0;
+    }
 
     if (leaf_set.count(leaf_vals[i])) {
       auto& lh = leaf_hist[flat_idx];
@@ -479,16 +494,32 @@ static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& gr
     normalize(iad.wiad);
     normalize(iad.piad);
 
-    // Mean zenith angle of rays passing through this voxel.
-    const int64_t ci = flat_idx % dims[0];
-    const int64_t cj = (flat_idx / dims[0]) % dims[1];
-    const int64_t ck = flat_idx / (dims[0] * dims[1]);
-    const VoxelGrid::Voxel& v = grid.getVoxel(ci, cj, ck);
-    const double mean_zenith = (v.num_rays_observed > 0) ? (v.sum_of_angles / v.num_rays_observed) : 0.0;
-
-    iad.leaf_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.liad);
-    iad.wood_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.wiad);
-    iad.plant_g = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.piad);
+    // Angle-integrated G: weight G(theta_beam, leaf_angles) over the empirical beam-direction
+    // distribution rather than evaluating at a single mean angle.
+    auto bhit = beam_hist.find(flat_idx);
+    if (bhit != beam_hist.end()) {
+      std::vector<double> norm_beam = bhit->second;
+      normalize(norm_beam);
+      double g_plant = 0.0, g_leaf = 0.0, g_wood = 0.0;
+      for (int b = 0; b < params.n_iad_bins; ++b) {
+        if (norm_beam[b] <= 0.0) continue;
+        g_plant += norm_beam[b] * computeGFromHistogram(bin_centres[b], iad.bin_centres, iad.piad);
+        g_leaf  += norm_beam[b] * computeGFromHistogram(bin_centres[b], iad.bin_centres, iad.liad);
+        g_wood  += norm_beam[b] * computeGFromHistogram(bin_centres[b], iad.bin_centres, iad.wiad);
+      }
+      iad.plant_g = g_plant;
+      iad.leaf_g  = g_leaf;
+      iad.wood_g  = g_wood;
+    } else {
+      const int64_t ci = flat_idx % dims[0];
+      const int64_t cj = (flat_idx / dims[0]) % dims[1];
+      const int64_t ck = flat_idx / (dims[0] * dims[1]);
+      const VoxelGrid::Voxel& vv = grid.getVoxel(ci, cj, ck);
+      const double mean_zenith = (vv.num_rays_observed > 0) ? (vv.sum_of_angles / vv.num_rays_observed) : 0.0;
+      iad.plant_g = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.piad);
+      iad.leaf_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.liad);
+      iad.wood_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.wiad);
+    }
 
     iad_table[flat_idx] = std::move(iad);
   }
@@ -539,6 +570,7 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
   std::vector<int> leaf_vals;
   std::vector<int> wood_vals;
   std::vector<int64_t> flat_indices;
+  std::vector<double> beam_angles;  // zenith angle [0, pi/2] of each point's inbound ray
 
   size_t num_bounded = 0;
   std::vector<uint8_t> passthrough;
@@ -546,7 +578,7 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
   size_t global_chunk_start = 0;
 
   ray::readLas(cloud_name,
-    [&](std::vector<Eigen::Vector3d>& /*starts*/, std::vector<Eigen::Vector3d>& ends,
+    [&](std::vector<Eigen::Vector3d>& starts, std::vector<Eigen::Vector3d>& ends,
         std::vector<double>& /*times*/, std::vector<ray::RGBA>& /*colours*/) {
       for (size_t i = 0; i < ends.size(); ++i) {
         const size_t base = (global_chunk_start + i) * stride;
@@ -568,10 +600,14 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
         // IadTable collection (same as buildIadTable): leaf/wood field values + flat index.
         const int lv = readClassValue(&passthrough[base], leaf_src);
         const int wv = readClassValue(&passthrough[base], wood_src);
+        const Eigen::Vector3d dir = ends[i] - starts[i];
+        const double len2 = dir.squaredNorm();
+        const double bz = (len2 > 1e-12) ? std::acos(std::min(1.0, std::abs(dir.z() / std::sqrt(len2)))) : 0.0;
         positions.push_back(ends[i]);
         leaf_vals.push_back(lv);  // preserve sign: -1 means "neither", must not be clamped to 0
         wood_vals.push_back(wv);
         flat_indices.push_back(flat_idx);
+        beam_angles.push_back(bz);
       }
       global_chunk_start += ends.size();
     }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, &pt_extra);
@@ -609,7 +645,7 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
   }
 
   // Per-voxel histogram accumulators, keyed by flat index.
-  std::unordered_map<int64_t, std::vector<double>> all_hist, leaf_hist, wood_hist;
+  std::unordered_map<int64_t, std::vector<double>> all_hist, leaf_hist, wood_hist, beam_hist;
 
   for (size_t i = 0; i < positions.size(); ++i) {
     // Compute covariance over the K nearest neighbours.
@@ -640,6 +676,14 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
     auto& ah = all_hist[flat_idx];
     if (ah.empty()) ah.assign(params.n_iad_bins, 0.0);
     ah[bin] += 1.0;
+
+    {
+      int bbin = static_cast<int>(beam_angles[i] / (kPi / 2.0) * params.n_iad_bins);
+      bbin = std::clamp(bbin, 0, params.n_iad_bins - 1);
+      auto& bh = beam_hist[flat_idx];
+      if (bh.empty()) bh.assign(params.n_iad_bins, 0.0);
+      bh[bbin] += 1.0;
+    }
 
     if (leaf_set.count(leaf_vals[i])) {
       auto& lh = leaf_hist[flat_idx];
@@ -678,16 +722,32 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
     normalize(iad.wiad);
     normalize(iad.piad);
 
-    // Mean zenith angle of rays passing through this voxel.
-    const int64_t ci = flat_idx % dims[0];
-    const int64_t cj = (flat_idx / dims[0]) % dims[1];
-    const int64_t ck = flat_idx / (dims[0] * dims[1]);
-    const VoxelGrid::Voxel& v = grid.getVoxel(ci, cj, ck);
-    const double mean_zenith = (v.num_rays_observed > 0) ? (v.sum_of_angles / v.num_rays_observed) : 0.0;
-
-    iad.leaf_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.liad);
-    iad.wood_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.wiad);
-    iad.plant_g = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.piad);
+    // Angle-integrated G: weight G(theta_beam, leaf_angles) over the empirical beam-direction
+    // distribution rather than evaluating at a single mean angle.
+    auto bhit = beam_hist.find(flat_idx);
+    if (bhit != beam_hist.end()) {
+      std::vector<double> norm_beam = bhit->second;
+      normalize(norm_beam);
+      double g_plant = 0.0, g_leaf = 0.0, g_wood = 0.0;
+      for (int b = 0; b < params.n_iad_bins; ++b) {
+        if (norm_beam[b] <= 0.0) continue;
+        g_plant += norm_beam[b] * computeGFromHistogram(bin_centres[b], iad.bin_centres, iad.piad);
+        g_leaf  += norm_beam[b] * computeGFromHistogram(bin_centres[b], iad.bin_centres, iad.liad);
+        g_wood  += norm_beam[b] * computeGFromHistogram(bin_centres[b], iad.bin_centres, iad.wiad);
+      }
+      iad.plant_g = g_plant;
+      iad.leaf_g  = g_leaf;
+      iad.wood_g  = g_wood;
+    } else {
+      const int64_t ci = flat_idx % dims[0];
+      const int64_t cj = (flat_idx / dims[0]) % dims[1];
+      const int64_t ck = flat_idx / (dims[0] * dims[1]);
+      const VoxelGrid::Voxel& vv = grid.getVoxel(ci, cj, ck);
+      const double mean_zenith = (vv.num_rays_observed > 0) ? (vv.sum_of_angles / vv.num_rays_observed) : 0.0;
+      iad.plant_g = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.piad);
+      iad.leaf_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.liad);
+      iad.wood_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.wiad);
+    }
 
     iad_table[flat_idx] = std::move(iad);
   }

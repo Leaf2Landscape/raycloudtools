@@ -132,6 +132,64 @@ void parseLadParams(const std::string& lad_params_str, double& param1, double& p
 // Centralized Metric Calculator Implementation
 // ==================================================================================
 
+double computeLambda(const VoxelGrid::Voxel& v, const std::string& method)
+{
+    const double eps = 1e-10;
+
+    if (method == "fpl") {
+        if (v.sum_bs_path > eps)
+            return static_cast<double>(v.bs_intercepted) / static_cast<double>(v.sum_bs_path);
+        if (v.path_length_observed > eps)
+            return static_cast<double>(v.num_hits) / static_cast<double>(v.path_length_observed);
+        return 0.0;
+    }
+    if (method == "transmittance") {
+        if (v.bs_entering > eps) {
+            double T = std::max(eps, static_cast<double>(v.bs_entering - v.bs_intercepted)
+                                    / static_cast<double>(v.bs_entering));
+            return -std::log(T);
+        }
+        if (v.num_rays_observed > eps) {
+            double hf = std::min(1.0 - eps,
+                                 static_cast<double>(v.num_hits) / static_cast<double>(v.num_rays_observed));
+            return -std::log(1.0 - hf);
+        }
+        return 0.0;
+    }
+    if (method == "ppl") {
+        double n      = static_cast<double>(v.num_hits);
+        double m      = std::max(0.0, static_cast<double>(v.num_rays_observed) - n);
+        double dbar_n = (n > eps) ? static_cast<double>(v.sum_hit_delta)  / n : 0.0;
+        double dbar_m = (m > eps) ? static_cast<double>(v.sum_miss_delta) / m : 0.0;
+        if (n < eps || dbar_n < eps) {
+            if (v.bs_entering > eps) {
+                double T = std::max(eps, static_cast<double>(v.bs_entering - v.bs_intercepted)
+                                        / static_cast<double>(v.bs_entering));
+                return -std::log(T);
+            }
+            return 0.0;
+        }
+        if (m < eps || dbar_m < eps) {
+            return 50.0 / dbar_n;
+        }
+        // Bisection: solve  m·δ̄_m = n·δ̄_n·exp(-λδ̄_n)/(1−exp(-λδ̄_n))
+        double lo = eps;
+        double hi = 50.0 / std::min(dbar_n, dbar_m);
+        for (int iter = 0; iter < 60; ++iter) {
+            double mid  = 0.5 * (lo + hi);
+            double expm = std::exp(-mid * dbar_n);
+            double den  = 1.0 - expm;
+            if (den < eps) { hi = mid; continue; }
+            if (m * dbar_m < n * dbar_n * expm / den) lo = mid; else hi = mid;
+        }
+        return 0.5 * (lo + hi);
+    }
+    // unknown method — FPL simplified fallback
+    if (v.path_length_observed > eps)
+        return static_cast<double>(v.num_hits) / static_cast<double>(v.path_length_observed);
+    return 0.0;
+}
+
 MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const VoxelizationParameters& params,
                                          const HeightField* dtm, const ClassTable& class_table,
                                          const IadTable& iad_table)
@@ -151,6 +209,10 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
     const std::vector<int> wood_classes = parseClasses(strip_field_prefix(params.wood_classes_str));
     double lad_param1, lad_param2;
     parseLadParams(params.lad_params_str, lad_param1, lad_param2);
+
+    auto computeLambdaV = [&](const VoxelGrid::Voxel& v) -> double {
+        return computeLambda(v, params.attenuation_method);
+    };
 
     // Lambda to fill a VoxelOutputData from a voxel + its flat index
     auto populateData = [&](int64_t flat_idx, int64_t ci, int64_t cj, int64_t ck,
@@ -204,11 +266,15 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
         }
 
         if (params.calc_veg_metrics && v.path_length_observed > 0) {
+            // G evaluated at mean beam zenith angle — first-order approximation.
+            // Use --veg_metrics (IAD active by default) for angle-integrated G_eff via pad/lad/wad.
             double g_theta = computeG(data.mean_zenith_angle_rad, params.lad, lad_param1, lad_param2);
             if (g_theta > 0) {
-                data.pad_g_corrected = v.num_hits / (g_theta * v.path_length_observed);
-                data.pad_leaf = leaf_hits / (g_theta * v.path_length_observed);
-                data.pad_wood = wood_hits / (g_theta * v.path_length_observed);
+                double lambda    = computeLambdaV(v);
+                double hit_total = std::max(1e-10, static_cast<double>(v.num_hits));
+                data.pad_g_corrected = lambda / g_theta;
+                data.pad_leaf        = lambda * (leaf_hits / hit_total) / g_theta;
+                data.pad_wood        = lambda * (wood_hits / hit_total) / g_theta;
             }
         }
 
@@ -223,9 +289,11 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
             data.wiad = iad.wiad;
             data.piad = iad.piad;
             if (v.path_length_observed > 0) {
-              if (iad.plant_g > 0) data.pad = v.num_hits / (iad.plant_g * v.path_length_observed);
-              if (iad.leaf_g  > 0) data.lad = leaf_hits  / (iad.leaf_g  * v.path_length_observed);
-              if (iad.wood_g  > 0) data.wad = wood_hits  / (iad.wood_g  * v.path_length_observed);
+              double lambda    = computeLambdaV(v);
+              double hit_total = std::max(1e-10, static_cast<double>(v.num_hits));
+              if (iad.plant_g > 0) data.pad = lambda / iad.plant_g;
+              if (iad.leaf_g  > 0) data.lad = lambda * (leaf_hits / hit_total) / iad.leaf_g;
+              if (iad.wood_g  > 0) data.wad = lambda * (wood_hits / hit_total) / iad.wood_g;
             }
           }
         }

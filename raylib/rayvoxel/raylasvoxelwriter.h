@@ -70,6 +70,10 @@ namespace ray
   // keyed by voxel coordinates for efficient lookup.
   using MetricResultsMap = std::unordered_map<VoxelCoord, VoxelOutputData, VoxelCoordHash>;
 
+  /// Computes the extinction coefficient λ (m⁻¹) for a voxel using the chosen estimator.
+  /// method is one of "fpl", "ppl", "transmittance"; unknown values fall back to FPL simplified.
+  double computeLambda(const VoxelGrid::Voxel& v, const std::string& method);
+
   // MODIFIED: Centralized metric calculator function declaration.
   // This function will iterate over the sparse grid once and compute all
   // required output metrics, populating a MetricResultsMap.
