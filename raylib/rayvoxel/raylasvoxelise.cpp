@@ -284,12 +284,16 @@ static ClassTable buildClassTable(const std::string& cloud_name, const VoxelGrid
   size_t num_bounded = 0;
   std::vector<uint8_t> passthrough;
   uint16_t pt_extra = 0;
+  // global_chunk_start tracks the running point offset across readLas chunk callbacks.
+  // The mmap fast path pre-allocates the passthrough for all points at global indices, while
+  // the sequential path appends per-chunk — both are correct when indexing with the global offset.
+  size_t global_chunk_start = 0;
 
   ray::readLas(cloud_name,
     [&](std::vector<Eigen::Vector3d>& /*starts*/, std::vector<Eigen::Vector3d>& ends,
         std::vector<double>& /*times*/, std::vector<ray::RGBA>& /*colours*/) {
       for (size_t i = 0; i < ends.size(); ++i) {
-        const size_t base = i * stride;
+        const size_t base = (global_chunk_start + i) * stride;
         if (passthrough.size() < base + stride) continue;
         const uint8_t return_number = passthrough[base + 0] & 0x0F;
         if (return_number == 0) continue;  // miss ray, not a real return
@@ -302,7 +306,7 @@ static ClassTable buildClassTable(const std::string& cloud_name, const VoxelGrid
         if (ix < 0 || ix >= dims[0] || iy < 0 || iy >= dims[1] || iz < 0 || iz >= dims[2]) continue;
         class_table[grid.flatIndex(ix, iy, iz)][classification] += 1.0f;
       }
-      passthrough.clear();
+      global_chunk_start += ends.size();
     }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, &pt_extra);
 
   return class_table;
@@ -351,12 +355,13 @@ static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& gr
   size_t num_bounded = 0;
   std::vector<uint8_t> passthrough;
   uint16_t pt_extra = 0;
+  size_t global_chunk_start = 0;
 
   ray::readLas(cloud_name,
     [&](std::vector<Eigen::Vector3d>& /*starts*/, std::vector<Eigen::Vector3d>& ends,
         std::vector<double>& /*times*/, std::vector<ray::RGBA>& /*colours*/) {
       for (size_t i = 0; i < ends.size(); ++i) {
-        const size_t base = i * stride;
+        const size_t base = (global_chunk_start + i) * stride;
         if (passthrough.size() < base + stride) continue;
         const uint8_t return_number = passthrough[base + 0] & 0x0F;
         if (return_number == 0) continue;  // miss ray, not a real return
@@ -373,7 +378,7 @@ static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& gr
         wood_vals.push_back(wv);
         flat_indices.push_back(grid.flatIndex(ix, iy, iz));
       }
-      passthrough.clear();
+      global_chunk_start += ends.size();
     }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, &pt_extra);
 
   if (positions.size() < 2) return iad_table;
@@ -538,12 +543,13 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
   size_t num_bounded = 0;
   std::vector<uint8_t> passthrough;
   uint16_t pt_extra = 0;
+  size_t global_chunk_start = 0;
 
   ray::readLas(cloud_name,
     [&](std::vector<Eigen::Vector3d>& /*starts*/, std::vector<Eigen::Vector3d>& ends,
         std::vector<double>& /*times*/, std::vector<ray::RGBA>& /*colours*/) {
       for (size_t i = 0; i < ends.size(); ++i) {
-        const size_t base = i * stride;
+        const size_t base = (global_chunk_start + i) * stride;
         if (passthrough.size() < base + stride) continue;
         const uint8_t return_number = passthrough[base + 0] & 0x0F;
         if (return_number == 0) continue;  // miss ray, not a real return
@@ -567,7 +573,7 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
         wood_vals.push_back(wv);
         flat_indices.push_back(flat_idx);
       }
-      passthrough.clear();
+      global_chunk_start += ends.size();
     }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, &pt_extra);
 
   if (positions.size() < 2) {
