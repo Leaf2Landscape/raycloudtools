@@ -54,8 +54,8 @@ void usage()
   std::cout << "  --neighbour_priors <min_rays>   Apply spatial smoothing to voxels with fewer than <min_rays>. Default: 0 (off)." << std::endl << std::endl;
   std::cout << "Vegetation & Beam Metrics (Tier 1 & 2):" << std::endl;
   std::cout << "  --veg_metrics                   Enable calculation of Tier 1 (angle, dist) and advanced vegetation metrics." << std::endl;
-  std::cout << "  --leaf_classes <c1,c2,...>      Comma-separated list of classification codes for leaves (for PAD_leaf)." << std::endl;
-  std::cout << "  --wood_classes <c1,c2,...>      Comma-separated list of classification codes for wood/stems (for PAD_wood)." << std::endl;
+  std::cout << "  --leaf_classes [<field>:]c1,c2  Classification codes for leaves (PAD_leaf). Optional <field>: selects a named LAS extra-byte field." << std::endl;
+  std::cout << "  --wood_classes [<field>:]c1,c2  Classification codes for wood/stems (PAD_wood). Optional <field>: selects a named LAS extra-byte field." << std::endl;
   std::cout << "  --lad <type>                    Leaf Angle Distribution for G-function (e.g., spherical, ellipsoidal). Default: spherical." << std::endl;
   std::cout << "  --lad_params <p1,p2>            Comma-separated parameters for the LAD (e.g., chi for ellipsoidal)." << std::endl;
   std::cout << "  --beam_metrics                  Enable Tier 2 beam-based metrics (transmittance, etc.)." << std::endl;

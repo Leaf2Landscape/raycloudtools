@@ -30,6 +30,8 @@
 
 #include <iostream>
 #include <iomanip>
+#include <cstring>
+#include <cctype>
 #include <stdexcept>
 #include <fstream>
 #include <limits>
@@ -211,6 +213,67 @@ PointData makePointData(const Eigen::Vector3d& start, const Eigen::Vector3d& end
   return pd;
 }
 
+// Byte size of each LAS extra-bytes data_type, indexed by the ASPRS data_type code.
+// Identical to kExtraTypeSize in raylaz.cpp (duplicated here since it is file-local there).
+static const uint8_t kExtraByteSizes[11] = { 0, 1, 1, 2, 2, 4, 4, 8, 8, 4, 8 };
+
+// Describes where a classification value lives inside a per-point passthrough record:
+// a byte offset into the record and the LAS data_type used to decode it.
+// Defaults select the standard Classification byte (offset 2, dtype 1 = u8).
+struct ClassFieldSource { uint16_t byte_offset = 2; uint8_t las_dtype = 1; };
+
+// Resolve a named LAS extra-byte field to its passthrough byte offset and data_type.
+// An empty name (or "classification", case-insensitive) selects the standard
+// Classification byte. The extra_bytes_vlr blob is a sequence of 192-byte ASPRS
+// extra-bytes records (byte [2] = data_type, bytes [4..35] = null-terminated name).
+// The passthrough buffer stores the sensor extra bytes after kPassthroughStdBytes
+// standard bytes, in VLR order; each preceding field advances the cumulative offset
+// by its data_type size. On no match, prints one warning and falls back to defaults.
+ClassFieldSource resolveClassField(const std::string& field_name,
+                                   const std::vector<uint8_t>& extra_bytes_vlr)
+{
+  if (field_name.empty()) return ClassFieldSource{};
+  std::string lowered = field_name;
+  for (char& c : lowered) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (lowered == "classification") return ClassFieldSource{};
+
+  const size_t num_records = extra_bytes_vlr.size() / 192;
+  uint16_t cumulative_offset = 0;
+  for (size_t i = 0; i < num_records; ++i)
+  {
+    const uint8_t dtype = extra_bytes_vlr[i * 192 + 2];
+    char name[33] = {};
+    std::memcpy(name, &extra_bytes_vlr[i * 192 + 4], 32);
+    if (field_name == name)
+      return ClassFieldSource{ static_cast<uint16_t>(kPassthroughStdBytes + cumulative_offset), dtype };
+    if (dtype > 0 && dtype <= 10) cumulative_offset += kExtraByteSizes[dtype];
+  }
+
+  std::cerr << "Warning: classification field '" << field_name
+            << "' not found in extra bytes; using standard Classification byte." << std::endl;
+  return ClassFieldSource{};
+}
+
+// Decode the integer class value at base + src.byte_offset according to src.las_dtype.
+int readClassValue(const uint8_t* base, const ClassFieldSource& src)
+{
+  const uint8_t* p = base + src.byte_offset;
+  switch (src.las_dtype)
+  {
+    case 1: return static_cast<int>(*p);                                            // u8
+    case 2: return static_cast<int>(static_cast<int8_t>(*p));                       // i8
+    case 3: return static_cast<int>(*reinterpret_cast<const uint16_t*>(p));         // u16
+    case 4: return static_cast<int>(*reinterpret_cast<const int16_t*>(p));          // i16
+    case 5: {                                                                       // u32
+      const uint32_t v = *reinterpret_cast<const uint32_t*>(p);
+      return v > static_cast<uint32_t>(std::numeric_limits<int>::max())
+               ? std::numeric_limits<int>::max() : static_cast<int>(v);
+    }
+    case 6: return *reinterpret_cast<const int32_t*>(p);                            // i32
+    default: return static_cast<int>(*p);                                          // u8 fallback
+  }
+}
+
 } // anonymous namespace
 
 // ==================================================================================
@@ -276,9 +339,27 @@ static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& gr
   const double vox_width  = grid.getVoxelWidth();
   const auto& dims        = grid.getDimensions();
 
+  // Resolve the leaf/wood classification source fields. Syntax: "[<field>:]c1,c2,...".
+  // An optional "<field>:" prefix selects a named LAS extra-byte field; without it the
+  // standard Classification byte is used. Leaf and wood resolve independently.
+  auto split_field_codes = [](const std::string& s, std::string& field, std::string& codes) {
+    auto colon = s.find(':');
+    if (colon != std::string::npos) { field = s.substr(0, colon); codes = s.substr(colon + 1); }
+    else { field.clear(); codes = s; }
+  };
+  std::string leaf_field, leaf_codes_str, wood_field, wood_codes_str;
+  split_field_codes(params.leaf_classes_str, leaf_field, leaf_codes_str);
+  split_field_codes(params.wood_classes_str, wood_field, wood_codes_str);
+
+  const ClassFieldSource leaf_src = resolveClassField(leaf_field, extra_bytes_vlr);
+  const ClassFieldSource wood_src = resolveClassField(wood_field, extra_bytes_vlr);
+
   // Collect endpoints, classifications and flat voxel indices (same filtering as buildClassTable).
+  // leaf_vals/wood_vals hold the class value read from each point's resolved field (these may
+  // come from different fields, hence two separate vectors rather than one shared `classes`).
   std::vector<Eigen::Vector3d> positions;
-  std::vector<uint8_t> classes;
+  std::vector<uint8_t> leaf_vals;
+  std::vector<uint8_t> wood_vals;
   std::vector<int64_t> flat_indices;
 
   size_t num_bounded = 0;
@@ -294,14 +375,16 @@ static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& gr
         const uint8_t return_number = passthrough[base + 0] & 0x0F;
         if (return_number == 0) continue;  // miss ray, not a real return
 
-        const uint8_t classification = passthrough[base + 2];
         const Eigen::Vector3d vox = (ends[i] - bounds.min_bound_) / vox_width;
         const int64_t ix = static_cast<int64_t>(vox.x());
         const int64_t iy = static_cast<int64_t>(vox.y());
         const int64_t iz = static_cast<int64_t>(vox.z());
         if (ix < 0 || ix >= dims[0] || iy < 0 || iy >= dims[1] || iz < 0 || iz >= dims[2]) continue;
+        const int lv = readClassValue(&passthrough[base], leaf_src);
+        const int wv = readClassValue(&passthrough[base], wood_src);
         positions.push_back(ends[i]);
-        classes.push_back(classification);
+        leaf_vals.push_back(static_cast<uint8_t>(std::clamp(lv, 0, 255)));
+        wood_vals.push_back(static_cast<uint8_t>(std::clamp(wv, 0, 255)));
         flat_indices.push_back(grid.flatIndex(ix, iy, iz));
       }
       passthrough.clear();
@@ -325,12 +408,12 @@ static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& gr
   // Parse leaf/wood class sets (duplicate of the minimal comma-parsing fragment).
   std::set<int> leaf_set, wood_set;
   {
-    std::stringstream ss(params.leaf_classes_str);
+    std::stringstream ss(leaf_codes_str);
     std::string item;
     while (std::getline(ss, item, ',')) { try { leaf_set.insert(std::stoi(item)); } catch (...) {} }
   }
   {
-    std::stringstream ss(params.wood_classes_str);
+    std::stringstream ss(wood_codes_str);
     std::string item;
     while (std::getline(ss, item, ',')) { try { wood_set.insert(std::stoi(item)); } catch (...) {} }
   }
@@ -368,12 +451,12 @@ static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& gr
     if (ah.empty()) ah.assign(params.n_iad_bins, 0.0);
     ah[bin] += 1.0;
 
-    if (leaf_set.count(classes[i])) {
+    if (leaf_set.count(leaf_vals[i])) {
       auto& lh = leaf_hist[flat_idx];
       if (lh.empty()) lh.assign(params.n_iad_bins, 0.0);
       lh[bin] += 1.0;
     }
-    if (wood_set.count(classes[i])) {
+    if (wood_set.count(wood_vals[i])) {
       auto& wh = wood_hist[flat_idx];
       if (wh.empty()) wh.assign(params.n_iad_bins, 0.0);
       wh[bin] += 1.0;
