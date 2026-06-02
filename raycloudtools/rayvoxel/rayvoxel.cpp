@@ -65,6 +65,7 @@ void usage()
   std::cout << "  --inclination_dist              Compute per-voxel LIAD/WIAD/PIAD histograms and empirical G factors. On by default with --veg_metrics; implies --veg_metrics if passed standalone." << std::endl;
   std::cout << "  --no_inclination_dist           Disable the inclination-distribution pass (skips KNN normal estimation) while keeping --veg_metrics." << std::endl;
   std::cout << "  --n_iad_bins <N>                Number of inclination-angle histogram bins over [0, pi/2]. Default: 18." << std::endl;
+  std::cout << "  --attenuation_method <method>   PAD/LAD/WAD estimator: fpl (default), ppl, transmittance." << std::endl;
   std::cout << "  --knn_normal <N>                Number of nearest neighbours used for per-point normal estimation. Default: 10." << std::endl;
   exit(1);
 }
@@ -137,6 +138,8 @@ int main_function(int argc, char *argv[])
   OptionalFlagArgument no_inclination_dist("no_inclination_dist", '\0');
   IntArgument n_iad_bins_val(1, 180, 18);
   OptionalKeyValueArgument n_iad_bins("n_iad_bins", '\0', &n_iad_bins_val);
+  StringArgument attenuation_method_val("fpl");
+  OptionalKeyValueArgument attenuation_method("attenuation_method", '\0', &attenuation_method_val);
   IntArgument knn_normal_val(2, 1000, 10);
   OptionalKeyValueArgument knn_normal("knn_normal", '\0', &knn_normal_val);
 
@@ -150,7 +153,7 @@ int main_function(int argc, char *argv[])
       &flat_top_compensation, &neighbour_priors,
       &veg_metrics, &leaf_classes, &wood_classes, &lad, &lad_params,
       &beam_metrics, &laser_spec, &beam_params, &subvoxel_split,
-      &inclination_dist, &no_inclination_dist, &n_iad_bins, &knn_normal };
+      &inclination_dist, &no_inclination_dist, &n_iad_bins, &attenuation_method, &knn_normal };
 
   if (!parseCommandLine(argc, argv, fixed_args, optional_args)) {
     usage();
@@ -177,6 +180,13 @@ int main_function(int argc, char *argv[])
   }
   if (dtm_file.isSet() && dtm_from_class.isSet()) {
       std::cerr << "Error: --dtm and --dtm_from_class are mutually exclusive. Please specify only one." << std::endl; usage();
+  }
+  if (attenuation_method.isSet()) {
+      const std::string& m = attenuation_method_val.text();
+      if (m != "fpl" && m != "ppl" && m != "transmittance") {
+          std::cerr << "Error: --attenuation_method must be one of: fpl, ppl, transmittance." << std::endl;
+          return 1;
+      }
   }
 
   // --- Populate Parameters Struct ---
@@ -214,6 +224,7 @@ int main_function(int argc, char *argv[])
   // IAD is on by default whenever vegetation metrics are active; --no_inclination_dist opts out.
   params.calc_inclination_dist = (veg_metrics.isSet() || inclination_dist.isSet()) && !no_inclination_dist.isSet();
   params.n_iad_bins = n_iad_bins_val.value();
+  params.attenuation_method = attenuation_method_val.text();
   params.knn_normal = knn_normal_val.value();
   params.reserve_size = static_cast<size_t>(reserve_size_val.value());
 

@@ -292,8 +292,8 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
               double lambda    = computeLambdaV(v);
               double hit_total = std::max(1e-10, static_cast<double>(v.num_hits));
               if (iad.plant_g > 0) data.pad = lambda / iad.plant_g;
-              if (iad.leaf_g  > 0) data.lad = lambda * (leaf_hits / hit_total) / iad.leaf_g;
-              if (iad.wood_g  > 0) data.wad = lambda * (wood_hits / hit_total) / iad.wood_g;
+              if (iad.leaf_g  > 0) data.lad = lambda * (iad.leaf_hits / hit_total) / iad.leaf_g;
+              if (iad.wood_g  > 0) data.wad = lambda * (iad.wood_hits / hit_total) / iad.wood_g;
             }
           }
         }

@@ -61,6 +61,7 @@ namespace ray
 
     bool calc_inclination_dist = false;
     int  n_iad_bins = 18;
+    std::string attenuation_method = "fpl";  // "fpl" | "ppl" | "transmittance"
     int  knn_normal = 10;
 
     bool calc_beam_metrics = false;

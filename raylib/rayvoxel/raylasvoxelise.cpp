@@ -418,6 +418,7 @@ static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& gr
 
   // Per-voxel histogram accumulators, keyed by flat index.
   std::unordered_map<int64_t, std::vector<double>> all_hist, leaf_hist, wood_hist, beam_hist;
+  std::unordered_map<int64_t, float> leaf_hit_count, wood_hit_count;
 
   for (size_t i = 0; i < positions.size(); ++i) {
     // Compute covariance over the K nearest neighbours.
@@ -458,11 +459,13 @@ static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& gr
     }
 
     if (leaf_set.count(leaf_vals[i])) {
+      leaf_hit_count[flat_idx] += 1.0f;
       auto& lh = leaf_hist[flat_idx];
       if (lh.empty()) lh.assign(params.n_iad_bins, 0.0);
       lh[bin] += 1.0;
     }
     if (wood_set.count(wood_vals[i])) {
+      wood_hit_count[flat_idx] += 1.0f;
       auto& wh = wood_hist[flat_idx];
       if (wh.empty()) wh.assign(params.n_iad_bins, 0.0);
       wh[bin] += 1.0;
@@ -521,6 +524,12 @@ static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& gr
       iad.wood_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.wiad);
     }
 
+    {
+      auto lhit = leaf_hit_count.find(flat_idx);
+      if (lhit != leaf_hit_count.end()) iad.leaf_hits = lhit->second;
+      auto whit = wood_hit_count.find(flat_idx);
+      if (whit != wood_hit_count.end()) iad.wood_hits = whit->second;
+    }
     iad_table[flat_idx] = std::move(iad);
   }
 
@@ -646,6 +655,7 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
 
   // Per-voxel histogram accumulators, keyed by flat index.
   std::unordered_map<int64_t, std::vector<double>> all_hist, leaf_hist, wood_hist, beam_hist;
+  std::unordered_map<int64_t, float> leaf_hit_count, wood_hit_count;
 
   for (size_t i = 0; i < positions.size(); ++i) {
     // Compute covariance over the K nearest neighbours.
@@ -686,11 +696,13 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
     }
 
     if (leaf_set.count(leaf_vals[i])) {
+      leaf_hit_count[flat_idx] += 1.0f;
       auto& lh = leaf_hist[flat_idx];
       if (lh.empty()) lh.assign(params.n_iad_bins, 0.0);
       lh[bin] += 1.0;
     }
     if (wood_set.count(wood_vals[i])) {
+      wood_hit_count[flat_idx] += 1.0f;
       auto& wh = wood_hist[flat_idx];
       if (wh.empty()) wh.assign(params.n_iad_bins, 0.0);
       wh[bin] += 1.0;
@@ -749,6 +761,12 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
       iad.wood_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.wiad);
     }
 
+    {
+      auto lhit = leaf_hit_count.find(flat_idx);
+      if (lhit != leaf_hit_count.end()) iad.leaf_hits = lhit->second;
+      auto whit = wood_hit_count.find(flat_idx);
+      if (whit != wood_hit_count.end()) iad.wood_hits = whit->second;
+    }
     iad_table[flat_idx] = std::move(iad);
   }
 
@@ -1513,9 +1531,28 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
     ClassTable class_table;
     IadTable iad_table;
     if (params.calc_inclination_dist) {
+      {
+        static bool empty_classes_warned = false;
+        if (!empty_classes_warned && params.leaf_classes_str.empty() && params.wood_classes_str.empty()) {
+          std::cerr << "Warning: --inclination_dist active but neither --leaf_classes nor --wood_classes "
+                       "is set; LAD and WAD will be zero (PAD is unaffected)." << std::endl;
+          empty_classes_warned = true;
+        }
+      }
       std::cout << "Building classification table and inclination angle distributions..." << std::endl;
       buildClassAndIadTable(params.cloud_name, grid, params, class_table, iad_table);
     } else {
+      {
+        static bool field_no_iad_warned = false;
+        if (!field_no_iad_warned &&
+            (params.leaf_classes_str.find(':') != std::string::npos ||
+             params.wood_classes_str.find(':') != std::string::npos)) {
+          std::cerr << "Warning: a class field prefix ('field:codes') was given but --inclination_dist "
+                       "is off; the field-aware leaf/wood path is inactive, so leaf/wood counts use the "
+                       "standard Classification byte and may be wrong." << std::endl;
+          field_no_iad_warned = true;
+        }
+      }
       std::cout << "Building classification table..." << std::endl;
       class_table = buildClassTable(params.cloud_name, grid);
     }

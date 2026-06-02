@@ -335,6 +335,7 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                     if (calc_beam_metrics_) {
                         double beam_radius = tan_half_divergence_ * dist_to_center + 0.5 * beam_diameter_;
                         atomic_fadd(v.bs_entering, static_cast<float>(kPi * beam_radius * beam_radius * weight));
+                        atomic_fadd(v.sum_bs_path, static_cast<float>(kPi * beam_radius * beam_radius * weight * length_in_voxel));
                     }
                     if (subvoxel_split_ > 0) {
                         Eigen::Vector3d ls = (current_ray_vox_start_ + current_ray_vox_dir_ * in_length  - p.cast<double>()) * subvoxel_split_;
@@ -342,6 +343,14 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                         uint64_t bits = 0;
                         walkSubGrid(ls, le, subvoxel_split_, bits);
                         if (bits) atomic_or_u64(v.subvoxel_bitmap, bits);
+                    }
+                    {
+                        double full_delta = (out_length - in_length) * voxel_width_;
+                        if (end_length < out_length) {
+                            atomic_fadd(v.sum_hit_delta,  static_cast<float>(weight * full_delta));
+                        } else {
+                            atomic_fadd(v.sum_miss_delta, static_cast<float>(weight * full_delta));
+                        }
                     }
                 } else {
                     atomic_fadd(v.num_rays_occluded, static_cast<float>(weight));
@@ -366,11 +375,20 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                     if (calc_beam_metrics_) {
                         double beam_radius = tan_half_divergence_ * dist_to_center + 0.5 * beam_diameter_;
                         v.bs_entering += static_cast<float>(kPi * beam_radius * beam_radius * weight);
+                        v.sum_bs_path += static_cast<float>(kPi * beam_radius * beam_radius * weight * length_in_voxel);
                     }
                     if (subvoxel_split_ > 0) {
                         Eigen::Vector3d ls = (current_ray_vox_start_ + current_ray_vox_dir_ * in_length  - p.cast<double>()) * subvoxel_split_;
                         Eigen::Vector3d le = (current_ray_vox_start_ + current_ray_vox_dir_ * end_length - p.cast<double>()) * subvoxel_split_;
                         walkSubGrid(ls, le, subvoxel_split_, v.subvoxel_bitmap);
+                    }
+                    {
+                        double full_delta = (out_length - in_length) * voxel_width_;
+                        if (end_length < out_length) {
+                            v.sum_hit_delta  += static_cast<float>(weight * full_delta);
+                        } else {
+                            v.sum_miss_delta += static_cast<float>(weight * full_delta);
+                        }
                     }
                 } else {
                     v.num_rays_occluded += static_cast<float>(weight);

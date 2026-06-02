@@ -102,6 +102,9 @@ namespace ray
       float sum_of_laser_distances = 0.0f;// Weighted sum of distances from sensor to voxel center.
       float bs_entering = 0.0f;           // Weighted sum of entering beam cross-sectional area.
       float bs_intercepted = 0.0f;        // Weighted sum of intercepted beam cross-sectional area.
+      float sum_bs_path    = 0.0f;        // FPL: beam-section-weighted clipped path length (all observed).
+      float sum_hit_delta  = 0.0f;        // PPL: weight*full_δ for terminal (hit) rays.
+      float sum_miss_delta = 0.0f;        // PPL: weight*full_δ for traversing rays.
       uint64_t subvoxel_bitmap = 0;       // Bitmap for tracking subvoxel coverage (up to 4x4x4).
 
       /// @brief Calculates Plant Area Density (PAD), similar to AMAPVox's PadBVTotal.
@@ -178,6 +181,8 @@ namespace ray
     std::vector<double> bin_centres;       // radians, size n_iad_bins
     std::vector<double> liad, wiad, piad;  // normalized histograms, size n_iad_bins
     double leaf_g = 0.0, wood_g = 0.0, plant_g = 0.0;
+    float leaf_hits = 0.0f;
+    float wood_hits = 0.0f;
   };
   using IadTable = std::unordered_map<int64_t, IadData>;
 
@@ -196,6 +201,9 @@ namespace ray
     sum_of_laser_distances += other.sum_of_laser_distances;
     bs_entering += other.bs_entering;
     bs_intercepted += other.bs_intercepted;
+    sum_bs_path += other.sum_bs_path;
+    sum_hit_delta += other.sum_hit_delta;
+    sum_miss_delta += other.sum_miss_delta;
     subvoxel_bitmap |= other.subvoxel_bitmap;
   }
 
@@ -213,6 +221,9 @@ namespace ray
     v.sum_of_laser_distances = static_cast<float>(sum_of_laser_distances * scale);
     v.bs_entering = static_cast<float>(bs_entering * scale);
     v.bs_intercepted = static_cast<float>(bs_intercepted * scale);
+    v.sum_bs_path = static_cast<float>(sum_bs_path * scale);
+    v.sum_hit_delta = static_cast<float>(sum_hit_delta * scale);
+    v.sum_miss_delta = static_cast<float>(sum_miss_delta * scale);
     v.subvoxel_bitmap = subvoxel_bitmap;
     return v;
   }
