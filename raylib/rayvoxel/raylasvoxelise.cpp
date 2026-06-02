@@ -344,8 +344,8 @@ static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& gr
   // leaf_vals/wood_vals hold the class value read from each point's resolved field (these may
   // come from different fields, hence two separate vectors rather than one shared `classes`).
   std::vector<Eigen::Vector3d> positions;
-  std::vector<uint8_t> leaf_vals;
-  std::vector<uint8_t> wood_vals;
+  std::vector<int> leaf_vals;
+  std::vector<int> wood_vals;
   std::vector<int64_t> flat_indices;
 
   size_t num_bounded = 0;
@@ -369,8 +369,8 @@ static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& gr
         const int lv = readClassValue(&passthrough[base], leaf_src);
         const int wv = readClassValue(&passthrough[base], wood_src);
         positions.push_back(ends[i]);
-        leaf_vals.push_back(static_cast<uint8_t>(std::clamp(lv, 0, 255)));
-        wood_vals.push_back(static_cast<uint8_t>(std::clamp(wv, 0, 255)));
+        leaf_vals.push_back(lv);  // preserve sign: -1 means "neither", must not be clamped to 0
+        wood_vals.push_back(wv);
         flat_indices.push_back(grid.flatIndex(ix, iy, iz));
       }
       passthrough.clear();
@@ -531,8 +531,8 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
   // leaf_vals/wood_vals hold the class value read from each point's resolved field (these may
   // come from different fields, hence two separate vectors rather than one shared `classes`).
   std::vector<Eigen::Vector3d> positions;
-  std::vector<uint8_t> leaf_vals;
-  std::vector<uint8_t> wood_vals;
+  std::vector<int> leaf_vals;
+  std::vector<int> wood_vals;
   std::vector<int64_t> flat_indices;
 
   size_t num_bounded = 0;
@@ -563,8 +563,8 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
         const int lv = readClassValue(&passthrough[base], leaf_src);
         const int wv = readClassValue(&passthrough[base], wood_src);
         positions.push_back(ends[i]);
-        leaf_vals.push_back(static_cast<uint8_t>(std::clamp(lv, 0, 255)));
-        wood_vals.push_back(static_cast<uint8_t>(std::clamp(wv, 0, 255)));
+        leaf_vals.push_back(lv);  // preserve sign: -1 means "neither", must not be clamped to 0
+        wood_vals.push_back(wv);
         flat_indices.push_back(flat_idx);
       }
       passthrough.clear();
