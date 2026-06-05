@@ -19,7 +19,6 @@ raylib/libraylib.so*
 raylib/raycloudtools-targets.cmake
 raylib/raylib_export.h
 raylib/raylibconfig.h
-raylib/rayvoxel/raylasatomic.h
 riegl_libs*/
 test_data*/
 treetools*/
