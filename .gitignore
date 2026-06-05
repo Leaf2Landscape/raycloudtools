@@ -17,7 +17,6 @@ raycloudtools-version.cmake
 raylib/libraylib.so
 raylib/libraylib.so*
 raylib/raycloudtools-targets.cmake
-raylib/raylasdecode.h
 raylib/raylib_export.h
 raylib/raylibconfig.h
 raylib/rayvoxel/raylasatomic.h

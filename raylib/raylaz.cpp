@@ -131,9 +131,13 @@ bool readLas(const std::string &file_name,
   uint16_t local_skip_size = 0;   // bytes of our own extra attributes before original data
   uint16_t local_orig_extra = 0;  // bytes of original sensor data per point
   uint16_t own_offset      = 0;   // running byte cursor through our own attrs (in declared order)
+  uint16_t abs_offset      = 0;   // absolute byte cursor through all extra attrs (ours + foreign)
   uint16_t tree_id_offset  = 0;   uint8_t tree_id_dtype = 0;  // 0 = absent
   uint16_t stem_id_offset  = 0;   uint8_t stem_id_dtype = 0;  // 0 = absent
   uint16_t beam_id_offset  = 0;   uint8_t beam_id_dtype = 0;  // 0 = absent
+  uint16_t sx_offset       = 0;   // default byte 0
+  uint16_t sy_offset       = 4;   // default byte 4
+  uint16_t sz_offset       = 8;   // default byte 8
   uint16_t alpha_offset    = 12;  // default: sx+sy+sz only; overwritten when "alpha" VLR found
   int32_t  bound_offset    = -1;  // -1 = absent (old file); set when "bound" VLR found
   std::vector<uint8_t> local_orig_vlr;
@@ -158,11 +162,14 @@ bool readLas(const std::string &file_name,
       {
         for (const char *own : kRayCloudAttrs)
           if (strcmp(attr_name, own) == 0) { is_ours = true; break; }
-        if (strcmp(attr_name, "tree_id") == 0) { tree_id_offset = own_offset; tree_id_dtype = dtype; }
-        if (strcmp(attr_name, "stem_id") == 0) { stem_id_offset = own_offset; stem_id_dtype = dtype; }
-        if (strcmp(attr_name, "beam_id") == 0) { beam_id_offset = own_offset; beam_id_dtype = dtype; }
-        if (strcmp(attr_name, "alpha")   == 0) { alpha_offset   = own_offset; }
-        if (strcmp(attr_name, "bound")   == 0) { bound_offset   = own_offset; }
+        if (strcmp(attr_name, "tree_id") == 0) { tree_id_offset = abs_offset; tree_id_dtype = dtype; }
+        if (strcmp(attr_name, "stem_id") == 0) { stem_id_offset = abs_offset; stem_id_dtype = dtype; }
+        if (strcmp(attr_name, "beam_id") == 0) { beam_id_offset = abs_offset; beam_id_dtype = dtype; }
+        if (strcmp(attr_name, "sx")      == 0) { sx_offset      = abs_offset; }
+        if (strcmp(attr_name, "sy")      == 0) { sy_offset      = abs_offset; }
+        if (strcmp(attr_name, "sz")      == 0) { sz_offset      = abs_offset; }
+        if (strcmp(attr_name, "alpha")   == 0) { alpha_offset   = abs_offset; }
+        if (strcmp(attr_name, "bound")   == 0) { bound_offset   = abs_offset; }
       }
       if (is_ours)
       {
@@ -174,6 +181,7 @@ bool readLas(const std::string &file_name,
         local_orig_extra += attr_size;
         local_orig_vlr.insert(local_orig_vlr.end(), rec, rec + 192);
       }
+      abs_offset += attr_size;
     }
     break; // only one EXTRA_BYTES VLR
   }
@@ -195,6 +203,9 @@ bool readLas(const std::string &file_name,
   ctx.tree_id_offset = tree_id_offset;  ctx.tree_id_dtype = tree_id_dtype;
   ctx.stem_id_offset = stem_id_offset;  ctx.stem_id_dtype = stem_id_dtype;
   ctx.beam_id_offset = beam_id_offset;  ctx.beam_id_dtype = beam_id_dtype;
+  ctx.sx_offset = sx_offset;
+  ctx.sy_offset = sy_offset;
+  ctx.sz_offset = sz_offset;
   ctx.alpha_offset = alpha_offset;
   ctx.bound_offset = bound_offset;
   ctx.scale[0] = header->x_scale_factor;
