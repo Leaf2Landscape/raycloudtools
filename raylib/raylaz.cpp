@@ -26,10 +26,111 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif  // _WIN32
+#if RAYLIB_WITH_LAZPERF
+#include <lazperf/readers.hpp>
+#include <lazperf/decoder.hpp>
+#include <lazperf/decompressor.hpp>
+#include <lazperf/filestream.hpp>
+#include <lazperf/streams.hpp>
+#endif  // RAYLIB_WITH_LAZPERF
 #endif  // RAYLIB_WITH_LAS
 
 namespace ray
 {
+#if RAYLIB_WITH_LAZPERF
+namespace
+{
+/// One decompressible LAZ chunk: byte @c offset of the compressed data within the file and the
+/// @c count of points it decompresses to.
+struct LazChunk
+{
+  uint64_t offset;
+  uint64_t count;
+};
+
+/// Re-derive the per-chunk byte offsets and point counts from a LAZ file's chunk table. laz-perf's
+/// public API does not expose the chunk table, so this mirrors basic_file::Private::parseChunkTable
+/// (lazperf/readers.cpp, tag 3.4.0) over our own ifstream. Returns false on any parse failure or an
+/// unsupported (deferred) chunk table, in which case the caller falls through to laszip.
+bool readLazChunkTable(const std::string &file_name, uint32_t laz_chunk_size, uint64_t point_count,
+                       uint32_t point_offset, std::vector<LazChunk> &chunks)
+{
+  std::ifstream f(file_name, std::ios::binary);
+  if (!f)
+    return false;
+
+  // A signed 64-bit chunk-table offset is stored where the first point would otherwise begin.
+  f.seekg(static_cast<std::streamoff>(point_offset));
+  int64_t chunk_table_offset = 0;
+  f.read(reinterpret_cast<char *>(&chunk_table_offset), sizeof(chunk_table_offset));
+  if (!f.good() || chunk_table_offset == -1)
+    return false;  // deferred / streamed chunk table is unsupported (matches lazperf)
+
+  f.seekg(static_cast<std::streamoff>(chunk_table_offset));
+  if (!f.good())
+    return false;
+
+#pragma pack(push, 1)
+  struct
+  {
+    uint32_t version;
+    uint32_t chunk_count;
+  } chunk_table_header;
+#pragma pack(pop)
+  f.read(reinterpret_cast<char *>(&chunk_table_header), sizeof(chunk_table_header));
+  if (!f.good() || chunk_table_header.version != 0)
+    return false;
+  if (chunk_table_header.chunk_count == 0)
+    return point_count == 0;  // empty file decodes to no chunks
+
+  // Decode the run of (count?, offset-delta) entries with lazperf's arithmetic integer decoder.
+  // The same wiring lazperf itself uses: an InCbStream pulled from the file via InFileStream::cb().
+  lazperf::InFileStream fstream(f);
+  lazperf::InCbStream stream(fstream.cb());
+  lazperf::decoders::arithmetic<lazperf::InCbStream> decoder(stream);
+  lazperf::decompressors::integer decomp(32, 2);
+  decoder.readInitBytes();
+  decomp.init();
+
+  // The first chunk's data follows the 8-byte chunk-table offset that sits at point_offset.
+  const uint64_t first_chunk_offset = static_cast<uint64_t>(point_offset) + sizeof(uint64_t);
+  const bool variable = (laz_chunk_size == lazperf::VariableChunkSize);
+  chunks.resize(chunk_table_header.chunk_count);
+  uint32_t prev_count = 0;
+  uint32_t prev_offset = 0;
+  uint64_t total_points = point_count;
+  uint64_t running_offset = first_chunk_offset;
+  for (uint32_t i = 0; i < chunk_table_header.chunk_count; ++i)
+  {
+    uint32_t count;
+    if (variable)
+    {
+      count = static_cast<uint32_t>(decomp.decompress(decoder, static_cast<int32_t>(prev_count), 0));
+      prev_count = count;
+    }
+    else if (total_points < laz_chunk_size)
+    {
+      count = static_cast<uint32_t>(total_points);
+    }
+    else
+    {
+      count = laz_chunk_size;
+      total_points -= laz_chunk_size;
+    }
+
+    const uint32_t offset_delta =
+      static_cast<uint32_t>(decomp.decompress(decoder, static_cast<int32_t>(prev_offset), 1));
+    prev_offset = offset_delta;
+
+    chunks[i].offset = running_offset;
+    chunks[i].count = count;
+    running_offset += offset_delta;
+  }
+  return true;
+}
+}  // namespace
+#endif  // RAYLIB_WITH_LAZPERF
+
 bool readLas(const std::string &file_name,
              std::function<void(std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                                 std::vector<double> &times, std::vector<RGBA> &colours)>
@@ -414,6 +515,101 @@ bool readLas(const std::string &file_name,
     if (fd >= 0) ::close(fd);
 #endif
   }
+
+#if RAYLIB_WITH_LAZPERF
+  // Fast path for compressed (LAZ) files: laszip decompresses serially on one core, which dominates
+  // load time. Instead, re-derive the LAZ chunk table, read each chunk's compressed bytes
+  // sequentially (cheap I/O), then decompress chunks in parallel with one lazperf decoder per chunk.
+  // Each chunk's points are written into index-addressed buffers, then drained through @c apply on
+  // the main thread by flush_indexed(), preserving the callback/progress contract. Any unsupported
+  // condition or failure falls through to the laszip per-point loop below.
+  if (is_compressed && !fast_path_done && number_of_points > 0 && lasBaseRecordSize(format) != 0 &&
+      !getenv("RAYLAS_NO_LAZPERF") &&
+      ctx.point_record_length >= lasBaseRecordSize(format) + ctx.extra_bytes_total)
+  {
+    try
+    {
+      lazperf::reader::named_file lazf(file_name);
+      const auto &lazhdr = lazf.header();
+      if (lazhdr.point_record_length == ctx.point_record_length &&
+          lazhdr.point_count == number_of_points)
+      {
+        const uint32_t laz_chunk_size = lazf.lazVlr().chunk_size;
+        const int laz_format = lazhdr.point_format_id;
+        const int laz_eb_count = static_cast<int>(ctx.extra_bytes_total);
+        const uint32_t pt_offset = lazhdr.point_offset;
+
+        std::vector<LazChunk> chunks;
+        if (readLazChunkTable(file_name, laz_chunk_size, number_of_points, pt_offset, chunks))
+        {
+          const size_t num_laz_chunks = chunks.size();
+          // Read each chunk's compressed bytes sequentially. The compressed length of chunk c is the
+          // gap to the next chunk's offset; the last chunk runs to end-of-file.
+          std::vector<std::vector<char>> chunk_bufs(num_laz_chunks);
+          {
+            std::ifstream cf(file_name, std::ios::binary);
+            cf.seekg(0, std::ios::end);
+            const uint64_t file_size = static_cast<uint64_t>(cf.tellg());
+            for (size_t c = 0; c < num_laz_chunks; ++c)
+            {
+              const uint64_t next_offset =
+                (c + 1 < num_laz_chunks) ? chunks[c + 1].offset : file_size;
+              const size_t comp_len = static_cast<size_t>(next_offset - chunks[c].offset);
+              chunk_bufs[c].resize(comp_len);
+              cf.seekg(static_cast<std::streamoff>(chunks[c].offset));
+              cf.read(chunk_bufs[c].data(), static_cast<std::streamsize>(comp_len));
+            }
+          }
+
+          // Per-chunk starting point index into the index-addressed output buffers.
+          std::vector<uint64_t> chunk_start(num_laz_chunks + 1, 0);
+          for (size_t c = 0; c < num_laz_chunks; ++c)
+            chunk_start[c + 1] = chunk_start[c] + chunks[c].count;
+
+          setup_indexed_buffers();
+          size_t bounded_count = 0;
+
+#pragma omp parallel for schedule(dynamic) reduction(+ : bounded_count)
+          for (laszip_I64 c = 0; c < static_cast<laszip_I64>(num_laz_chunks); ++c)
+          {
+            const size_t cc = static_cast<size_t>(c);
+            lazperf::reader::chunk_decompressor decomp(laz_format, laz_eb_count,
+                                                       chunk_bufs[cc].data());
+            std::vector<char> record(ctx.point_record_length);
+            std::vector<uint8_t> extra_scratch(ctx.extra_bytes_total ? ctx.extra_bytes_total : 1);
+            laszip_point_struct pt;
+            std::memset(&pt, 0, sizeof(pt));
+            const size_t base_idx = static_cast<size_t>(chunk_start[cc]);
+            for (size_t j = 0; j < static_cast<size_t>(chunks[cc].count); ++j)
+            {
+              decomp.decompress(record.data());
+              fillPointFromRecord(reinterpret_cast<const uint8_t *>(record.data()), ctx, pt,
+                                  extra_scratch.data());
+              int32_t xi = pt.X, yi = pt.Y, zi = pt.Z;
+              Eigen::Vector3d position(xi * ctx.scale[0] + ctx.offset[0],
+                                       yi * ctx.scale[1] + ctx.offset[1],
+                                       zi * ctx.scale[2] + ctx.offset[2]);
+              uint8_t bounded;
+              decodePointRecordIndexed(&pt, ctx, position, base_idx + j, buf, bounded);
+              bounded_count += bounded;
+            }
+          }
+
+          num_bounded = bounded_count;
+          flush_indexed();
+          fast_path_done = true;
+        }
+      }
+    }
+    catch (const std::exception &e)
+    {
+      // Any laz-perf failure falls through to the laszip per-point loop below.
+      std::cerr << "readLas: laz-perf chunk decode failed (" << e.what() << "), using laszip"
+                << std::endl;
+      fast_path_done = false;
+    }
+  }
+#endif  // RAYLIB_WITH_LAZPERF
 
   for (size_t i = 0; !fast_path_done && i < number_of_points; i++)
   {
