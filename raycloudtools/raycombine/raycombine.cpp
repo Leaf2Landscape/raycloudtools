@@ -355,8 +355,8 @@ int rayCombine(int argc, char *argv[])
           }
           else
           {
-            // File has no labels: fill sentinels (0 = unassigned tree, -1 = no stem, per raycloud.h).
-            chunk_tree_ids.assign(n_pts, 0);
+            // File has no labels: fill sentinels (-1 = unassigned, per raycloud.h).
+            chunk_tree_ids.assign(n_pts, -1);
             chunk_stem_ids.assign(n_pts, -1);
           }
         }
