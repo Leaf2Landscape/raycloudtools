@@ -31,7 +31,6 @@ option(RAYCLOUD_LEAK_TRACK "Enable memory leak tracking?" OFF)
 
 # WITH_ build options.
 option(WITH_LAS "With LASzip for las/laz file support (LAS 1.0-1.4)?" OFF)
-option(WITH_LAZPERF "Use laz-perf for faster LAZ decompression (requires WITH_LAS)?" OFF)
 option(WITH_RIEGL "With rdb and RiVLib support?" OFF)
 option(WITH_QHULL "With libqhull support?" OFF)
 option(WITH_TIFF "With libgeotiff support?" OFF)
@@ -41,7 +40,6 @@ option(WITH_NETCDF "With NetCDF support?" OFF)
 
 # Convert WITH_ options to 1/0 so we can use them in configuration headers.
 ras_bool_to_int(WITH_LAS)
-ras_bool_to_int(WITH_LAZPERF)
 ras_bool_to_int(WITH_RIEGL)
 ras_bool_to_int(WITH_QHULL)
 ras_bool_to_int(WITH_TIFF)
@@ -67,36 +65,7 @@ if(WITH_LAS)
   find_package(LASzip REQUIRED)
   list(APPEND RAYTOOLS_INCLUDE ${LASzip_INCLUDE_DIRS})
   list(APPEND RAYTOOLS_LINK ${LASzip_LIBRARIES})
-  if(WITH_LAZPERF)
-    # laz-perf provides the LAZ point-record decompressor. Prefer a system/conda install (config mode
-    # exports the LAZPERF::lazperf target); fall back to fetching the release at configure time
-    # (build-time only dependency), whose target is plain "lazperf".
-    find_package(lazperf QUIET)
-    if(lazperf_FOUND)
-      set(RAYLAZPERF_LINK LAZPERF::lazperf)
-    else()
-      include(FetchContent)
-      FetchContent_Declare(lazperf
-        GIT_REPOSITORY https://github.com/hobu/laz-perf.git
-        GIT_TAG        3.4.0
-      )
-      FetchContent_MakeAvailable(lazperf)
-      # laz-perf is a private compile-time dependency of raylaz.cpp; its headers must not leak into
-      # raylib's exported (installed) include interface, so expose them only on the build interface.
-      set(RAYLAZPERF_INCLUDE "$<BUILD_INTERFACE:${lazperf_SOURCE_DIR}/cpp>")
-      # raylib is installed/exported, so any linked target must belong to its export set. Add the
-      # fetched laz-perf target to the project export set so the exported config stays complete.
-      install(TARGETS lazperf EXPORT ${CMAKE_PROJECT_NAME}-targets
-        RUNTIME DESTINATION bin
-        LIBRARY DESTINATION lib
-        ARCHIVE DESTINATION lib)
-      set(RAYLAZPERF_LINK lazperf)
-    endif()
-  endif(WITH_LAZPERF)
 else(WITH_LAS)
-  # laz-perf is only meaningful alongside LASzip; disable it so RAYLIB_WITH_LAZPERF stays 0.
-  set(WITH_LAZPERF OFF)
-  ras_bool_to_int(WITH_LAZPERF)
 endif(WITH_LAS)
 if(WITH_RIEGL)
     # RivLib (.rxp)

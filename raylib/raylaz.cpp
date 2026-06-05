@@ -12,6 +12,7 @@
 #include "raylib/raylasdecode.h"
 #include "raylib/rayprogress.h"
 #include "raylib/rayprogressthread.h"
+#include "raylib/raysysinfo.h"
 #include "raylib/rayvoxel/raylasthreadsafequeue.h"
 #include "rayunused.h"
 
@@ -25,9 +26,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif  // _WIN32
-#if RAYLIB_WITH_LAZPERF
-#include <lazperf/readers.hpp>
-#endif  // RAYLIB_WITH_LAZPERF
 #endif  // RAYLIB_WITH_LAS
 
 namespace ray
@@ -416,51 +414,6 @@ bool readLas(const std::string &file_name,
     if (fd >= 0) ::close(fd);
 #endif
   }
-
-#if RAYLIB_WITH_LAZPERF
-  // Fast path for compressed (LAZ) files: decompress records via laz-perf instead of the laszip
-  // per-point loop, then decode each fixed record with the shared decode core. Single-threaded
-  // decompression here; the producer-consumer pipeline overlaps it with apply in a later phase.
-  if (is_compressed && !fast_path_done && number_of_points > 0 && lasBaseRecordSize(format) != 0 &&
-      !getenv("RAYLAS_NO_LAZPERF") &&
-      ctx.point_record_length >= lasBaseRecordSize(format) + ctx.extra_bytes_total)
-  {
-    try
-    {
-      lazperf::reader::named_file lazf(file_name);
-      const auto &lazhdr = lazf.header();
-      if (lazhdr.point_record_length == ctx.point_record_length &&
-          lazhdr.point_count == number_of_points)
-      {
-        setup_indexed_buffers();
-        std::vector<uint8_t> record(ctx.point_record_length);
-        std::vector<uint8_t> extra_scratch(ctx.extra_bytes_total ? ctx.extra_bytes_total : 1);
-        laszip_point_struct pt;
-        std::memset(&pt, 0, sizeof(pt));
-        size_t bounded_count = 0;
-        for (size_t i = 0; i < number_of_points; ++i)
-        {
-          lazf.readPoint(reinterpret_cast<char *>(record.data()));
-          fillPointFromRecord(record.data(), ctx, pt, extra_scratch.data());
-          int32_t xi = pt.X, yi = pt.Y, zi = pt.Z;
-          Eigen::Vector3d position(xi * ctx.scale[0] + ctx.offset[0], yi * ctx.scale[1] + ctx.offset[1],
-                                   zi * ctx.scale[2] + ctx.offset[2]);
-          uint8_t bounded;
-          decodePointRecordIndexed(&pt, ctx, position, i, buf, bounded);
-          bounded_count += bounded;
-        }
-        num_bounded = bounded_count;
-        flush_indexed();
-        fast_path_done = true;
-      }
-    }
-    catch (const std::exception &e)
-    {
-      // Any laz-perf failure falls through to the laszip per-point loop below.
-      std::cerr << "readLas: laz-perf decode failed (" << e.what() << "), using laszip" << std::endl;
-    }
-  }
-#endif  // RAYLIB_WITH_LAZPERF
 
   for (size_t i = 0; !fast_path_done && i < number_of_points; i++)
   {
@@ -1052,6 +1005,7 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
   }
   for (size_t i = 0; i < ends.size(); i++)
   {
+    std::memset(point_, 0, sizeof(*point_));
     laszip_F64 coords[3] = { ends[i][0], ends[i][1], ends[i][2] };
     laszip_set_coordinates(writer_handle_, coords);
     point_->gps_time = times[i];

@@ -162,7 +162,6 @@ ras_add_library(raylib
       ${RAYTOOLS_LINK}
     PRIVATE
       ${QHULL_LIBS}
-      ${RAYLAZPERF_LINK}
   PUBLIC_HEADERS ${PUBLIC_HEADERS}
   GENERATED PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/raylibconfig.h"
   SOURCES ${SOURCES}
@@ -170,7 +169,3 @@ ras_add_library(raylib
 
 target_compile_options(raylib PUBLIC ${OpenMP_CXX_FLAGS})
 
-if(WITH_LAZPERF AND RAYLAZPERF_INCLUDE)
-  # Private build-interface include for the fetched laz-perf headers (see top-level CMakeLists.txt).
-  target_include_directories(raylib PRIVATE ${RAYLAZPERF_INCLUDE})
-endif()
