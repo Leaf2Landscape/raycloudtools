@@ -670,11 +670,13 @@ bool readLas(const std::string &file_name,
 }
 
 bool readLasExtraBytesVlr(const std::string &file_name, uint16_t &orig_extra_size_out,
-                           std::vector<uint8_t> &extra_bytes_vlr_out, bool *has_bound_out)
+                           std::vector<uint8_t> &extra_bytes_vlr_out, bool *has_bound_out, bool *has_rgb_out)
 {
 #if RAYLIB_WITH_LAS
   if (has_bound_out)
     *has_bound_out = false;
+  if (has_rgb_out)
+    *has_rgb_out = false;
   laszip_POINTER reader;
   if (laszip_create(&reader))
     return false;
@@ -688,6 +690,8 @@ bool readLasExtraBytesVlr(const std::string &file_name, uint16_t &orig_extra_siz
 
   laszip_header_struct *header;
   laszip_get_header_pointer(reader, &header);
+  if (has_rgb_out)
+    *has_rgb_out = (header->point_data_format & 0x0Fu) >= 7;
 
   bool is_raycloud = false;
   for (laszip_U32 v = 0; v < header->number_of_variable_length_records; v++)
@@ -763,6 +767,7 @@ bool readLasExtraBytesVlr(const std::string &file_name, uint16_t &orig_extra_siz
   RAYLIB_UNUSED(orig_extra_size_out);
   RAYLIB_UNUSED(extra_bytes_vlr_out);
   RAYLIB_UNUSED(has_bound_out);
+  RAYLIB_UNUSED(has_rgb_out);
   return false;
 #endif
 }
@@ -926,13 +931,13 @@ LasWriter::~LasWriter()
     laszip_destroy(writer_handle_);
     // laszip_close_writer clobbers point counts for streaming writes. Patch both the legacy
     // 32-bit count (offset 107) and the LAS 1.4 64-bit extended count (offset 247) on disk.
+    // LAS 1.4 §2.3: legacy count MUST be 0 for point formats 6-10.
     if (points_written_ > 0)
     {
       std::fstream f(file_name_, std::ios::in | std::ios::out | std::ios::binary);
       if (f.is_open())
       {
-        const laszip_U32 legacy = static_cast<laszip_U32>(
-          std::min<uint64_t>(points_written_, std::numeric_limits<laszip_U32>::max()));
+        const laszip_U32 legacy = 0u;  // must be 0 for LAS 1.4 formats 6-10
         f.seekp(107);
         f.write(reinterpret_cast<const char *>(&legacy), sizeof(legacy));
         const laszip_U64 extended = static_cast<laszip_U64>(points_written_);
@@ -1006,12 +1011,14 @@ bool RAYLIB_EXPORT writeLasRayCloud(const std::string &file_name, const std::vec
 
 #if RAYLIB_WITH_LAS
 LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tree_id, bool with_stem_id,
-                                     bool with_beam_id, const std::vector<uint8_t> &extra_bytes_vlr)
+                                     bool with_beam_id, const std::vector<uint8_t> &extra_bytes_vlr,
+                                     bool with_rgb)
   : file_name_(file_name)
   , points_written_(0)
   , with_tree_id_(with_tree_id)
   , with_stem_id_(with_stem_id)
   , with_beam_id_(with_beam_id)
+  , with_rgb_(with_rgb)
   , orig_extra_size_(0)
   , passthrough_stride_(10)
   , writer_handle_(nullptr)
@@ -1030,7 +1037,7 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
   header->version_major = 1;
   header->version_minor = 4;
   header->header_size = 375;
-  header->point_data_format = 7;
+  header->point_data_format = with_rgb_ ? 7 : 6;
   const double scale = 1e-4;
   header->x_scale_factor = scale;
   header->y_scale_factor = scale;
@@ -1144,17 +1151,20 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
 }
 #else   // RAYLIB_WITH_LAS
 LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tree_id, bool with_stem_id,
-                                     bool with_beam_id, const std::vector<uint8_t> &extra_bytes_vlr)
+                                     bool with_beam_id, const std::vector<uint8_t> &extra_bytes_vlr,
+                                     bool with_rgb)
   : file_name_(file_name)
   , with_tree_id_(with_tree_id)
   , with_stem_id_(with_stem_id)
   , with_beam_id_(with_beam_id)
+  , with_rgb_(with_rgb)
 {
   RAYLIB_UNUSED(file_name);
   RAYLIB_UNUSED(with_tree_id);
   RAYLIB_UNUSED(with_stem_id);
   RAYLIB_UNUSED(extra_bytes_vlr);
   RAYLIB_UNUSED(with_beam_id);
+  RAYLIB_UNUSED(with_rgb);
   std::cerr << "LasRayCloudWriter: WITHLAS not enabled. Enable using: cmake .. -DWITH_LAS=true" << std::endl;
 }
 #endif  // RAYLIB_WITH_LAS
@@ -1170,6 +1180,9 @@ LasRayCloudWriter::~LasRayCloudWriter()
 
     // laszip_close_writer clobbers point counts for streaming writes. Patch both the legacy
     // 32-bit count (offset 107) and the LAS 1.4 64-bit extended count (offset 247) on disk.
+    // LAS 1.4 §2.3: legacy count MUST be 0 for point formats 6-10.
+    // Also patch the bounding box (bytes 179-226): laszip_update_inventory does not accumulate
+    // extents in streaming mode, so we track them manually in writeChunk.
     // offset_to_point_data is already correct: the constructor pre-corrects it before
     // laszip_open_writer, which honours the pre-set value and writes data at that position.
     if (points_written_ > 0)
@@ -1177,13 +1190,17 @@ LasRayCloudWriter::~LasRayCloudWriter()
       std::fstream f(file_name_, std::ios::in | std::ios::out | std::ios::binary);
       if (f.is_open())
       {
-        const laszip_U32 legacy = static_cast<laszip_U32>(
-          std::min<uint64_t>(points_written_, std::numeric_limits<laszip_U32>::max()));
+        const laszip_U32 legacy = 0u;  // must be 0 for LAS 1.4 formats 6-10
         f.seekp(107);
         f.write(reinterpret_cast<const char *>(&legacy), sizeof(legacy));
         const laszip_U64 extended = static_cast<laszip_U64>(points_written_);
         f.seekp(247);
         f.write(reinterpret_cast<const char *>(&extended), sizeof(extended));
+        // LAS 1.4 bbox layout: max_x(179), min_x(187), max_y(195), min_y(203), max_z(211), min_z(219)
+        const double bbox[6] = { bbox_max_[0], bbox_min_[0], bbox_max_[1],
+                                 bbox_min_[1], bbox_max_[2], bbox_min_[2] };
+        f.seekp(179);
+        f.write(reinterpret_cast<const char *>(bbox), sizeof(bbox));
       }
     }
   }
@@ -1216,11 +1233,16 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
     point_->num_extra_bytes = saved_num_extra_bytes;
     laszip_F64 coords[3] = { ends[i][0], ends[i][1], ends[i][2] };
     laszip_set_coordinates(writer_handle_, coords);
+    bbox_min_ = bbox_min_.cwiseMin(ends[i]);
+    bbox_max_ = bbox_max_.cwiseMax(ends[i]);
     point_->gps_time = times[i];
     point_->intensity = colours[i].alpha;
-    point_->rgb[0] = static_cast<laszip_U16>(colours[i].red) * 257u;
-    point_->rgb[1] = static_cast<laszip_U16>(colours[i].green) * 257u;
-    point_->rgb[2] = static_cast<laszip_U16>(colours[i].blue) * 257u;
+    if (with_rgb_)
+    {
+      point_->rgb[0] = static_cast<laszip_U16>(colours[i].red)   * 257u;
+      point_->rgb[1] = static_cast<laszip_U16>(colours[i].green) * 257u;
+      point_->rgb[2] = static_cast<laszip_U16>(colours[i].blue)  * 257u;
+    }
     // Restore LAS fields from passthrough if available.
     // Layout: [0-7] standard LAS fields, [8-9] original intensity (uint16 LE), [10..] sensor extras.
     if (passthrough.size() >= (i + 1) * passthrough_stride_)

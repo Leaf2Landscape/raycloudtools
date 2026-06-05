@@ -105,10 +105,11 @@ int rayImport(int argc, char *argv[])
   // Pre-read original sensor extra-byte attributes from the input LAS/LAZ header so the writer
   // can register and preserve them before opening the output file.
   std::vector<uint8_t> input_extra_bytes_vlr;
+  bool input_has_rgb = false;
   if (in_ext == "laz" || in_ext == "las")
   {
     uint16_t orig_extra = 0;
-    ray::readLasExtraBytesVlr(cloud_file.name(), orig_extra, input_extra_bytes_vlr);
+    ray::readLasExtraBytesVlr(cloud_file.name(), orig_extra, input_extra_bytes_vlr, nullptr, &input_has_rgb);
   }
 
   // Pre-scan: build a global GPS-time -> beam_id map so that all returns of one pulse
@@ -127,7 +128,7 @@ int rayImport(int argc, char *argv[])
   }
 
   ray::CloudWriter writer;
-  if (!writer.begin(save_file + "." + save_ext, input_extra_bytes_vlr, beam_id_opt.isSet()))
+  if (!writer.begin(save_file + "." + save_ext, input_extra_bytes_vlr, beam_id_opt.isSet(), false, false, input_has_rgb))
     usage();
   Eigen::Vector3d start_pos(0, 0, 0);
   double min_time = std::numeric_limits<double>::max();

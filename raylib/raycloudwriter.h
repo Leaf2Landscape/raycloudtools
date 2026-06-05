@@ -26,7 +26,8 @@ public:
   /// When @c with_tree_id / @c with_stem_id is true, the underlying LAS writer allocates the
   /// tree_id / stem_id attribute slots so those labels survive the write.
   bool begin(const std::string &file_name, const std::vector<uint8_t> &extra_bytes_vlr = {},
-             bool with_beam_id = false, bool with_tree_id = false, bool with_stem_id = false);
+             bool with_beam_id = false, bool with_tree_id = false, bool with_stem_id = false,
+             bool with_rgb = false);
 
   /// write a set of rays to the file
   bool writeChunk(const class Cloud &chunk);
@@ -48,6 +49,7 @@ private:
   bool use_las_ = false;
   bool with_tree_id_ = false;
   bool with_stem_id_ = false;
+  bool with_rgb_ = false;
 
   // PLY path
   std::ofstream ofs_;

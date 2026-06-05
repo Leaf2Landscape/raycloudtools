@@ -45,10 +45,11 @@ bool RAYLIB_EXPORT readLas(const std::string &file_name,
 /// and @c extra_bytes_vlr_out contains the raw 192-byte VLR records for those attributes.
 /// When @c has_bound_out is non-null, it is set to true iff the file declares a "bound" extra attribute
 /// (absent in older files written before the bound field existed).
+/// When @c has_rgb_out is non-null, it is set to true iff the file uses point format 7+ (native RGB fields).
 /// Returns false if the file cannot be opened or LAS support is not compiled in.
 bool RAYLIB_EXPORT readLasExtraBytesVlr(const std::string &file_name, uint16_t &orig_extra_size_out,
                                         std::vector<uint8_t> &extra_bytes_vlr_out,
-                                        bool *has_bound_out = nullptr);
+                                        bool *has_bound_out = nullptr, bool *has_rgb_out = nullptr);
 
 /// Write to a laz or las file. The intensity is the only part that is extracted from the @c colours argument.
 bool RAYLIB_EXPORT writeLas(std::string file_name, const std::vector<Eigen::Vector3d> &points,
@@ -92,7 +93,7 @@ private:
 
 /// Class for chunked writing of las/laz ray cloud files.
 /// Ray starts are stored as three float32 extra bytes (start - end offset).
-/// RGBA is fully preserved: RGB in LAS colour fields, alpha in intensity.
+/// When @c with_rgb is true, point format 7 is used (native RGB fields); otherwise format 6 (no RGB).
 /// When @c with_tree_id is true, a fourth int32 "tree_id" extra attribute is added.
 /// When @c with_stem_id is true, a fifth int32 "stem_id" extra attribute is added (requires with_tree_id).
 /// When @c with_beam_id is true, an int32 "beam_id" extra attribute is added (per-pulse beam ID).
@@ -107,7 +108,8 @@ class RAYLIB_EXPORT LasRayCloudWriter
 public:
   explicit LasRayCloudWriter(const std::string &file_name, bool with_tree_id = false,
                              bool with_stem_id = false, bool with_beam_id = false,
-                             const std::vector<uint8_t> &extra_bytes_vlr = {});
+                             const std::vector<uint8_t> &extra_bytes_vlr = {},
+                             bool with_rgb = false);
   ~LasRayCloudWriter();
   bool writeChunk(const std::vector<Eigen::Vector3d> &starts, const std::vector<Eigen::Vector3d> &ends,
                   const std::vector<double> &times, const std::vector<RGBA> &colours,
@@ -123,6 +125,9 @@ private:
   bool with_tree_id_ = false;
   bool with_stem_id_ = false;
   bool with_beam_id_ = false;
+  bool with_rgb_ = false;
+  Eigen::Vector3d bbox_min_{ std::numeric_limits<double>::max(),  std::numeric_limits<double>::max(),  std::numeric_limits<double>::max()  };
+  Eigen::Vector3d bbox_max_{ std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest() };
   uint16_t orig_extra_size_ = 0;   ///< per-point original sensor extra bytes
   uint16_t passthrough_stride_ = 10; ///< 10 + orig_extra_size_
 #if RAYLIB_WITH_LAS

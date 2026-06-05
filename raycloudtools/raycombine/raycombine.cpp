@@ -229,14 +229,24 @@ int rayCombine(int argc, char *argv[])
     };
     std::vector<bool> has_labels(nfiles, false);
     bool union_has_labels = false;
+    bool union_has_rgb = false;
     for (int f = 0; f < nfiles; ++f)
     {
       const std::string &fn = cloud_files.files()[f].name();
       const std::string fe  = ray::getFileNameExtension(fn);
-      if ((fe == "las" || fe == "laz") && lasDeclaresLabels(fn))
+      if (fe == "las" || fe == "laz")
       {
-        has_labels[f]     = true;
-        union_has_labels  = true;
+        if (lasDeclaresLabels(fn))
+        {
+          has_labels[f]    = true;
+          union_has_labels = true;
+        }
+        bool file_has_rgb = false;
+        uint16_t dummy_extra = 0;
+        std::vector<uint8_t> dummy_vlr;
+        ray::readLasExtraBytesVlr(fn, dummy_extra, dummy_vlr, nullptr, &file_has_rgb);
+        if (file_has_rgb)
+          union_has_rgb = true;
       }
     }
 
@@ -288,7 +298,8 @@ int rayCombine(int argc, char *argv[])
 
     ray::CloudWriter writer;
     if (!writer.begin(combined_file, union_vlr, /*with_beam_id=*/false,
-                      /*with_tree_id=*/union_has_labels, /*with_stem_id=*/union_has_labels))
+                      /*with_tree_id=*/union_has_labels, /*with_stem_id=*/union_has_labels,
+                      /*with_rgb=*/union_has_rgb))
       usage();
 
     for (int i = 0; i < nfiles; ++i)

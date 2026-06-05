@@ -10,7 +10,7 @@
 namespace ray
 {
 bool CloudWriter::begin(const std::string &file_name, const std::vector<uint8_t> &extra_bytes_vlr,
-                        bool with_beam_id, bool with_tree_id, bool with_stem_id)
+                        bool with_beam_id, bool with_tree_id, bool with_stem_id, bool with_rgb)
 {
   if (file_name.empty())
   {
@@ -20,12 +20,13 @@ bool CloudWriter::begin(const std::string &file_name, const std::vector<uint8_t>
   file_name_ = file_name;
   with_tree_id_ = with_tree_id;
   with_stem_id_ = with_stem_id;
+  with_rgb_ = with_rgb;
   const std::string ext = getFileNameExtension(file_name);
   use_las_ = (ext == "las" || ext == "laz");
 
   if (use_las_)
   {
-    las_writer_ = new LasRayCloudWriter(file_name_, with_tree_id_, with_stem_id_, with_beam_id, extra_bytes_vlr);
+    las_writer_ = new LasRayCloudWriter(file_name_, with_tree_id_, with_stem_id_, with_beam_id, extra_bytes_vlr, with_rgb_);
     return true;
   }
 
