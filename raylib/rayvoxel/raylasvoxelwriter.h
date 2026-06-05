@@ -39,7 +39,9 @@ namespace ray
     std::array<float, 256> classification_hits{};
 
     // Calculated Metrics
-    double pad_bv_total = 0.0;
+    double pad_g0_5 = 0.0;
+    double lad_g0_5 = 0.0;
+    double wad_g0_5 = 0.0;
     double surface_area = 0.0;
     double mean_zenith_angle_rad = 0.0;
     double mean_azimuth_rad = 0.0;

@@ -107,8 +107,8 @@ namespace ray
       float sum_miss_delta = 0.0f;        // PPL: weight*full_δ for traversing rays.
       uint64_t subvoxel_bitmap = 0;       // Bitmap for tracking subvoxel coverage (up to 4x4x4).
 
-      /// @brief Calculates Plant Area Density (PAD), similar to AMAPVox's PadBVTotal.
-      double pad_bv_total() const;
+      /// @brief Calculates Plant Area Density (PAD) assuming spherical LAD (G=0.5).
+      double pad_g0_5() const;
 
       /// @brief Calculates transmittance based on beam surface metrics.
       double transmittance() const;

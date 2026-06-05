@@ -145,11 +145,9 @@ int64_t VoxelGrid::getIndex(int64_t i, int64_t j, int64_t k) const {
 // Voxel Method Implementations
 // ==================================================================================
 
-double VoxelGrid::Voxel::pad_bv_total() const
+double VoxelGrid::Voxel::pad_g0_5() const
 {
-  // AMAPVox BV formula: bias-corrected MLE assuming spherical LAD (G=0.5).
-  // Equivalent to (2/G) * (N-1)/N * num_hits / path_length_observed.
-  // Independent of --attenuation_method; kept for AMAPVox output compatibility.
+  // Bias-corrected MLE assuming spherical LAD (G=0.5): PAD = 2*(N-1)/N * H / L_obs.
   const double eps = 1e-10;
   if (num_rays_observed < 2.0f) return 0.0;
   return 2.0 * (num_rays_observed - 1.0f) * num_hits / (eps + num_rays_observed * path_length_observed);
