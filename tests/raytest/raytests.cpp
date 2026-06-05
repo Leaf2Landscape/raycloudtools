@@ -14,6 +14,8 @@
 #include <string>
 #include <gtest/gtest.h>
 #include <cstdlib>
+#include "raylaz.h"
+#include "raysysinfo.h"
 
 /// Raycloud testing framework. In each test, the statistics of the resulting clouds are compared to the statistics
 /// of the cloud when it was confirmed to be operating correctly. 
@@ -402,5 +404,112 @@ namespace raytest
     }
   }
 #endif  // RAYLIB_WITH_LAS
+
+#if RAYLIB_WITH_LAS
+  TEST(RayLas, RoundTrip)
+  {
+    // raycreate writes .las directly on this branch — load it to exercise the write→read path.
+    EXPECT_EQ(command("raycreate room 1"), 0);
+    ray::Cloud cloud;
+    EXPECT_TRUE(cloud.load("room.las"));
+    EXPECT_FALSE(cloud.ends.empty());
+    EXPECT_FALSE(cloud.starts.empty());
+    EXPECT_EQ(cloud.ends.size(), cloud.starts.size());
+    size_t bounded = 0;
+    for (const auto &c : cloud.colours)
+      if (c.alpha > 0) ++bounded;
+    EXPECT_GT(bounded, 0u);
+  }
+#endif
+
+#if RAYLIB_WITH_LAS
+  TEST(RayLas, BeamId)
+  {
+    EXPECT_EQ(command("raycreate room 1"), 0);
+    EXPECT_EQ(command("rayimport room.las 0,0,0 --beam_id"), 0);
+
+    std::vector<Eigen::Vector3d> starts, ends;
+    std::vector<double> times;
+    std::vector<ray::RGBA> colours;
+    std::vector<int32_t> beam_ids;
+    size_t num_bounded = 0;
+    bool ok = ray::readLas("room_raycloud.las",
+      [&](std::vector<Eigen::Vector3d> &s, std::vector<Eigen::Vector3d> &e,
+          std::vector<double> &t, std::vector<ray::RGBA> &c) {
+        starts.insert(starts.end(), s.begin(), s.end());
+        ends.insert(ends.end(), e.begin(), e.end());
+        times.insert(times.end(), t.begin(), t.end());
+        colours.insert(colours.end(), c.begin(), c.end());
+      },
+      num_bounded, 100.0, nullptr, ray::computeReadChunkSize(),
+      nullptr, nullptr, nullptr, nullptr, nullptr, &beam_ids);
+
+    EXPECT_TRUE(ok);
+    EXPECT_FALSE(beam_ids.empty());
+    EXPECT_EQ(beam_ids.size(), ends.size());
+    // At least some beam IDs must be non-negative (valid assignment).
+    bool has_valid = false;
+    for (auto id : beam_ids)
+      if (id >= 0) { has_valid = true; break; }
+    EXPECT_TRUE(has_valid);
+    // Beam IDs must be non-decreasing (same pulse gets same id, new pulse increments).
+    for (size_t i = 1; i < beam_ids.size(); ++i)
+      EXPECT_GE(beam_ids[i], beam_ids[i - 1]);
+  }
+#endif
+
+#if RAYLIB_WITH_QHULL && RAYLIB_WITH_LAS
+  TEST(RayLas, LabelledRoundTrip)
+  {
+    EXPECT_EQ(command("raycreate forest 2"), 0);
+    EXPECT_EQ(command("rayextract terrain forest.las"), 0);
+    EXPECT_EQ(command("rayextract segment forest.las --ground forest_mesh.ply"), 0);
+
+    ray::Cloud seg;
+    EXPECT_TRUE(seg.load("forest_segmented.las"));
+    EXPECT_FALSE(seg.tree_ids.empty());
+    EXPECT_EQ(seg.tree_ids.size(), seg.ends.size());
+    bool has_labelled = false;
+    for (auto tid : seg.tree_ids)
+      if (tid != -1) { has_labelled = true; break; }
+    EXPECT_TRUE(has_labelled);
+    EXPECT_FALSE(seg.stem_ids.empty());
+    EXPECT_EQ(seg.stem_ids.size(), seg.ends.size());
+  }
+#endif
+
+#if RAYLIB_WITH_LAS
+  TEST(RayVoxel, Smoke)
+  {
+    // raycreate writes .las; feed it directly to rayvoxel (it's already a raycloud).
+    EXPECT_EQ(command("raycreate forest 2"), 0);
+    EXPECT_EQ(command("rayvoxel forest.las --voxel_size 0.5"), 0);
+    std::ifstream vox("forest.vox");
+    EXPECT_TRUE(vox.is_open());
+    vox.seekg(0, std::ios::end);
+    EXPECT_GT(static_cast<long>(vox.tellg()), 0);
+  }
+#endif
+
+#if RAYLIB_WITH_QHULL && RAYLIB_WITH_LAS
+  TEST(RayCombine, LabelUnion)
+  {
+    EXPECT_EQ(command("raycreate forest 2"), 0);
+    EXPECT_EQ(command("rayextract terrain forest.las"), 0);
+    EXPECT_EQ(command("rayextract segment forest.las --ground forest_mesh.ply"), 0);
+    EXPECT_EQ(copy("forest_segmented.las forest_segmented2.las"), 0);
+    EXPECT_EQ(command("raycombine all forest_segmented.las forest_segmented2.las"), 0);
+
+    ray::Cloud combined;
+    EXPECT_TRUE(combined.load("forest_segmented_combined.las"));
+    EXPECT_FALSE(combined.ends.empty());
+    EXPECT_FALSE(combined.tree_ids.empty());
+    EXPECT_EQ(combined.tree_ids.size(), combined.ends.size());
+    // Combined should have roughly twice the points of the original.
+    ray::Cloud original;
+    EXPECT_TRUE(original.load("forest_segmented.las"));
+    EXPECT_GT(combined.ends.size(), original.ends.size());
+  }
+#endif
 
 } // raytest
