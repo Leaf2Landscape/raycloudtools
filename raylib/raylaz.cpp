@@ -1094,7 +1094,8 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
   }
   passthrough_stride_ = static_cast<uint16_t>(10 + orig_extra_size_);
 
-  // LAS 1.4 format 7 base = 36 bytes.
+  // LAS 1.4 format 6 base = 30 bytes, format 7 base = 36 bytes (adds 3×uint16 RGB).
+  const uint16_t base_size = with_rgb_ ? 36 : 30;
   uint16_t extra = 12; // sx, sy, sz
   if (with_tree_id_) extra += 4;
   if (with_stem_id_) extra += 4;
@@ -1102,8 +1103,8 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
   extra += 1; // alpha
   extra += 1; // bound
   extra += orig_extra_size_;
-  const laszip_U16 record_size = static_cast<laszip_U16>(36 + extra);
-  if (laszip_set_point_type_and_size(writer_handle_, 7, record_size))
+  const laszip_U16 record_size = static_cast<laszip_U16>(base_size + extra);
+  if (laszip_set_point_type_and_size(writer_handle_, with_rgb_ ? 7 : 6, record_size))
   {
     laszip_CHAR *error;
     laszip_get_error(writer_handle_, &error);
@@ -1226,11 +1227,6 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
   }
   for (size_t i = 0; i < ends.size(); i++)
   {
-    laszip_U8 *const saved_extra_bytes = point_->extra_bytes;
-    const laszip_I32 saved_num_extra_bytes = point_->num_extra_bytes;
-    std::memset(point_, 0, sizeof(*point_));
-    point_->extra_bytes = saved_extra_bytes;
-    point_->num_extra_bytes = saved_num_extra_bytes;
     laszip_F64 coords[3] = { ends[i][0], ends[i][1], ends[i][2] };
     laszip_set_coordinates(writer_handle_, coords);
     bbox_min_ = bbox_min_.cwiseMin(ends[i]);
