@@ -32,6 +32,7 @@ namespace ray
     double distance_to_sensor;
     double gps_time = 0.0;
     int32_t beam_id = -1;
+    uint8_t bound = 1;  ///< 1 = bound (real return), 0 = unbound (miss / floating far end)
   };
 
   constexpr uint8_t kMaxReturnsPerBeam = 16;

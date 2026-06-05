@@ -26,9 +26,12 @@
 #include "raylib/rayvoxel/raylasthreadsafequeue.h"
 #include "raylib/rayvoxel/raylasheightfield.h"
 #include "raylib/rayvoxel/raylasbinaryio.h"
+#include "raylib/rayvoxel/raylasbailey.h"
+#include "raylib/rayvoxel/raylasvegmetrics.h"
 
 #include <nabo/nabo.h>
 
+#include <algorithm>
 #include <iostream>
 #include <iomanip>
 #include <cstring>
@@ -176,8 +179,9 @@ struct BeamBatch {
 // Build a PointData record from a single ray (start -> end) and its passthrough bytes.
 // The stride is the per-point passthrough byte count (10 standard fields + sensor extras).
 // distance_to_sensor is computed as the ray length (end - start).norm().
+// @c alpha is the decoded per-point intensity/alpha: alpha==0 marks an unbound (miss) ray.
 PointData makePointData(const Eigen::Vector3d& start, const Eigen::Vector3d& end,
-                        double gps_time, int32_t beam_id,
+                        double gps_time, int32_t beam_id, uint8_t alpha,
                         const std::vector<uint8_t>& passthrough, size_t index, uint16_t stride)
 {
   PointData pd;
@@ -187,6 +191,7 @@ PointData makePointData(const Eigen::Vector3d& start, const Eigen::Vector3d& end
   pd.z                 = end.z();
   pd.gps_time          = gps_time;
   pd.beam_id           = beam_id;
+  pd.bound             = (alpha > 0) ? 1 : 0;         // alpha==0 is an unbound (miss) ray
   const size_t base    = index * stride;
   if (passthrough.size() >= base + stride) {
     pd.classification    = passthrough[base + 2];
@@ -293,12 +298,15 @@ static ClassTable buildClassTable(const std::string& cloud_name, const VoxelGrid
 
   ray::readLas(cloud_name,
     [&](std::vector<Eigen::Vector3d>& /*starts*/, std::vector<Eigen::Vector3d>& ends,
-        std::vector<double>& /*times*/, std::vector<ray::RGBA>& /*colours*/) {
+        std::vector<double>& /*times*/, std::vector<ray::RGBA>& colours) {
       for (size_t i = 0; i < ends.size(); ++i) {
         const size_t base = (global_chunk_start + i) * stride;
         if (passthrough.size() < base + stride) continue;
-        const uint8_t return_number = passthrough[base + 0] & 0x0F;
-        if (return_number == 0) continue;  // miss ray, not a real return
+        // "bound" is encoded as bound==(alpha>0), so alpha==0 identifies an unbound ray for both
+        // new files (authoritative bound field) and old files (alpha-only fallback). Unbound rays
+        // are never counted as classified hits.
+        const uint8_t alpha = (i < colours.size()) ? colours[i].alpha : 1;
+        if (alpha == 0) continue;
 
         const uint8_t classification = passthrough[base + 2];
         const Eigen::Vector3d vox = (ends[i] - bounds.min_bound_) / vox_width;
@@ -314,233 +322,19 @@ static ClassTable buildClassTable(const std::string& cloud_name, const VoxelGrid
   return class_table;
 }
 
-// Reads the cloud endpoints (same I/O pattern as buildClassTable), estimates a
-// per-point normal inclination angle via KNN PCA, and accumulates per-voxel
-// inclination angle distributions (LIAD/WIAD/PIAD) plus empirical G factors.
-static IadTable buildIadTable(const std::string& cloud_name, const VoxelGrid& grid,
-                              const VoxelizationParameters& params)
-{
-  IadTable iad_table;
-
-  uint16_t orig_extra_size = 0;
-  std::vector<uint8_t> extra_bytes_vlr;
-  readLasExtraBytesVlr(cloud_name, orig_extra_size, extra_bytes_vlr);
-  const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + orig_extra_size);
-
-  const Cuboid& bounds    = grid.getBounds();
-  const double vox_width  = grid.getVoxelWidth();
-  const auto& dims        = grid.getDimensions();
-
-  // Resolve the leaf/wood classification source fields. Syntax: "[<field>:]c1,c2,...".
-  // An optional "<field>:" prefix selects a named LAS extra-byte field; without it the
-  // standard Classification byte is used. Leaf and wood resolve independently.
-  auto split_field_codes = [](const std::string& s, std::string& field, std::string& codes) {
-    auto colon = s.find(':');
-    if (colon != std::string::npos) { field = s.substr(0, colon); codes = s.substr(colon + 1); }
-    else { field.clear(); codes = s; }
-  };
-  std::string leaf_field, leaf_codes_str, wood_field, wood_codes_str;
-  split_field_codes(params.leaf_classes_str, leaf_field, leaf_codes_str);
-  split_field_codes(params.wood_classes_str, wood_field, wood_codes_str);
-
-  const ClassFieldSource leaf_src = resolveClassField(leaf_field, extra_bytes_vlr);
-  const ClassFieldSource wood_src = resolveClassField(wood_field, extra_bytes_vlr);
-
-  // Collect endpoints, classifications and flat voxel indices (same filtering as buildClassTable).
-  // leaf_vals/wood_vals hold the class value read from each point's resolved field (these may
-  // come from different fields, hence two separate vectors rather than one shared `classes`).
-  std::vector<Eigen::Vector3d> positions;
-  std::vector<int> leaf_vals;
-  std::vector<int> wood_vals;
-  std::vector<int64_t> flat_indices;
-  std::vector<double> beam_angles;  // zenith angle [0, pi/2] of each point's inbound ray
-
-  size_t num_bounded = 0;
-  std::vector<uint8_t> passthrough;
-  uint16_t pt_extra = 0;
-  size_t global_chunk_start = 0;
-
-  ray::readLas(cloud_name,
-    [&](std::vector<Eigen::Vector3d>& starts, std::vector<Eigen::Vector3d>& ends,
-        std::vector<double>& /*times*/, std::vector<ray::RGBA>& /*colours*/) {
-      for (size_t i = 0; i < ends.size(); ++i) {
-        const size_t base = (global_chunk_start + i) * stride;
-        if (passthrough.size() < base + stride) continue;
-        const uint8_t return_number = passthrough[base + 0] & 0x0F;
-        if (return_number == 0) continue;  // miss ray, not a real return
-
-        const Eigen::Vector3d vox = (ends[i] - bounds.min_bound_) / vox_width;
-        const int64_t ix = static_cast<int64_t>(vox.x());
-        const int64_t iy = static_cast<int64_t>(vox.y());
-        const int64_t iz = static_cast<int64_t>(vox.z());
-        if (ix < 0 || ix >= dims[0] || iy < 0 || iy >= dims[1] || iz < 0 || iz >= dims[2]) continue;
-        const int lv = readClassValue(&passthrough[base], leaf_src);
-        const int wv = readClassValue(&passthrough[base], wood_src);
-        const Eigen::Vector3d dir = ends[i] - starts[i];
-        const double len2 = dir.squaredNorm();
-        const double bz = (len2 > 1e-12) ? std::acos(std::min(1.0, std::abs(dir.z() / std::sqrt(len2)))) : 0.0;
-        positions.push_back(ends[i]);
-        leaf_vals.push_back(lv);  // preserve sign: -1 means "neither", must not be clamped to 0
-        wood_vals.push_back(wv);
-        flat_indices.push_back(grid.flatIndex(ix, iy, iz));
-        beam_angles.push_back(bz);
-      }
-      global_chunk_start += ends.size();
-    }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, &pt_extra);
-
-  if (positions.size() < 2) return iad_table;
-
-  // Build a libnabo KD-tree over the collected endpoints (mirrors rayellipsoid.cpp idiom).
-  const int K = std::min(params.knn_normal, static_cast<int>(positions.size()) - 1);
-  Eigen::MatrixXd points_p(3, positions.size());
-  for (size_t i = 0; i < positions.size(); ++i) points_p.col(i) = positions[i];
-  std::unique_ptr<Nabo::NNSearchD> nns(Nabo::NNSearchD::createKDTreeLinearHeap(points_p, 3));
-
-  Eigen::MatrixXi indices;
-  Eigen::MatrixXd dists2;
-  indices.resize(K, positions.size());
-  dists2.resize(K, positions.size());
-  nns->knn(points_p, indices, dists2, K, kNearestNeighbourEpsilon, 0);
-  nns.reset(nullptr);
-
-  // Parse leaf/wood class sets (duplicate of the minimal comma-parsing fragment).
-  std::set<int> leaf_set, wood_set;
-  {
-    std::stringstream ss(leaf_codes_str);
-    std::string item;
-    while (std::getline(ss, item, ',')) { try { leaf_set.insert(std::stoi(item)); } catch (...) {} }
-  }
-  {
-    std::stringstream ss(wood_codes_str);
-    std::string item;
-    while (std::getline(ss, item, ',')) { try { wood_set.insert(std::stoi(item)); } catch (...) {} }
-  }
-
-  // Per-voxel histogram accumulators, keyed by flat index.
-  std::unordered_map<int64_t, std::vector<double>> all_hist, leaf_hist, wood_hist, beam_hist;
-  std::unordered_map<int64_t, float> leaf_hit_count, wood_hit_count;
-
-  for (size_t i = 0; i < positions.size(); ++i) {
-    // Compute covariance over the K nearest neighbours.
-    Eigen::Vector3d centroid(0, 0, 0);
-    int num_neighbours = 0;
-    for (int j = 0; j < K && indices(j, i) != Nabo::NNSearchD::InvalidIndex; ++j) {
-      centroid += positions[indices(j, i)];
-      ++num_neighbours;
-    }
-    if (num_neighbours < 3) continue;
-    centroid /= static_cast<double>(num_neighbours);
-    Eigen::Matrix3d scatter = Eigen::Matrix3d::Zero();
-    for (int j = 0; j < K && indices(j, i) != Nabo::NNSearchD::InvalidIndex; ++j) {
-      Eigen::Vector3d offset = positions[indices(j, i)] - centroid;
-      scatter += offset * offset.transpose();
-    }
-    scatter /= static_cast<double>(num_neighbours);
-
-    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eigen_solver(scatter);
-    // Normal = eigenvector of smallest eigenvalue (eigenvalues are sorted ascending).
-    const Eigen::Vector3d normal = eigen_solver.eigenvectors().col(0);
-    const double theta = std::acos(std::min(1.0, std::abs(normal.z())));
-
-    int bin = static_cast<int>(theta / (kPi / 2.0) * params.n_iad_bins);
-    bin = std::clamp(bin, 0, params.n_iad_bins - 1);
-
-    const int64_t flat_idx = flat_indices[i];
-    auto& ah = all_hist[flat_idx];
-    if (ah.empty()) ah.assign(params.n_iad_bins, 0.0);
-    ah[bin] += 1.0;
-
-    {
-      int bbin = static_cast<int>(beam_angles[i] / (kPi / 2.0) * params.n_iad_bins);
-      bbin = std::clamp(bbin, 0, params.n_iad_bins - 1);
-      auto& bh = beam_hist[flat_idx];
-      if (bh.empty()) bh.assign(params.n_iad_bins, 0.0);
-      bh[bbin] += 1.0;
-    }
-
-    if (leaf_set.count(leaf_vals[i])) {
-      leaf_hit_count[flat_idx] += 1.0f;
-      auto& lh = leaf_hist[flat_idx];
-      if (lh.empty()) lh.assign(params.n_iad_bins, 0.0);
-      lh[bin] += 1.0;
-    }
-    if (wood_set.count(wood_vals[i])) {
-      wood_hit_count[flat_idx] += 1.0f;
-      auto& wh = wood_hist[flat_idx];
-      if (wh.empty()) wh.assign(params.n_iad_bins, 0.0);
-      wh[bin] += 1.0;
-    }
-  }
-
-  // L1-normalize each histogram (leave all-zero if its sum is zero).
-  auto normalize = [](std::vector<double>& h) {
-    double sum = 0.0;
-    for (double v : h) sum += v;
-    if (sum > 0.0) for (double& v : h) v /= sum;
-  };
-
-  std::vector<double> bin_centres(params.n_iad_bins);
-  for (int b = 0; b < params.n_iad_bins; ++b)
-    bin_centres[b] = (b + 0.5) * (kPi / 2.0) / params.n_iad_bins;
-
-  for (auto& pair : all_hist) {
-    const int64_t flat_idx = pair.first;
-    IadData iad;
-    iad.bin_centres = bin_centres;
-    iad.piad = pair.second;  // all points -> plant
-    auto lit = leaf_hist.find(flat_idx);
-    iad.liad = (lit != leaf_hist.end()) ? lit->second : std::vector<double>(params.n_iad_bins, 0.0);
-    auto wit = wood_hist.find(flat_idx);
-    iad.wiad = (wit != wood_hist.end()) ? wit->second : std::vector<double>(params.n_iad_bins, 0.0);
-
-    normalize(iad.liad);
-    normalize(iad.wiad);
-    normalize(iad.piad);
-
-    // Angle-integrated G: weight G(theta_beam, leaf_angles) over the empirical beam-direction
-    // distribution rather than evaluating at a single mean angle.
-    auto bhit = beam_hist.find(flat_idx);
-    if (bhit != beam_hist.end()) {
-      std::vector<double> norm_beam = bhit->second;
-      normalize(norm_beam);
-      double g_plant = 0.0, g_leaf = 0.0, g_wood = 0.0;
-      for (int b = 0; b < params.n_iad_bins; ++b) {
-        if (norm_beam[b] <= 0.0) continue;
-        g_plant += norm_beam[b] * computeGFromHistogram(bin_centres[b], iad.bin_centres, iad.piad);
-        g_leaf  += norm_beam[b] * computeGFromHistogram(bin_centres[b], iad.bin_centres, iad.liad);
-        g_wood  += norm_beam[b] * computeGFromHistogram(bin_centres[b], iad.bin_centres, iad.wiad);
-      }
-      iad.plant_g = g_plant;
-      iad.leaf_g  = g_leaf;
-      iad.wood_g  = g_wood;
-    } else {
-      const int64_t ci = flat_idx % dims[0];
-      const int64_t cj = (flat_idx / dims[0]) % dims[1];
-      const int64_t ck = flat_idx / (dims[0] * dims[1]);
-      const VoxelGrid::Voxel& vv = grid.getVoxel(ci, cj, ck);
-      const double mean_zenith = (vv.num_rays_observed > 0) ? (vv.sum_of_angles / vv.num_rays_observed) : 0.0;
-      iad.plant_g = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.piad);
-      iad.leaf_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.liad);
-      iad.wood_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.wiad);
-    }
-
-    {
-      auto lhit = leaf_hit_count.find(flat_idx);
-      if (lhit != leaf_hit_count.end()) iad.leaf_hits = lhit->second;
-      auto whit = wood_hit_count.find(flat_idx);
-      if (whit != wood_hit_count.end()) iad.wood_hits = whit->second;
-    }
-    iad_table[flat_idx] = std::move(iad);
-  }
-
-  return iad_table;
-}
-
-// Unified post-traversal pass: builds both the ClassTable and the IadTable in a single
-// readLas scan. This is equivalent to running buildClassTable() followed by buildIadTable()
-// but reads the file once instead of twice. Used whenever calc_inclination_dist is active.
-// The class_table_out and iad_table_out arguments receive the same values the standalone
-// functions would have produced.
+// Per-point surface normals estimated via KNN PCA (smallest-eigenvalue eigenvector).
+// Inclination angle theta = acos(|n_z|) is binned over [0, pi/2] into LIAD/WIAD/PIAD.
+// Angle-integrated G_eff is the projection kernel A(theta_beam, theta_L) weighted over
+// the empirical beam-direction distribution — more accurate than single-angle evaluation.
+//
+// Vicari, M.B., Pisek, J. & Disney, M. (2019). New estimates of leaf angle distribution
+// from terrestrial LiDAR: Comparison with measured and modelled estimates from nine
+// broadleaf tree species. Agricultural and Forest Meteorology, 264, 322-333.
+// DOI: 10.1016/j.agrformet.2018.10.021
+//
+// NOTE: this is the leaf-ANGLE paper (AgForMet). Do not confuse with Vicari et al. (2019)
+// Methods Ecol. Evol. 10(5):680-694 (DOI 10.1111/2041-210X.13144), which covers
+// leaf/wood point SEPARATION and is a distinct method.
 static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid& grid,
                                   const VoxelizationParameters& params,
                                   ClassTable& class_table_out, IadTable& iad_table_out)
@@ -588,12 +382,15 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
 
   ray::readLas(cloud_name,
     [&](std::vector<Eigen::Vector3d>& starts, std::vector<Eigen::Vector3d>& ends,
-        std::vector<double>& /*times*/, std::vector<ray::RGBA>& /*colours*/) {
+        std::vector<double>& /*times*/, std::vector<ray::RGBA>& colours) {
       for (size_t i = 0; i < ends.size(); ++i) {
         const size_t base = (global_chunk_start + i) * stride;
         if (passthrough.size() < base + stride) continue;
-        const uint8_t return_number = passthrough[base + 0] & 0x0F;
-        if (return_number == 0) continue;  // miss ray, not a real return
+        // "bound" is encoded as bound==(alpha>0), so alpha==0 identifies an unbound ray for both
+        // new files (authoritative bound field) and old files (alpha-only fallback). Unbound rays
+        // are never counted as classified hits.
+        const uint8_t alpha = (i < colours.size()) ? colours[i].alpha : 1;
+        if (alpha == 0) continue;
 
         const Eigen::Vector3d vox = (ends[i] - bounds.min_bound_) / vox_width;
         const int64_t ix = static_cast<int64_t>(vox.x());
@@ -653,6 +450,22 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
     while (std::getline(ss, item, ',')) { try { wood_set.insert(std::stoi(item)); } catch (...) {} }
   }
 
+  const bool any_bailey = std::any_of(params.attenuation_methods.begin(), params.attenuation_methods.end(),
+                                       [](const std::string& m){ return m == "bailey"; });
+
+  // Bailey (2017) triangle-facet inclination histograms (parallel estimator).
+  // Built once from the same KNN matrix before the per-voxel loop; gated on any bailey method.
+  std::unordered_map<int64_t, TriangleHistograms> triangle_histograms;
+  if (any_bailey) {
+    std::vector<int> class_labels_int(positions.size(), 0);
+    for (size_t i = 0; i < positions.size(); ++i) {
+      if (leaf_set.count(leaf_vals[i])) class_labels_int[i] = 1;
+      else if (wood_set.count(wood_vals[i])) class_labels_int[i] = -1;
+    }
+    triangle_histograms = buildTriangleInclinationHistograms(
+        positions, indices, flat_indices, class_labels_int, params.n_iad_bins, params.triangle_lmax);
+  }
+
   // Per-voxel histogram accumulators, keyed by flat index.
   std::unordered_map<int64_t, std::vector<double>> all_hist, leaf_hist, wood_hist, beam_hist;
   std::unordered_map<int64_t, float> leaf_hit_count, wood_hit_count;
@@ -730,6 +543,17 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
     auto wit = wood_hist.find(flat_idx);
     iad.wiad = (wit != wood_hist.end()) ? wit->second : std::vector<double>(params.n_iad_bins, 0.0);
 
+    // For the bailey method, extract triangle-facet G values without overwriting the empirical
+    // liad/wiad/piad. This preserves empirical G (leaf_g/wood_g/plant_g) for non-bailey methods
+    // that may be running alongside bailey in the same invocation.
+    if (any_bailey) {
+      auto it = triangle_histograms.find(flat_idx);
+      if (it != triangle_histograms.end()) {
+        iad.bailey_g_leaf = it->second.bailey_g_leaf;
+        iad.bailey_g_wood = it->second.bailey_g_wood;
+      }
+    }
+
     normalize(iad.liad);
     normalize(iad.wiad);
     normalize(iad.piad);
@@ -767,6 +591,7 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
       auto whit = wood_hit_count.find(flat_idx);
       if (whit != wood_hit_count.end()) iad.wood_hits = whit->second;
     }
+
     iad_table[flat_idx] = std::move(iad);
   }
 
@@ -927,19 +752,19 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
 
     ray::readLas(cloud_name,
       [&](std::vector<Eigen::Vector3d>& starts, std::vector<Eigen::Vector3d>& ends,
-          std::vector<double>& times, std::vector<ray::RGBA>& /*colours*/) {
+          std::vector<double>& times, std::vector<ray::RGBA>& colours) {
         if (starts.empty() && !not_raycloud_warned) {
           std::cerr << "Warning: input is not a ray cloud (no sx,sy,sz ray starts); skipping points." << std::endl;
           not_raycloud_warned = true;
         }
         for (size_t i = 0; i < ends.size(); ++i) {
-          if (starts.empty() || starts[i] == ends[i]) {
-            // starts.empty(): non-raycloud file (start == end for every point).
-            // starts[i] == ends[i]: miss ray in a valid raycloud (sx=sy=sz=0); skip silently.
+          if (starts.empty()) {
+            // Non-raycloud file (start == end for every point); nothing to traverse.
             continue;
           }
           const int32_t bid = (i < beam_ids_chunk.size()) ? beam_ids_chunk[i] : -1;
-          PointData pd = makePointData(starts[i], ends[i], times[i], bid, passthrough, i, stride);
+          const uint8_t alpha = (i < colours.size()) ? colours[i].alpha : 1;
+          PointData pd = makePointData(starts[i], ends[i], times[i], bid, alpha, passthrough, i, stride);
           const bool new_beam = beam_ids_chunk.empty()
             ? (pd.gps_time != pending_gps_time)
             : (pd.beam_id != pending_beam_id);
@@ -1006,19 +831,19 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
     };
     ray::readLas(cloud_name,
       [&](std::vector<Eigen::Vector3d>& starts, std::vector<Eigen::Vector3d>& ends,
-          std::vector<double>& times, std::vector<ray::RGBA>& /*colours*/) {
+          std::vector<double>& times, std::vector<ray::RGBA>& colours) {
         if (starts.empty() && !not_raycloud_warned) {
           std::cerr << "Warning: input is not a ray cloud (no sx,sy,sz ray starts); skipping points." << std::endl;
           not_raycloud_warned = true;
         }
         for (size_t i = 0; i < ends.size(); ++i) {
-          if (starts.empty() || starts[i] == ends[i]) {
-            // starts.empty(): non-raycloud file (start == end for every point).
-            // starts[i] == ends[i]: miss ray in a valid raycloud (sx=sy=sz=0); skip silently.
+          if (starts.empty()) {
+            // Non-raycloud file (start == end for every point); nothing to traverse.
             continue;
           }
           const int32_t bid = (i < beam_ids_chunk.size()) ? beam_ids_chunk[i] : -1;
-          PointData pd = makePointData(starts[i], ends[i], times[i], bid, passthrough, i, stride);
+          const uint8_t alpha = (i < colours.size()) ? colours[i].alpha : 1;
+          PointData pd = makePointData(starts[i], ends[i], times[i], bid, alpha, passthrough, i, stride);
           const bool new_beam = beam_ids_chunk.empty()
             ? (pd.gps_time != pending_gps_time)
             : (pd.beam_id != pending_beam_id);
@@ -1285,19 +1110,19 @@ bool OutOfCoreStrategy::createShards(const std::string& cloud_name, VoxelGrid& g
     };
     ray::readLas(cloud_name,
       [&](std::vector<Eigen::Vector3d>& starts, std::vector<Eigen::Vector3d>& ends,
-          std::vector<double>& times, std::vector<ray::RGBA>& /*colours*/) {
+          std::vector<double>& times, std::vector<ray::RGBA>& colours) {
         if (starts.empty() && !not_raycloud_warned) {
           std::cerr << "Warning: input is not a ray cloud (no sx,sy,sz ray starts); skipping points." << std::endl;
           not_raycloud_warned = true;
         }
         for (size_t i = 0; i < ends.size(); ++i) {
-          if (starts.empty() || starts[i] == ends[i]) {
-            // starts.empty(): non-raycloud file (start == end for every point).
-            // starts[i] == ends[i]: miss ray in a valid raycloud (sx=sy=sz=0); skip silently.
+          if (starts.empty()) {
+            // Non-raycloud file (start == end for every point); nothing to traverse.
             continue;
           }
           const int32_t bid = (i < beam_ids_chunk.size()) ? beam_ids_chunk[i] : -1;
-          PointData pd = makePointData(starts[i], ends[i], times[i], bid, passthrough, i, stride);
+          const uint8_t alpha = (i < colours.size()) ? colours[i].alpha : 1;
+          PointData pd = makePointData(starts[i], ends[i], times[i], bid, alpha, passthrough, i, stride);
           const bool new_beam = beam_ids_chunk.empty()
             ? (pd.gps_time != pending_gps_time)
             : (pd.beam_id != pending_beam_id);
@@ -1354,13 +1179,25 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
     const bool need_reserve_count = (params.reserve_size == 0) && !params.use_ooc;
 
     auto preScanCloud = [&](const std::string& cloud_name, PreScanResult& result) -> bool {
+      // Determine whether this file declares a "bound" extra attribute. When present, unbound
+      // (miss) endpoints are excluded from the bounding box; old files without it include all
+      // endpoints exactly as before.
+      uint16_t pre_orig_extra = 0;
+      std::vector<uint8_t> pre_extra_vlr;
+      bool file_has_bound = false;
+      readLasExtraBytesVlr(cloud_name, pre_orig_extra, pre_extra_vlr, &file_has_bound);
       size_t num_bounded = 0;
       return ray::readLas(cloud_name,
           [&](std::vector<Eigen::Vector3d>& /*starts*/, std::vector<Eigen::Vector3d>& ends,
-              std::vector<double>& /*times*/, std::vector<ray::RGBA>& /*colours*/) {
-            for (auto& e : ends) {
-              result.bounds_min = result.bounds_min.cwiseMin(e);
-              result.bounds_max = result.bounds_max.cwiseMax(e);
+              std::vector<double>& /*times*/, std::vector<ray::RGBA>& colours) {
+            for (size_t i = 0; i < ends.size(); ++i) {
+              // bound == 0 (alpha == 0) marks an unbound ray with a floating far end; exclude it
+              // from the bounds. point_count still counts every point (over-reserve is fine).
+              const bool is_unbound = file_has_bound && i < colours.size() && colours[i].alpha == 0;
+              if (!is_unbound) {
+                result.bounds_min = result.bounds_min.cwiseMin(ends[i]);
+                result.bounds_max = result.bounds_max.cwiseMax(ends[i]);
+              }
             }
             result.point_count += ends.size();
           }, num_bounded, 255.0, nullptr);

@@ -70,6 +70,7 @@ set(PUBLIC_HEADERS
   rayvoxel/raylasvoxelprocessor.h
   rayvoxel/raylasvoxelrefine.h
   rayvoxel/raylasvoxelwriter.h
+  rayvoxel/raylasbailey.h
 )
 
 set(PRIVATE_HEADERS
@@ -130,6 +131,7 @@ set(SOURCES
   rayvoxel/raylasvoxelprocessor.cpp
   rayvoxel/raylasvoxelrefine.cpp
   rayvoxel/raylasvoxelwriter.cpp
+  rayvoxel/raylasbailey.cpp
 )
 
 get_target_property(SIMPLE_FFT_INCLUDE_DIRS simple_fft INTERFACE_INCLUDE_DIRECTORIES)

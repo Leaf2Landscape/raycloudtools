@@ -61,9 +61,9 @@ namespace ray
     std::vector<double> liad;
     std::vector<double> wiad;
     std::vector<double> piad;
-    double pad = 0.0;  // PAD using empirical plant_G (PIAD)
-    double lad = 0.0;  // LAD using empirical leaf_G  (LIAD)
-    double wad = 0.0;  // WAD using empirical wood_G  (WIAD)
+    std::unordered_map<std::string, double> pad_per_method;
+    std::unordered_map<std::string, double> lad_per_method;
+    std::unordered_map<std::string, double> wad_per_method;
   };
 
   // MODIFIED: A type alias for a map that will store the pre-calculated output data,

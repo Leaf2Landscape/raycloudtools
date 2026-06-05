@@ -2,6 +2,25 @@
 .idea/
 build*/
 cmake-build*/
+# In-tree CMake build artifacts
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+compile_commands.json
+_deps/
+bin/
+raycloudtools-config.cmake
+raycloudtools-version.cmake
+.dockerignore
+# Generated headers and libraries (in-tree CMake outputs)
+raylib/libraylib.so
+raylib/libraylib.so*
+raylib/raycloudtools-targets.cmake
+raylib/raylasdecode.h
+raylib/raylib_export.h
+raylib/raylibconfig.h
+raylib/rayvoxel/raylasatomic.h
 riegl_libs*/
 test_data*/
 treetools*/

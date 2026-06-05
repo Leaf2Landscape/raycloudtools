@@ -9,6 +9,7 @@
 
 #include "raylib/rayvoxel/raylasvoxelwriter.h"
 #include "raylib/rayvoxel/raylasvegmetrics.h"
+#include "raylib/rayvoxel/raylasbailey.h"
 #include "raylib/rayvoxel/rayvox.h" // For writing the AMAPVox .vox format
 #include "raylib/rayutils.h"
 #include "raylib/rayunused.h"
@@ -132,6 +133,22 @@ void parseLadParams(const std::string& lad_params_str, double& param1, double& p
 // Centralized Metric Calculator Implementation
 // ==================================================================================
 
+// Per-voxel attenuation-coefficient (lambda) estimators reproducing the AMAPVox
+// PAD estimator family. Symbol mapping: path_length_observed/sum_bs_path -> total
+// traversed path; num_rays_observed/bs_entering -> beams entering; num_hits/
+// bs_intercepted -> beams intercepted; sum_hit_delta/sum_miss_delta -> total hit/
+// miss path lengths used by the PPL MLE.
+//
+// Pimont, F., Allard, D., Soma, M. & Dupuy, J.-L. (2018). Estimators and confidence
+// intervals for plant area density at voxel scale with T-LiDAR.
+// Remote Sensing of Environment, 215, 343-370.
+// DOI: 10.1016/j.rse.2018.06.024
+// Source reference: https://github.com/umr-amap/AMAPVox
+//
+// "fpl":           lambda = intercepted / total traversed path (mean free path length).
+// "transmittance": lambda = -ln(T), T = (entering - intercepted) / entering (Beer-Lambert).
+// "ppl":           bias-corrected MLE separating mean hit/miss path lengths; solved by
+//                  bisection; unbiased for > 2 beams per voxel (Pimont eq. for PPL).
 double computeLambda(const VoxelGrid::Voxel& v, const std::string& method)
 {
     const double eps = 1e-10;
@@ -211,7 +228,7 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
     parseLadParams(params.lad_params_str, lad_param1, lad_param2);
 
     auto computeLambdaV = [&](const VoxelGrid::Voxel& v) -> double {
-        return computeLambda(v, params.attenuation_method);
+        return computeLambda(v, params.attenuation_methods[0]);
     };
 
     // Lambda to fill a VoxelOutputData from a voxel + its flat index
@@ -289,11 +306,35 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
             data.wiad = iad.wiad;
             data.piad = iad.piad;
             if (v.path_length_observed > 0) {
-              double lambda    = computeLambdaV(v);
-              double hit_total = std::max(1e-10, static_cast<double>(v.num_hits));
-              if (iad.plant_g > 0) data.pad = lambda / iad.plant_g;
-              if (iad.leaf_g  > 0) data.lad = lambda * (iad.leaf_hits / hit_total) / iad.leaf_g;
-              if (iad.wood_g  > 0) data.wad = lambda * (iad.wood_hits / hit_total) / iad.wood_g;
+              const double hit_total = std::max(1e-10, static_cast<double>(v.num_hits));
+              const double leaf_hits = static_cast<double>(iad.leaf_hits);
+              const double wood_hits = static_cast<double>(iad.wood_hits);
+              for (const auto& method : params.attenuation_methods) {
+                if (method == "bailey") {
+                  // Bailey (2017) eq.10: per-class G from triangle facets (Eq.4).
+                  double pad_v = 0.0, lad_v = 0.0, wad_v = 0.0;
+                  if (iad.bailey_g_leaf > 0 && leaf_hits > 0)
+                    lad_v = solveBaileyPadEq10(v.path_length_observed, v.num_rays_observed,
+                                               v.num_hits * (leaf_hits / hit_total), iad.bailey_g_leaf);
+                  if (iad.bailey_g_wood > 0 && wood_hits > 0)
+                    wad_v = solveBaileyPadEq10(v.path_length_observed, v.num_rays_observed,
+                                               v.num_hits * (wood_hits / hit_total), iad.bailey_g_wood);
+                  if      (leaf_hits == 0 && wood_hits  > 0) pad_v = wad_v;
+                  else if (leaf_hits  > 0 && wood_hits == 0) pad_v = lad_v;
+                  else if (leaf_hits  > 0 && wood_hits  > 0 && iad.plant_g > 0)
+                    pad_v = solveBaileyPadEq10(v.path_length_observed, v.num_rays_observed,
+                                               v.num_hits, iad.plant_g);
+                  data.pad_per_method[method] = pad_v;
+                  data.lad_per_method[method] = lad_v;
+                  data.wad_per_method[method] = wad_v;
+                } else {
+                  // Vicari et al. (2019) path: angle-integrated G from empirical PIAD.
+                  double lambda = computeLambda(v, method);
+                  if (iad.plant_g > 0) data.pad_per_method[method] = lambda / iad.plant_g;
+                  if (iad.leaf_g  > 0) data.lad_per_method[method] = lambda * (leaf_hits / hit_total) / iad.leaf_g;
+                  if (iad.wood_g  > 0) data.wad_per_method[method] = lambda * (wood_hits / hit_total) / iad.wood_g;
+                }
+              }
             }
           }
         }
@@ -360,10 +401,18 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
   }
   if (params.calc_inclination_dist) {
     colnames += " leaf_g wood_g plant_g";
-    for (int b = 0; b < params.n_iad_bins; ++b) colnames += " liad_" + std::to_string(b);
-    for (int b = 0; b < params.n_iad_bins; ++b) colnames += " wiad_" + std::to_string(b);
-    for (int b = 0; b < params.n_iad_bins; ++b) colnames += " piad_" + std::to_string(b);
-    colnames += " pad lad wad";
+    if (params.output_iad) {
+      if (params.has_leaf)
+        for (int b = 0; b < params.n_iad_bins; ++b) colnames += " liad_" + std::to_string(b);
+      if (params.has_wood)
+        for (int b = 0; b < params.n_iad_bins; ++b) colnames += " wiad_" + std::to_string(b);
+      for (int b = 0; b < params.n_iad_bins; ++b) colnames += " piad_" + std::to_string(b);
+    }
+    for (const auto& method : params.attenuation_methods) {
+      colnames += " pad_" + method;
+      if (params.has_leaf) colnames += " lad_" + method;
+      if (params.has_wood) colnames += " wad_" + method;
+    }
   }
   space.header["colnames"] = colnames;
 
@@ -395,15 +444,24 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
       v_data.variables.push_back(std::to_string(data ? data->leaf_g  : 0.0));
       v_data.variables.push_back(std::to_string(data ? data->wood_g  : 0.0));
       v_data.variables.push_back(std::to_string(data ? data->plant_g : 0.0));
-      for (int b = 0; b < params.n_iad_bins; ++b)
-        v_data.variables.push_back(std::to_string(data && b < static_cast<int>(data->liad.size()) ? data->liad[b] : 0.0));
-      for (int b = 0; b < params.n_iad_bins; ++b)
-        v_data.variables.push_back(std::to_string(data && b < static_cast<int>(data->wiad.size()) ? data->wiad[b] : 0.0));
-      for (int b = 0; b < params.n_iad_bins; ++b)
-        v_data.variables.push_back(std::to_string(data && b < static_cast<int>(data->piad.size()) ? data->piad[b] : 0.0));
-      v_data.variables.push_back(std::to_string(data ? data->pad : 0.0));
-      v_data.variables.push_back(std::to_string(data ? data->lad : 0.0));
-      v_data.variables.push_back(std::to_string(data ? data->wad : 0.0));
+      if (params.output_iad) {
+        if (params.has_leaf)
+          for (int b = 0; b < params.n_iad_bins; ++b)
+            v_data.variables.push_back(std::to_string(data && b < static_cast<int>(data->liad.size()) ? data->liad[b] : 0.0));
+        if (params.has_wood)
+          for (int b = 0; b < params.n_iad_bins; ++b)
+            v_data.variables.push_back(std::to_string(data && b < static_cast<int>(data->wiad.size()) ? data->wiad[b] : 0.0));
+        for (int b = 0; b < params.n_iad_bins; ++b)
+          v_data.variables.push_back(std::to_string(data && b < static_cast<int>(data->piad.size()) ? data->piad[b] : 0.0));
+      }
+      for (const auto& method : params.attenuation_methods) {
+        auto lookup = [&](const std::unordered_map<std::string, double>& m) -> double {
+          auto it = m.find(method); return it != m.end() ? it->second : 0.0;
+        };
+        v_data.variables.push_back(std::to_string(data ? lookup(data->pad_per_method) : 0.0));
+        if (params.has_leaf) v_data.variables.push_back(std::to_string(data ? lookup(data->lad_per_method) : 0.0));
+        if (params.has_wood) v_data.variables.push_back(std::to_string(data ? lookup(data->wad_per_method) : 0.0));
+      }
     }
     space.voxels.push_back(v_data);
   };
@@ -450,10 +508,18 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
   if (params.subvoxel_split > 0) header += " exploration_rate";
   if (params.calc_inclination_dist) {
     header += " leaf_g wood_g plant_g";
-    for (int b = 0; b < params.n_iad_bins; ++b) header += " liad_" + std::to_string(b);
-    for (int b = 0; b < params.n_iad_bins; ++b) header += " wiad_" + std::to_string(b);
-    for (int b = 0; b < params.n_iad_bins; ++b) header += " piad_" + std::to_string(b);
-    header += " pad lad wad";
+    if (params.output_iad) {
+      if (params.has_leaf)
+        for (int b = 0; b < params.n_iad_bins; ++b) header += " liad_" + std::to_string(b);
+      if (params.has_wood)
+        for (int b = 0; b < params.n_iad_bins; ++b) header += " wiad_" + std::to_string(b);
+      for (int b = 0; b < params.n_iad_bins; ++b) header += " piad_" + std::to_string(b);
+    }
+    for (const auto& method : params.attenuation_methods) {
+      header += " pad_" + method;
+      if (params.has_leaf) header += " lad_" + method;
+      if (params.has_wood) header += " wad_" + method;
+    }
   }
   header += " classification_hits\n";
   outfile << header;
@@ -480,13 +546,24 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
     if (params.subvoxel_split > 0) outfile << " " << data.exploration_rate;
     if (params.calc_inclination_dist) {
       outfile << " " << data.leaf_g << " " << data.wood_g << " " << data.plant_g;
-      for (int b = 0; b < params.n_iad_bins; ++b)
-        outfile << " " << (b < static_cast<int>(data.liad.size()) ? data.liad[b] : 0.0);
-      for (int b = 0; b < params.n_iad_bins; ++b)
-        outfile << " " << (b < static_cast<int>(data.wiad.size()) ? data.wiad[b] : 0.0);
-      for (int b = 0; b < params.n_iad_bins; ++b)
-        outfile << " " << (b < static_cast<int>(data.piad.size()) ? data.piad[b] : 0.0);
-      outfile << " " << data.pad << " " << data.lad << " " << data.wad;
+      if (params.output_iad) {
+        if (params.has_leaf)
+          for (int b = 0; b < params.n_iad_bins; ++b)
+            outfile << " " << (b < static_cast<int>(data.liad.size()) ? data.liad[b] : 0.0);
+        if (params.has_wood)
+          for (int b = 0; b < params.n_iad_bins; ++b)
+            outfile << " " << (b < static_cast<int>(data.wiad.size()) ? data.wiad[b] : 0.0);
+        for (int b = 0; b < params.n_iad_bins; ++b)
+          outfile << " " << (b < static_cast<int>(data.piad.size()) ? data.piad[b] : 0.0);
+      }
+      for (const auto& method : params.attenuation_methods) {
+        auto lookup = [&](const std::unordered_map<std::string, double>& m) -> double {
+          auto it = m.find(method); return it != m.end() ? it->second : 0.0;
+        };
+        outfile << " " << lookup(data.pad_per_method);
+        if (params.has_leaf) outfile << " " << lookup(data.lad_per_method);
+        if (params.has_wood) outfile << " " << lookup(data.wad_per_method);
+      }
     }
     outfile << " " << formatClassificationHits(data.classification_hits) << "\n";
     point_count++;
@@ -647,13 +724,20 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
     }
 
     std::vector<float> liad_flat, wiad_flat, piad_flat;
-    std::vector<double> leaf_g_data, wood_g_data, plant_g_data, pad_iad_data, lad_data, wad_data;
+    std::vector<double> leaf_g_data, wood_g_data, plant_g_data;
+    std::unordered_map<std::string, std::vector<double>> pad_iad_data, lad_data, wad_data;
     if (params.calc_inclination_dist) {
-        liad_flat.reserve(metrics.size() * params.n_iad_bins);
-        wiad_flat.reserve(metrics.size() * params.n_iad_bins);
-        piad_flat.reserve(metrics.size() * params.n_iad_bins);
+        if (params.output_iad) {
+            if (params.has_leaf) liad_flat.reserve(metrics.size() * params.n_iad_bins);
+            if (params.has_wood) wiad_flat.reserve(metrics.size() * params.n_iad_bins);
+            piad_flat.reserve(metrics.size() * params.n_iad_bins);
+        }
+        for (const auto& method : params.attenuation_methods) {
+            pad_iad_data[method].reserve(point_count);
+            if (params.has_leaf) lad_data[method].reserve(point_count);
+            if (params.has_wood) wad_data[method].reserve(point_count);
+        }
     }
-
     int voxel_idx_counter = 0;
     for (const auto& data : data_to_write) {
         i_data.push_back(data.i - padding);
@@ -681,21 +765,29 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
         if (params.calc_inclination_dist) {
             const int64_t flat_idx = grid.flatIndex(data.i, data.j, data.k);
             auto iit = iad_table.find(flat_idx);
-            if (iit != iad_table.end()) {
-                for (int b = 0; b < params.n_iad_bins; ++b) liad_flat.push_back(static_cast<float>(iit->second.liad[b]));
-                for (int b = 0; b < params.n_iad_bins; ++b) wiad_flat.push_back(static_cast<float>(iit->second.wiad[b]));
-                for (int b = 0; b < params.n_iad_bins; ++b) piad_flat.push_back(static_cast<float>(iit->second.piad[b]));
-            } else {
-                liad_flat.insert(liad_flat.end(), params.n_iad_bins, 0.0f);
-                wiad_flat.insert(wiad_flat.end(), params.n_iad_bins, 0.0f);
-                piad_flat.insert(piad_flat.end(), params.n_iad_bins, 0.0f);
+            if (params.output_iad) {
+                if (params.has_leaf) {
+                    if (iit != iad_table.end()) for (int b = 0; b < params.n_iad_bins; ++b) liad_flat.push_back(static_cast<float>(iit->second.liad[b]));
+                    else liad_flat.insert(liad_flat.end(), params.n_iad_bins, 0.0f);
+                }
+                if (params.has_wood) {
+                    if (iit != iad_table.end()) for (int b = 0; b < params.n_iad_bins; ++b) wiad_flat.push_back(static_cast<float>(iit->second.wiad[b]));
+                    else wiad_flat.insert(wiad_flat.end(), params.n_iad_bins, 0.0f);
+                }
+                if (iit != iad_table.end()) for (int b = 0; b < params.n_iad_bins; ++b) piad_flat.push_back(static_cast<float>(iit->second.piad[b]));
+                else piad_flat.insert(piad_flat.end(), params.n_iad_bins, 0.0f);
             }
             leaf_g_data.push_back(data.leaf_g);
             wood_g_data.push_back(data.wood_g);
             plant_g_data.push_back(data.plant_g);
-            pad_iad_data.push_back(data.pad);
-            lad_data.push_back(data.lad);
-            wad_data.push_back(data.wad);
+            for (const auto& method : params.attenuation_methods) {
+                auto lookup = [&](const std::unordered_map<std::string, double>& m) -> double {
+                    auto it = m.find(method); return it != m.end() ? it->second : 0.0;
+                };
+                pad_iad_data[method].push_back(lookup(data.pad_per_method));
+                if (params.has_leaf) lad_data[method].push_back(lookup(data.lad_per_method));
+                if (params.has_wood) wad_data[method].push_back(lookup(data.wad_per_method));
+            }
         }
 
         for (int c = 0; c < 256; ++c) {
@@ -739,15 +831,19 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
     }
 
     if (params.calc_inclination_dist) {
-        dataFile.addVar("liad",  netCDF::ncFloat,  {nPoints, nIADBins}).putVar(liad_flat.data());
-        dataFile.addVar("wiad",  netCDF::ncFloat,  {nPoints, nIADBins}).putVar(wiad_flat.data());
-        dataFile.addVar("piad",  netCDF::ncFloat,  {nPoints, nIADBins}).putVar(piad_flat.data());
+        if (params.output_iad) {
+            if (params.has_leaf) dataFile.addVar("liad", netCDF::ncFloat, {nPoints, nIADBins}).putVar(liad_flat.data());
+            if (params.has_wood) dataFile.addVar("wiad", netCDF::ncFloat, {nPoints, nIADBins}).putVar(wiad_flat.data());
+            dataFile.addVar("piad", netCDF::ncFloat, {nPoints, nIADBins}).putVar(piad_flat.data());
+        }
         dataFile.addVar("leaf_g",  netCDF::ncDouble, {nPoints}).putVar(leaf_g_data.data());
         dataFile.addVar("wood_g",  netCDF::ncDouble, {nPoints}).putVar(wood_g_data.data());
         dataFile.addVar("plant_g", netCDF::ncDouble, {nPoints}).putVar(plant_g_data.data());
-        dataFile.addVar("pad",     netCDF::ncDouble, {nPoints}).putVar(pad_iad_data.data());
-        dataFile.addVar("lad",     netCDF::ncDouble, {nPoints}).putVar(lad_data.data());
-        dataFile.addVar("wad",     netCDF::ncDouble, {nPoints}).putVar(wad_data.data());
+        for (const auto& method : params.attenuation_methods) {
+            dataFile.addVar("pad_" + method, netCDF::ncDouble, {nPoints}).putVar(pad_iad_data.at(method).data());
+            if (params.has_leaf) dataFile.addVar("lad_" + method, netCDF::ncDouble, {nPoints}).putVar(lad_data.at(method).data());
+            if (params.has_wood) dataFile.addVar("wad_" + method, netCDF::ncDouble, {nPoints}).putVar(wad_data.at(method).data());
+        }
     }
 
     std::cout << "Wrote " << point_count << " voxels to " << filename << std::endl;

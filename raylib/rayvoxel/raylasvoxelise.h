@@ -181,6 +181,8 @@ namespace ray
     std::vector<double> bin_centres;       // radians, size n_iad_bins
     std::vector<double> liad, wiad, piad;  // normalized histograms, size n_iad_bins
     double leaf_g = 0.0, wood_g = 0.0, plant_g = 0.0;
+    double bailey_g_leaf = 0.0;   // Bailey eq.(4) area*sin(theta)-weighted mean G for leaf facets
+    double bailey_g_wood = 0.0;   // Bailey eq.(4) area*sin(theta)-weighted mean G for wood facets
     float leaf_hits = 0.0f;
     float wood_hits = 0.0f;
   };

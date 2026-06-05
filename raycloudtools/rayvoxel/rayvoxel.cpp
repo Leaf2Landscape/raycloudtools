@@ -13,7 +13,9 @@
 #include "raylib/rayvoxel/raylasvoxelise.h"
 #include "raylib/rayvoxel/raylasvoxelconfig.h"
 
+#include <algorithm>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -62,11 +64,12 @@ void usage()
   std::cout << "  --laser_spec <name>             Select a predefined laser specification (e.g., VZ-400)." << std::endl;
   std::cout << "  --beam_params <diam,div>        Manually specify beam diameter (m) and divergence (rad)." << std::endl;
   std::cout << "  --subvoxel_split <N>            Enable exploration rate calculation with an N x N x N grid (N=2,3,4). Default: 0 (off)." << std::endl;
-  std::cout << "  --inclination_dist              Compute per-voxel LIAD/WIAD/PIAD histograms and empirical G factors. On by default with --veg_metrics; implies --veg_metrics if passed standalone." << std::endl;
   std::cout << "  --no_inclination_dist           Disable the inclination-distribution pass (skips KNN normal estimation) while keeping --veg_metrics." << std::endl;
+  std::cout << "  --output_iad                    Write per-bin LIAD/WIAD/PIAD histogram columns to output (default: off; G scalars are always written)." << std::endl;
   std::cout << "  --n_iad_bins <N>                Number of inclination-angle histogram bins over [0, pi/2]. Default: 18." << std::endl;
-  std::cout << "  --attenuation_method <method>   PAD/LAD/WAD estimator: fpl (default), ppl, transmittance." << std::endl;
+  std::cout << "  --attenuation_method <methods>  Comma-separated PAD/LAD/WAD estimators: fpl (default), ppl, transmittance, bailey." << std::endl;
   std::cout << "  --knn_normal <N>                Number of nearest neighbours used for per-point normal estimation. Default: 10." << std::endl;
+  std::cout << "  --triangle_lmax <m>             Max triangle edge length for Bailey facets (only used with --attenuation_method bailey). Default: 0.05." << std::endl;
   exit(1);
 }
 
@@ -136,12 +139,15 @@ int main_function(int argc, char *argv[])
   OptionalKeyValueArgument subvoxel_split("subvoxel_split", '\0', &subvoxel_split_val);
   OptionalFlagArgument inclination_dist("inclination_dist", '\0');
   OptionalFlagArgument no_inclination_dist("no_inclination_dist", '\0');
+  OptionalFlagArgument output_iad("output_iad", '\0');
   IntArgument n_iad_bins_val(1, 180, 18);
   OptionalKeyValueArgument n_iad_bins("n_iad_bins", '\0', &n_iad_bins_val);
   StringArgument attenuation_method_val("fpl");
   OptionalKeyValueArgument attenuation_method("attenuation_method", '\0', &attenuation_method_val);
   IntArgument knn_normal_val(2, 1000, 10);
   OptionalKeyValueArgument knn_normal("knn_normal", '\0', &knn_normal_val);
+  DoubleArgument triangle_lmax_val(0.001, 10.0, 0.05);
+  OptionalKeyValueArgument triangle_lmax("triangle_lmax", '\0', &triangle_lmax_val);
 
   // --- Parse Command Line ---
   std::vector<FixedArgument *> fixed_args = { &cloud_file };
@@ -153,7 +159,8 @@ int main_function(int argc, char *argv[])
       &flat_top_compensation, &neighbour_priors,
       &veg_metrics, &leaf_classes, &wood_classes, &lad, &lad_params,
       &beam_metrics, &laser_spec, &beam_params, &subvoxel_split,
-      &inclination_dist, &no_inclination_dist, &n_iad_bins, &attenuation_method, &knn_normal };
+      &inclination_dist, &no_inclination_dist, &output_iad, &n_iad_bins, &attenuation_method, &knn_normal,
+      &triangle_lmax };
 
   if (!parseCommandLine(argc, argv, fixed_args, optional_args)) {
     usage();
@@ -181,12 +188,28 @@ int main_function(int argc, char *argv[])
   if (dtm_file.isSet() && dtm_from_class.isSet()) {
       std::cerr << "Error: --dtm and --dtm_from_class are mutually exclusive. Please specify only one." << std::endl; usage();
   }
+  std::vector<std::string> parsed_methods;
   if (attenuation_method.isSet()) {
-      const std::string& m = attenuation_method_val.text();
-      if (m != "fpl" && m != "ppl" && m != "transmittance") {
-          std::cerr << "Error: --attenuation_method must be one of: fpl, ppl, transmittance." << std::endl;
-          return 1;
+      std::stringstream ss(attenuation_method_val.text());
+      std::string token;
+      while (std::getline(ss, token, ',')) {
+          token.erase(0, token.find_first_not_of(" \t"));
+          token.erase(token.find_last_not_of(" \t") + 1);
+          for (char& c : token) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+          if (!token.empty()) parsed_methods.push_back(token);
       }
+      for (const auto& m : parsed_methods) {
+          if (m != "fpl" && m != "ppl" && m != "transmittance" && m != "bailey") {
+              std::cerr << "Error: --attenuation_method: unknown method '" << m << "'. Must be fpl, ppl, transmittance, or bailey." << std::endl;
+              return 1;
+          }
+      }
+  }
+  const bool any_bailey = std::any_of(parsed_methods.begin(), parsed_methods.end(),
+                                       [](const std::string& m){ return m == "bailey"; });
+  if (any_bailey && (leaf_classes_val.text().empty() || wood_classes_val.text().empty())) {
+      std::cerr << "Error: --attenuation_method bailey requires both --leaf_classes and --wood_classes." << std::endl;
+      return 1;
   }
 
   // --- Populate Parameters Struct ---
@@ -213,6 +236,20 @@ int main_function(int argc, char *argv[])
   if (inclination_dist.isSet()) params.calc_veg_metrics = true;
   params.leaf_classes_str = leaf_classes_val.text();
   params.wood_classes_str = wood_classes_val.text();
+  // Derive has_leaf/has_wood by stripping any "field:" prefix before checking for content.
+  {
+    auto strip_prefix = [](const std::string& s) {
+      auto c = s.find(':'); return (c != std::string::npos) ? s.substr(c + 1) : s;
+    };
+    params.has_leaf = !strip_prefix(leaf_classes_val.text()).empty();
+    params.has_wood = !strip_prefix(wood_classes_val.text()).empty();
+  }
+  if (!params.has_leaf && !params.has_wood && (veg_metrics.isSet() || inclination_dist.isSet()))
+    std::cerr << "Info: no --leaf_classes or --wood_classes specified; only pad_* (plant) columns will be written.\n";
+  else if (!params.has_leaf && params.has_wood)
+    std::cerr << "Info: no --leaf_classes specified; lad_* columns will be omitted.\n";
+  else if (params.has_leaf && !params.has_wood)
+    std::cerr << "Info: no --wood_classes specified; wad_* columns will be omitted.\n";
   params.lad = lad_val.text();
   params.lad_params_str = lad_params_val.text();
   params.calc_beam_metrics = beam_metrics.isSet();
@@ -223,10 +260,13 @@ int main_function(int argc, char *argv[])
   params.subvoxel_split = subvoxel_split_val.value();
   // IAD is on by default whenever vegetation metrics are active; --no_inclination_dist opts out.
   params.calc_inclination_dist = (veg_metrics.isSet() || inclination_dist.isSet()) && !no_inclination_dist.isSet();
+  params.output_iad = output_iad.isSet();
   params.n_iad_bins = n_iad_bins_val.value();
-  params.attenuation_method = attenuation_method_val.text();
+  if (!parsed_methods.empty()) params.attenuation_methods = parsed_methods;
   params.knn_normal = knn_normal_val.value();
   params.reserve_size = static_cast<size_t>(reserve_size_val.value());
+  params.triangle_lmax     = triangle_lmax_val.value();
+  if (any_bailey) params.calc_inclination_dist = true;  // ensures KNN matrix exists
 
   // DTM parameters
   // The dtm_cell_size now applies to both DTM creation methods.

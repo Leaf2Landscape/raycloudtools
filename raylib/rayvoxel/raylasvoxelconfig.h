@@ -60,9 +60,14 @@ namespace ray
     std::string lad_params_str;
 
     bool calc_inclination_dist = false;
+    bool output_iad = false;          // write per-bin liad/wiad/piad columns to output
+    bool has_leaf = false;            // --leaf_classes was provided
+    bool has_wood = false;            // --wood_classes was provided
     int  n_iad_bins = 18;
-    std::string attenuation_method = "fpl";  // "fpl" | "ppl" | "transmittance"
+    std::vector<std::string> attenuation_methods = {"fpl"};  // each: "fpl" | "ppl" | "transmittance" | "bailey"
     int  knn_normal = 10;
+
+    double triangle_lmax     = 0.05;   // max triangle edge length (metres)
 
     bool calc_beam_metrics = false;
     std::string laser_spec_name;

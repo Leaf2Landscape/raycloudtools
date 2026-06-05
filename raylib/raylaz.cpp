@@ -126,7 +126,7 @@ bool readLas(const std::string &file_name,
   // LAS EXTRA_BYTES data_type → per-point byte size (types 0 and >10 are skipped)
   static const uint16_t kExtraTypeSize[11] = { 0, 1, 1, 2, 2, 4, 4, 8, 8, 4, 8 };
   // Names of raycloud-owned extra attributes (these are skipped when extracting original data)
-  static const char *kRayCloudAttrs[] = { "sx", "sy", "sz", "alpha", "tree_id", "stem_id", "beam_id" };
+  static const char *kRayCloudAttrs[] = { "sx", "sy", "sz", "alpha", "bound", "tree_id", "stem_id", "beam_id" };
 
   uint16_t local_skip_size = 0;   // bytes of our own extra attributes before original data
   uint16_t local_orig_extra = 0;  // bytes of original sensor data per point
@@ -135,6 +135,7 @@ bool readLas(const std::string &file_name,
   uint16_t stem_id_offset  = 0;   uint8_t stem_id_dtype = 0;  // 0 = absent
   uint16_t beam_id_offset  = 0;   uint8_t beam_id_dtype = 0;  // 0 = absent
   uint16_t alpha_offset    = 12;  // default: sx+sy+sz only; overwritten when "alpha" VLR found
+  int32_t  bound_offset    = -1;  // -1 = absent (old file); set when "bound" VLR found
   std::vector<uint8_t> local_orig_vlr;
 
   for (laszip_U32 v = 0; v < header->number_of_variable_length_records; v++)
@@ -161,6 +162,7 @@ bool readLas(const std::string &file_name,
         if (strcmp(attr_name, "stem_id") == 0) { stem_id_offset = own_offset; stem_id_dtype = dtype; }
         if (strcmp(attr_name, "beam_id") == 0) { beam_id_offset = own_offset; beam_id_dtype = dtype; }
         if (strcmp(attr_name, "alpha")   == 0) { alpha_offset   = own_offset; }
+        if (strcmp(attr_name, "bound")   == 0) { bound_offset   = own_offset; }
       }
       if (is_ours)
       {
@@ -194,6 +196,7 @@ bool readLas(const std::string &file_name,
   ctx.stem_id_offset = stem_id_offset;  ctx.stem_id_dtype = stem_id_dtype;
   ctx.beam_id_offset = beam_id_offset;  ctx.beam_id_dtype = beam_id_dtype;
   ctx.alpha_offset = alpha_offset;
+  ctx.bound_offset = bound_offset;
   ctx.scale[0] = header->x_scale_factor;
   ctx.scale[1] = header->y_scale_factor;
   ctx.scale[2] = header->z_scale_factor;
@@ -508,9 +511,11 @@ bool readLas(const std::string &file_name,
 }
 
 bool readLasExtraBytesVlr(const std::string &file_name, uint16_t &orig_extra_size_out,
-                           std::vector<uint8_t> &extra_bytes_vlr_out)
+                           std::vector<uint8_t> &extra_bytes_vlr_out, bool *has_bound_out)
 {
 #if RAYLIB_WITH_LAS
+  if (has_bound_out)
+    *has_bound_out = false;
   laszip_POINTER reader;
   if (laszip_create(&reader))
     return false;
@@ -553,7 +558,7 @@ bool readLasExtraBytesVlr(const std::string &file_name, uint16_t &orig_extra_siz
   }
 
   static const uint16_t kExtraTypeSize[11] = { 0, 1, 1, 2, 2, 4, 4, 8, 8, 4, 8 };
-  static const char *kRayCloudAttrs[] = { "sx", "sy", "sz", "alpha", "tree_id", "stem_id", "beam_id" };
+  static const char *kRayCloudAttrs[] = { "sx", "sy", "sz", "alpha", "bound", "tree_id", "stem_id", "beam_id" };
 
   uint16_t local_orig_extra = 0;
   std::vector<uint8_t> local_orig_vlr;
@@ -573,6 +578,8 @@ bool readLasExtraBytesVlr(const std::string &file_name, uint16_t &orig_extra_siz
         continue;
       char attr_name[33] = {};
       memcpy(attr_name, rec + 4, 32);
+      if (has_bound_out && strcmp(attr_name, "bound") == 0)
+        *has_bound_out = true;
       bool is_ours = false;
       if (is_raycloud)
         for (const char *own : kRayCloudAttrs)
@@ -596,6 +603,7 @@ bool readLasExtraBytesVlr(const std::string &file_name, uint16_t &orig_extra_siz
   RAYLIB_UNUSED(file_name);
   RAYLIB_UNUSED(orig_extra_size_out);
   RAYLIB_UNUSED(extra_bytes_vlr_out);
+  RAYLIB_UNUSED(has_bound_out);
   return false;
 #endif
 }
@@ -884,6 +892,8 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
     attr_err = laszip_add_attribute(writer_handle_, 5, "beam_id", "per-pulse beam ID", 1.0, 0.0);
   if (!attr_err)
     attr_err = laszip_add_attribute(writer_handle_, 0, "alpha", "intensity 1-255", 1.0, 0.0);
+  if (!attr_err)
+    attr_err = laszip_add_attribute(writer_handle_, 0, "bound", "1=bound, 0=unbound", 1.0, 0.0);
   if (attr_err)
   {
     laszip_CHAR *error;
@@ -923,6 +933,7 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
   if (with_stem_id_) extra += 4;
   if (with_beam_id_) extra += 4;
   extra += 1; // alpha
+  extra += 1; // bound
   extra += orig_extra_size_;
   const laszip_U16 record_size = static_cast<laszip_U16>(36 + extra);
   if (laszip_set_point_type_and_size(writer_handle_, 7, record_size))
@@ -1059,7 +1070,7 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
       // Original sensor extra bytes at p[10..].
       if (orig_extra_size_ > 0)
       {
-        uint16_t orig_start = 13; // sx+sy+sz+alpha
+        uint16_t orig_start = 14; // sx+sy+sz+alpha+bound
         if (with_tree_id_) orig_start += 4;
         if (with_stem_id_) orig_start += 4;
         if (with_beam_id_) orig_start += 4;
@@ -1090,6 +1101,7 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
       off += 4;
     }
     point_->extra_bytes[off] = colours[i].alpha;
+    point_->extra_bytes[off + 1] = (colours[i].alpha > 0) ? 1 : 0;  // bound: 1=bound, 0=unbound
     laszip_write_point(writer_handle_);
   }
   points_written_ += ends.size();

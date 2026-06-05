@@ -210,6 +210,7 @@ void VoxelProcessor::processBeam(const BeamData& beam)
   // Record hits for all returns (num_hits only; traversal already counted above).
   for (int i = 0; i < N; ++i) {
     const PointData& p = *sorted[i];
+    if (p.bound == 0) continue;  // unbound (miss) ray: traversed as observed, never a hit
     Eigen::Vector3d curr(p.x, p.y, p.z);
     Eigen::Vector3d vox_coord_filled = (curr - bounds_.min_bound_) / voxel_width_;
     int64_t ix = static_cast<int64_t>(vox_coord_filled.x());
@@ -237,7 +238,7 @@ void VoxelProcessor::processBeam(const BeamData& beam)
     }
   }
 
-  if (use_occlusion_rays_) {
+  if (use_occlusion_rays_ && farthest.bound == 1) {
     Eigen::Vector3d direction = (farthest_pos - beam.beam_origin).normalized();
     double large_distance = (bounds_.max_bound_ - bounds_.min_bound_).norm() * 2.0;
     Eigen::Vector3d start_occ = farthest_pos;
