@@ -167,7 +167,6 @@ bool readLas(const std::string &file_name,
   if (offset_to_remove)
   {
     *offset_to_remove = offset;
-    std::cout << "offset to remove: " << offset.transpose() << std::endl;
   }
 
   // LAS 1.4 uses a 64-bit point count; legacy uses the 32-bit field
