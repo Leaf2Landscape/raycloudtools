@@ -183,6 +183,63 @@ int rayCombine(int argc, char *argv[])
       }
     }
 
+    // Per-file label detection from the EXTRA_BYTES VLR schema (not from point data): a file
+    // carries labels when its VLR declares a "tree_id" and/or "stem_id" attribute. These are
+    // first-class label columns, owned by the ray cloud format, so readLasExtraBytesVlr strips
+    // them from the sensor-extra schema above; we scan the raw VLR names here instead.
+    // tree_id/stem_id are never routed through the sensor-extra union/passthrough path.
+    auto lasDeclaresLabels = [](const std::string &fn) -> bool {
+#if RAYLIB_WITH_LAS
+      laszip_POINTER reader;
+      if (laszip_create(&reader))
+        return false;
+      laszip_BOOL is_compressed;
+      if (laszip_open_reader(reader, fn.c_str(), &is_compressed))
+      {
+        laszip_destroy(reader);
+        return false;
+      }
+      laszip_header_struct *header;
+      laszip_get_header_pointer(reader, &header);
+      bool found = false;
+      for (laszip_U32 v = 0; v < header->number_of_variable_length_records && !found; v++)
+      {
+        auto &vlr = header->vlrs[v];
+        if (strcmp(vlr.user_id, "LASF_Spec") != 0 || vlr.record_id != 4)
+          continue;
+        const int num_attrs = vlr.record_length_after_header / 192;
+        for (int a = 0; a < num_attrs; a++)
+        {
+          char attr_name[33] = {};
+          std::memcpy(attr_name, vlr.data + a * 192 + 4, 32);
+          if (strcmp(attr_name, "tree_id") == 0 || strcmp(attr_name, "stem_id") == 0)
+          {
+            found = true;
+            break;
+          }
+        }
+      }
+      laszip_close_reader(reader);
+      laszip_destroy(reader);
+      return found;
+#else   // RAYLIB_WITH_LAS
+      (void)fn;
+      return false;
+#endif  // RAYLIB_WITH_LAS
+    };
+    std::vector<bool> has_labels(nfiles, false);
+    bool union_has_labels = false;
+    for (int f = 0; f < nfiles; ++f)
+    {
+      const std::string &fn = cloud_files.files()[f].name();
+      const std::string fe  = ray::getFileNameExtension(fn);
+      if ((fe == "las" || fe == "laz") && lasDeclaresLabels(fn))
+      {
+        has_labels[f]     = true;
+        union_has_labels  = true;
+      }
+    }
+
     // Build the union sensor-attr schema: name-deduplicated, ordered by first appearance.
     // Any attr absent in a particular file will have its union-layout slot filled with 0xFF
     // (the -1 sentinel for signed interpretations) during passthrough reformatting below.
@@ -230,7 +287,8 @@ int rayCombine(int argc, char *argv[])
     }
 
     ray::CloudWriter writer;
-    if (!writer.begin(combined_file, union_vlr))
+    if (!writer.begin(combined_file, union_vlr, /*with_beam_id=*/false,
+                      /*with_tree_id=*/union_has_labels, /*with_stem_id=*/union_has_labels))
       usage();
 
     for (int i = 0; i < nfiles; ++i)
@@ -240,6 +298,10 @@ int rayCombine(int argc, char *argv[])
       const uint16_t file_pass_stride = static_cast<uint16_t>(10 + schemas[i].orig_extra);
       std::vector<uint8_t> passthrough_buf;
       size_t passthrough_cursor = 0;  ///< byte offset into passthrough_buf for the next chunk
+      // Label buffers: readLas appends tree_id/stem_id for files that declare them. Sliced
+      // per chunk through label_cursor, mirroring the passthrough cursor above.
+      std::vector<int32_t> tree_ids_buf, stem_ids_buf;
+      size_t label_cursor = 0;  ///< point offset into the label buffers for the next chunk
 
       auto concatenate = [&, i, file_pass_stride](
           std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
@@ -276,14 +338,43 @@ int rayCombine(int argc, char *argv[])
           }
           chunk_pass = std::move(out);
         }
-        writer.writeChunk(starts, ends, times, colours, chunk_pass);
+
+        // Carry tree_id/stem_id as first-class label columns when the union output has labels.
+        std::vector<int32_t> chunk_tree_ids, chunk_stem_ids;
+        if (union_has_labels)
+        {
+          if (has_labels[i])
+          {
+            // Forward this file's labels, sliced at the label cursor.
+            if (tree_ids_buf.size() >= label_cursor + n_pts)
+              chunk_tree_ids.assign(tree_ids_buf.begin() + static_cast<ptrdiff_t>(label_cursor),
+                                    tree_ids_buf.begin() + static_cast<ptrdiff_t>(label_cursor + n_pts));
+            if (stem_ids_buf.size() >= label_cursor + n_pts)
+              chunk_stem_ids.assign(stem_ids_buf.begin() + static_cast<ptrdiff_t>(label_cursor),
+                                    stem_ids_buf.begin() + static_cast<ptrdiff_t>(label_cursor + n_pts));
+          }
+          else
+          {
+            // File has no labels: fill sentinels (0 = unassigned tree, -1 = no stem, per raycloud.h).
+            chunk_tree_ids.assign(n_pts, 0);
+            chunk_stem_ids.assign(n_pts, -1);
+          }
+        }
+        label_cursor += n_pts;
+
+        writer.writeChunk(starts, ends, times, colours, chunk_pass, {}, chunk_tree_ids, chunk_stem_ids);
       };
 
       if (fext == "las" || fext == "laz")
       {
         size_t num_bounded;
+        // Only request label output for files that declare labels; others stay empty and are
+        // sentinel-filled in concatenate when the union output carries labels.
+        std::vector<int32_t> *tree_ids_out = has_labels[i] ? &tree_ids_buf : nullptr;
+        std::vector<int32_t> *stem_ids_out = has_labels[i] ? &stem_ids_buf : nullptr;
         if (!ray::readLas(fname, concatenate, num_bounded, 1.0, nullptr,
-                          ray::computeReadChunkSize(), nullptr, &passthrough_buf))
+                          ray::computeReadChunkSize(), tree_ids_out, &passthrough_buf,
+                          nullptr, nullptr, stem_ids_out))
           usage();
       }
       else
