@@ -23,8 +23,10 @@ public:
   /// Open the file to write to. Format is inferred from the extension (.las/.laz → LAS, else PLY).
   /// @c extra_bytes_vlr is the raw EXTRA_BYTES VLR payload (192 bytes per attribute) for original
   /// sensor attributes; pass empty if there are none.
+  /// When @c with_tree_id / @c with_stem_id is true, the underlying LAS writer allocates the
+  /// tree_id / stem_id attribute slots so those labels survive the write.
   bool begin(const std::string &file_name, const std::vector<uint8_t> &extra_bytes_vlr = {},
-             bool with_beam_id = false);
+             bool with_beam_id = false, bool with_tree_id = false, bool with_stem_id = false);
 
   /// write a set of rays to the file
   bool writeChunk(const class Cloud &chunk);
@@ -32,7 +34,8 @@ public:
   /// write a set of rays to the file, direct arguments
   bool writeChunk(std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends, std::vector<double> &times,
                   std::vector<RGBA> &colours, const std::vector<uint8_t> &passthrough = {},
-                  const std::vector<int32_t> &beam_ids = {});
+                  const std::vector<int32_t> &beam_ids = {}, const std::vector<int32_t> &tree_ids = {},
+                  const std::vector<int32_t> &stem_ids = {});
 
   /// finish writing, flush and close the file
   void end();
@@ -43,6 +46,8 @@ public:
 private:
   std::string file_name_;
   bool use_las_ = false;
+  bool with_tree_id_ = false;
+  bool with_stem_id_ = false;
 
   // PLY path
   std::ofstream ofs_;
