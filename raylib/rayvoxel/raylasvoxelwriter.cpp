@@ -339,8 +339,11 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
           }
         }
 
-        if (params.calc_beam_metrics)
-            data.transmittance = v.transmittance();
+        if (params.calc_beam_metrics) {
+            data.transmittance   = v.transmittance();
+            data.bs_entering     = v.bs_entering;
+            data.bs_intercepted  = v.bs_intercepted;
+        }
 
         if (params.subvoxel_split > 0) {
             int set_bits = popcount(v.subvoxel_bitmap);
@@ -504,7 +507,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
                        "mean_zenith_angle_rad mean_azimuth_rad azimuth_concentration mean_laser_dist";
   if (!params.dtm_file.empty() || params.dtm_from_class >= 0) { header += " distance_from_ground"; }
   if (params.calc_veg_metrics) header += " pad_g_corrected pad_leaf pad_wood";
-  if (params.calc_beam_metrics) header += " transmittance";
+  if (params.calc_beam_metrics) header += " transmittance bs_entering bs_intercepted";
   if (params.subvoxel_split > 0) header += " exploration_rate";
   if (params.calc_inclination_dist) {
     header += " leaf_g wood_g plant_g";
@@ -542,7 +545,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
         }
     }
     if (params.calc_veg_metrics) outfile << " " << data.pad_g_corrected << " " << data.pad_leaf << " " << data.pad_wood;
-    if (params.calc_beam_metrics) outfile << " " << data.transmittance;
+    if (params.calc_beam_metrics) outfile << " " << data.transmittance << " " << data.bs_entering << " " << data.bs_intercepted;
     if (params.subvoxel_split > 0) outfile << " " << data.exploration_rate;
     if (params.calc_inclination_dist) {
       outfile << " " << data.leaf_g << " " << data.wood_g << " " << data.plant_g;

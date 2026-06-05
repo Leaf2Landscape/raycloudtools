@@ -54,6 +54,8 @@ namespace ray
     double pad_leaf = 0.0;
     double pad_wood = 0.0;
     double transmittance = 1.0;
+    float bs_entering = 0.0f;       // raw beam-sample accumulator (AMAPVox bsEntering)
+    float bs_intercepted = 0.0f;    // raw beam-sample accumulator (AMAPVox bsIntercepted)
     double exploration_rate = 0.0;
     double leaf_g  = 0.0;
     double wood_g  = 0.0;
