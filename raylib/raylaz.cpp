@@ -1116,11 +1116,16 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
     return;
   }
 
-  // LASzip uses LAS 1.2 default header size (227) when computing offset_to_point_data
-  // during VLR additions. Correct for the LAS 1.4 header (375 bytes).
-  laszip_header_struct *hdr;
-  laszip_get_header_pointer(writer_handle_, &hdr);
-  hdr->offset_to_point_data += (375 - 227);
+  // LASzip computes offset_to_point_data using a hardcoded LAS 1.2 base (227 bytes).
+  // Correct it to the actual header_size (375 for LAS 1.4) so laszip_open_writer's internal
+  // validation passes. The destructor re-applies this correction after laszip_open_writer
+  // rewrites the offset again (with the final VLR size including the LAZ compression VLR).
+  {
+    laszip_header_struct *hdr = nullptr;
+    laszip_get_header_pointer(writer_handle_, &hdr);
+    if (hdr && hdr->header_size > 227)
+      hdr->offset_to_point_data += static_cast<uint32_t>(hdr->header_size) - 227u;
+  }
 
   const bool is_laz = file_name_.find(".laz") != std::string::npos;
   std::cout << "Saving ray cloud to " << file_name_ << std::endl;
@@ -1162,8 +1167,11 @@ LasRayCloudWriter::~LasRayCloudWriter()
     laszip_update_inventory(writer_handle_);
     laszip_close_writer(writer_handle_);
     laszip_destroy(writer_handle_);
+
     // laszip_close_writer clobbers point counts for streaming writes. Patch both the legacy
     // 32-bit count (offset 107) and the LAS 1.4 64-bit extended count (offset 247) on disk.
+    // offset_to_point_data is already correct: the constructor pre-corrects it before
+    // laszip_open_writer, which honours the pre-set value and writes data at that position.
     if (points_written_ > 0)
     {
       std::fstream f(file_name_, std::ios::in | std::ios::out | std::ios::binary);
@@ -1201,7 +1209,11 @@ bool LasRayCloudWriter::writeChunk(const std::vector<Eigen::Vector3d> &starts,
   }
   for (size_t i = 0; i < ends.size(); i++)
   {
+    laszip_U8 *const saved_extra_bytes = point_->extra_bytes;
+    const laszip_I32 saved_num_extra_bytes = point_->num_extra_bytes;
     std::memset(point_, 0, sizeof(*point_));
+    point_->extra_bytes = saved_extra_bytes;
+    point_->num_extra_bytes = saved_num_extra_bytes;
     laszip_F64 coords[3] = { ends[i][0], ends[i][1], ends[i][2] };
     laszip_set_coordinates(writer_handle_, coords);
     point_->gps_time = times[i];

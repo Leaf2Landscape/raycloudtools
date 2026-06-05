@@ -46,6 +46,7 @@
 #include <queue>
 #include <filesystem>
 #include <atomic>
+#include <set>
 
 namespace ray
 {
@@ -204,6 +205,24 @@ PointData makePointData(const Eigen::Vector3d& start, const Eigen::Vector3d& end
   return pd;
 }
 
+// Returns true if a point is a ground hit and should be excluded from PAD/LAD/WAD.
+// Two mutually exclusive modes: dtm_from_class >= 0 selects a class-match path; otherwise a
+// valid DTM mesh selects the vertical-distance path (point above DTM within dtm_filter_distance).
+static bool isGroundHit(double x, double y, double z, uint8_t classification,
+                         int dtm_from_class, const HeightField* dtm, double dtm_filter_distance)
+{
+  if (dtm_from_class >= 0)
+    return classification == static_cast<uint8_t>(dtm_from_class);
+  if (dtm && dtm->isValid() && dtm_filter_distance > 0.0) {
+    double ground_h;
+    if (dtm->getHeightNearest(x, y, ground_h)) {
+      const double above = z - ground_h;
+      return above >= 0.0 && above <= dtm_filter_distance;
+    }
+  }
+  return false;
+}
+
 // Byte size of each LAS extra-bytes data_type, indexed by the ASPRS data_type code.
 // Identical to kExtraTypeSize in raylaz.cpp (duplicated here since it is file-local there).
 static const uint8_t kExtraByteSizes[11] = { 0, 1, 1, 2, 2, 4, 4, 8, 8, 4, 8 };
@@ -273,7 +292,8 @@ int readClassValue(const uint8_t* base, const ClassFieldSource& src)
 
 // Reads the cloud endpoints only (no ray walking) to build a flat-index→per-class
 // hit count table. O(N_points) I/O pass, much cheaper than the traversal pass.
-static ClassTable buildClassTable(const std::string& cloud_name, const VoxelGrid& grid)
+static ClassTable buildClassTable(const std::string& cloud_name, const VoxelGrid& grid,
+                                  int dtm_from_class, const HeightField* dtm, double dtm_filter_distance)
 {
   ClassTable class_table;
 
@@ -307,6 +327,8 @@ static ClassTable buildClassTable(const std::string& cloud_name, const VoxelGrid
         if (alpha == 0) continue;
 
         const uint8_t classification = passthrough[base + 2];
+        if (isGroundHit(ends[i].x(), ends[i].y(), ends[i].z(), classification,
+                        dtm_from_class, dtm, dtm_filter_distance)) continue;
         const Eigen::Vector3d vox = (ends[i] - bounds.min_bound_) / vox_width;
         const int64_t ix = static_cast<int64_t>(vox.x());
         const int64_t iy = static_cast<int64_t>(vox.y());
@@ -319,6 +341,14 @@ static ClassTable buildClassTable(const std::string& cloud_name, const VoxelGrid
 
   return class_table;
 }
+
+// Per-tile accumulator for the tiled parallel KNN/IAD pass. Each worker thread owns one
+// TileResult; histograms are merged serially after the thread pool joins.
+struct TileResult {
+  std::unordered_map<int64_t, std::vector<double>> all_hist, leaf_hist, wood_hist, beam_hist;
+  std::unordered_map<int64_t, float> leaf_hit_count, wood_hit_count;
+  std::unordered_map<int64_t, TriangleHistograms> triangle_histograms;
+};
 
 // Per-point surface normals estimated via KNN PCA (smallest-eigenvalue eigenvector).
 // Inclination angle theta = acos(|n_z|) is binned over [0, pi/2] into LIAD/WIAD/PIAD.
@@ -334,7 +364,7 @@ static ClassTable buildClassTable(const std::string& cloud_name, const VoxelGrid
 // Methods Ecol. Evol. 10(5):680-694 (DOI 10.1111/2041-210X.13144), which covers
 // leaf/wood point SEPARATION and is a distinct method.
 static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid& grid,
-                                  const VoxelizationParameters& params,
+                                  const VoxelizationParameters& params, const HeightField* dtm,
                                   ClassTable& class_table_out, IadTable& iad_table_out)
 {
   ClassTable class_table;
@@ -398,6 +428,8 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
 
         // ClassTable work (same as buildClassTable): per-voxel standard-classification counts.
         const uint8_t classification = passthrough[base + 2];
+        if (isGroundHit(ends[i].x(), ends[i].y(), ends[i].z(), classification,
+                        params.dtm_from_class, dtm, params.dtm_filter_distance)) continue;
         const int64_t flat_idx = grid.flatIndex(ix, iy, iz);
         class_table[flat_idx][classification] += 1.0f;
 
@@ -422,20 +454,7 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
     return;
   }
 
-  // Build a libnabo KD-tree over the collected endpoints (mirrors rayellipsoid.cpp idiom).
-  const int K = std::min(params.knn_normal, static_cast<int>(positions.size()) - 1);
-  Eigen::MatrixXd points_p(3, positions.size());
-  for (size_t i = 0; i < positions.size(); ++i) points_p.col(i) = positions[i];
-  std::unique_ptr<Nabo::NNSearchD> nns(Nabo::NNSearchD::createKDTreeLinearHeap(points_p, 3));
-
-  Eigen::MatrixXi indices;
-  Eigen::MatrixXd dists2;
-  indices.resize(K, positions.size());
-  dists2.resize(K, positions.size());
-  nns->knn(points_p, indices, dists2, K, kNearestNeighbourEpsilon, 0);
-  nns.reset(nullptr);
-
-  // Parse leaf/wood class sets (duplicate of the minimal comma-parsing fragment).
+  // Parse leaf/wood class sets (read-only during tile workers).
   std::set<int> leaf_set, wood_set;
   {
     std::stringstream ss(leaf_codes_str);
@@ -451,74 +470,263 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
   const bool any_bailey = std::any_of(params.attenuation_methods.begin(), params.attenuation_methods.end(),
                                        [](const std::string& m){ return m == "bailey"; });
 
-  // Bailey (2017) triangle-facet inclination histograms (parallel estimator).
-  // Built once from the same KNN matrix before the per-voxel loop; gated on any bailey method.
-  std::unordered_map<int64_t, TriangleHistograms> triangle_histograms;
-  if (any_bailey) {
-    std::vector<int> class_labels_int(positions.size(), 0);
-    for (size_t i = 0; i < positions.size(); ++i) {
-      if (leaf_set.count(leaf_vals[i])) class_labels_int[i] = 1;
-      else if (wood_set.count(wood_vals[i])) class_labels_int[i] = -1;
-    }
-    triangle_histograms = buildTriangleInclinationHistograms(
-        positions, indices, flat_indices, class_labels_int, params.n_iad_bins, params.triangle_lmax);
-  }
+  size_t resolved_threads = std::thread::hardware_concurrency();
+  if (resolved_threads == 0) resolved_threads = 1;
 
-  // Per-voxel histogram accumulators, keyed by flat index.
+  // buf_m must be >= tile so 3x3 neighbour scan covers full buffer.
+  const double buf_m = 1.0;
+  const double tile_sz = std::max(buf_m, params.iad_tile_size);
+  const double minx = bounds.min_bound_.x(), miny = bounds.min_bound_.y();
+  const double maxx = bounds.max_bound_.x(), maxy = bounds.max_bound_.y();
+  const int n_tx = std::max(1, (int)std::ceil((maxx - minx) / tile_sz));
+  const int n_ty = std::max(1, (int)std::ceil((maxy - miny) / tile_sz));
+  const int n_tiles = n_tx * n_ty;
+
   std::unordered_map<int64_t, std::vector<double>> all_hist, leaf_hist, wood_hist, beam_hist;
   std::unordered_map<int64_t, float> leaf_hit_count, wood_hit_count;
+  std::unordered_map<int64_t, TriangleHistograms> triangle_histograms;
 
+  if (n_tiles == 1) {
+    // Small cloud: global single KD-tree, no tiling overhead.
+    const int K = std::min(params.knn_normal, (int)positions.size() - 1);
+    Eigen::MatrixXd points_p(3, positions.size());
+    for (size_t i = 0; i < positions.size(); ++i) points_p.col(i) = positions[i];
+    std::unique_ptr<Nabo::NNSearchD> nns(Nabo::NNSearchD::createKDTreeLinearHeap(points_p, 3));
+    Eigen::MatrixXi indices(K, (int)positions.size());
+    Eigen::MatrixXd dists2(K, (int)positions.size());
+    nns->knn(points_p, indices, dists2, K, kNearestNeighbourEpsilon, 0);
+    nns.reset(nullptr);
+
+    if (any_bailey) {
+      std::vector<int> class_labels_int(positions.size(), 0);
+      for (size_t i = 0; i < positions.size(); ++i) {
+        if (leaf_set.count(leaf_vals[i])) class_labels_int[i] = 1;
+        else if (wood_set.count(wood_vals[i])) class_labels_int[i] = -1;
+      }
+      triangle_histograms = buildTriangleInclinationHistograms(
+          positions, indices, flat_indices, class_labels_int, params.n_iad_bins, params.triangle_lmax);
+    }
+
+    for (size_t i = 0; i < positions.size(); ++i) {
+      Eigen::Vector3d centroid(0, 0, 0);
+      int num_neighbours = 0;
+      for (int j = 0; j < K && indices(j, i) != Nabo::NNSearchD::InvalidIndex; ++j) {
+        centroid += positions[indices(j, i)];
+        ++num_neighbours;
+      }
+      if (num_neighbours < 3) continue;
+      centroid /= static_cast<double>(num_neighbours);
+      Eigen::Matrix3d scatter = Eigen::Matrix3d::Zero();
+      for (int j = 0; j < K && indices(j, i) != Nabo::NNSearchD::InvalidIndex; ++j) {
+        Eigen::Vector3d offset = positions[indices(j, i)] - centroid;
+        scatter += offset * offset.transpose();
+      }
+      scatter /= static_cast<double>(num_neighbours);
+
+      Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eigen_solver(scatter);
+      const Eigen::Vector3d normal = eigen_solver.eigenvectors().col(0);
+      const double theta = std::acos(std::min(1.0, std::abs(normal.z())));
+
+      int bin = static_cast<int>(theta / (kPi / 2.0) * params.n_iad_bins);
+      bin = std::clamp(bin, 0, params.n_iad_bins - 1);
+
+      const int64_t flat_idx = flat_indices[i];
+      auto& ah = all_hist[flat_idx];
+      if (ah.empty()) ah.assign(params.n_iad_bins, 0.0);
+      ah[bin] += 1.0;
+
+      {
+        int bbin = static_cast<int>(beam_angles[i] / (kPi / 2.0) * params.n_iad_bins);
+        bbin = std::clamp(bbin, 0, params.n_iad_bins - 1);
+        auto& bh = beam_hist[flat_idx];
+        if (bh.empty()) bh.assign(params.n_iad_bins, 0.0);
+        bh[bbin] += 1.0;
+      }
+
+      if (leaf_set.count(leaf_vals[i])) {
+        leaf_hit_count[flat_idx] += 1.0f;
+        auto& lh = leaf_hist[flat_idx];
+        if (lh.empty()) lh.assign(params.n_iad_bins, 0.0);
+        lh[bin] += 1.0;
+      }
+      if (wood_set.count(wood_vals[i])) {
+        wood_hit_count[flat_idx] += 1.0f;
+        auto& wh = wood_hist[flat_idx];
+        if (wh.empty()) wh.assign(params.n_iad_bins, 0.0);
+        wh[bin] += 1.0;
+      }
+    }
+  } else {
+  // Large cloud: tiled parallel KNN.
+  // Bucket each point by its core tile.
+  std::vector<std::vector<size_t>> core_points(n_tiles);
+  std::vector<int> pt_tile(positions.size());
   for (size_t i = 0; i < positions.size(); ++i) {
-    // Compute covariance over the K nearest neighbours.
-    Eigen::Vector3d centroid(0, 0, 0);
-    int num_neighbours = 0;
-    for (int j = 0; j < K && indices(j, i) != Nabo::NNSearchD::InvalidIndex; ++j) {
-      centroid += positions[indices(j, i)];
-      ++num_neighbours;
-    }
-    if (num_neighbours < 3) continue;
-    centroid /= static_cast<double>(num_neighbours);
-    Eigen::Matrix3d scatter = Eigen::Matrix3d::Zero();
-    for (int j = 0; j < K && indices(j, i) != Nabo::NNSearchD::InvalidIndex; ++j) {
-      Eigen::Vector3d offset = positions[indices(j, i)] - centroid;
-      scatter += offset * offset.transpose();
-    }
-    scatter /= static_cast<double>(num_neighbours);
+    int tx = std::clamp((int)((positions[i].x() - minx) / tile_sz), 0, n_tx - 1);
+    int ty = std::clamp((int)((positions[i].y() - miny) / tile_sz), 0, n_ty - 1);
+    int t  = ty * n_tx + tx;
+    pt_tile[i] = t;
+    core_points[t].push_back(i);
+  }
 
-    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eigen_solver(scatter);
-    // Normal = eigenvector of smallest eigenvalue (eigenvalues are sorted ascending).
-    const Eigen::Vector3d normal = eigen_solver.eigenvectors().col(0);
-    const double theta = std::acos(std::min(1.0, std::abs(normal.z())));
-
-    int bin = static_cast<int>(theta / (kPi / 2.0) * params.n_iad_bins);
-    bin = std::clamp(bin, 0, params.n_iad_bins - 1);
-
-    const int64_t flat_idx = flat_indices[i];
-    auto& ah = all_hist[flat_idx];
-    if (ah.empty()) ah.assign(params.n_iad_bins, 0.0);
-    ah[bin] += 1.0;
-
-    {
-      int bbin = static_cast<int>(beam_angles[i] / (kPi / 2.0) * params.n_iad_bins);
-      bbin = std::clamp(bbin, 0, params.n_iad_bins - 1);
-      auto& bh = beam_hist[flat_idx];
-      if (bh.empty()) bh.assign(params.n_iad_bins, 0.0);
-      bh[bbin] += 1.0;
-    }
-
-    if (leaf_set.count(leaf_vals[i])) {
-      leaf_hit_count[flat_idx] += 1.0f;
-      auto& lh = leaf_hist[flat_idx];
-      if (lh.empty()) lh.assign(params.n_iad_bins, 0.0);
-      lh[bin] += 1.0;
-    }
-    if (wood_set.count(wood_vals[i])) {
-      wood_hit_count[flat_idx] += 1.0f;
-      auto& wh = wood_hist[flat_idx];
-      if (wh.empty()) wh.assign(params.n_iad_bins, 0.0);
-      wh[bin] += 1.0;
+  // For bailey: each voxel's triangle histogram is owned by a single tile to avoid
+  // double-counting (TriangleHistograms holds area-weighted means, not summable counts).
+  // Owner tile = tile of the lowest global point index that maps to that flat_idx.
+  std::unordered_map<int64_t, int> flat_owner;
+  if (any_bailey) {
+    for (size_t i = 0; i < positions.size(); ++i) {
+      auto it = flat_owner.find(flat_indices[i]);
+      if (it == flat_owner.end()) flat_owner[flat_indices[i]] = pt_tile[i];
     }
   }
+
+  std::vector<TileResult> results(resolved_threads);
+  std::atomic<int> next_tile(0);
+
+  auto worker = [&](size_t w) {
+    TileResult& tr = results[w];
+    int t;
+    while ((t = next_tile.fetch_add(1)) < n_tiles) {
+      if (core_points[t].empty()) continue;
+
+      const int tx = t % n_tx;
+      const int ty = t / n_tx;
+      const double cx0 = minx + tx * tile_sz;
+      const double cx1 = std::min(maxx, cx0 + tile_sz);
+      const double cy0 = miny + ty * tile_sz;
+      const double cy1 = std::min(maxy, cy0 + tile_sz);
+
+      // Collect buffered point indices from 3x3 tile neighbourhood.
+      std::vector<size_t> buf;
+      for (int dy = -1; dy <= 1; ++dy)
+        for (int dx = -1; dx <= 1; ++dx) {
+          int nx2 = tx + dx, ny2 = ty + dy;
+          if (nx2 < 0 || nx2 >= n_tx || ny2 < 0 || ny2 >= n_ty) continue;
+          for (size_t gi : core_points[ny2 * n_tx + nx2]) {
+            const Eigen::Vector3d& p = positions[gi];
+            if (p.x() >= cx0 - buf_m && p.x() <= cx1 + buf_m &&
+                p.y() >= cy0 - buf_m && p.y() <= cy1 + buf_m)
+              buf.push_back(gi);
+          }
+        }
+
+      const size_t Nb = buf.size();
+      if (Nb < 3) continue;
+
+      const int K = std::min(params.knn_normal, (int)Nb - 1);
+
+      // Build tile-local KD-tree over buffered points.
+      Eigen::MatrixXd pts(3, Nb);
+      for (size_t c = 0; c < Nb; ++c) pts.col(c) = positions[buf[c]];
+      std::unique_ptr<Nabo::NNSearchD> nns(Nabo::NNSearchD::createKDTreeLinearHeap(pts, 3));
+      Eigen::MatrixXi idx(K, Nb);
+      Eigen::MatrixXd d2(K, Nb);
+      nns->knn(pts, idx, d2, K, kNearestNeighbourEpsilon, 0);
+      nns.reset(nullptr);
+
+      // PCA normal estimation — accumulate only for core points.
+      for (size_t c = 0; c < Nb; ++c) {
+        if (pt_tile[buf[c]] != t) continue;  // skip buffer-only points
+
+        Eigen::Vector3d centroid(0, 0, 0);
+        int num_neighbours = 0;
+        for (int j = 0; j < K && idx(j, c) != Nabo::NNSearchD::InvalidIndex; ++j) {
+          centroid += positions[buf[idx(j, c)]];
+          ++num_neighbours;
+        }
+        if (num_neighbours < 3) continue;
+        centroid /= static_cast<double>(num_neighbours);
+        Eigen::Matrix3d scatter = Eigen::Matrix3d::Zero();
+        for (int j = 0; j < K && idx(j, c) != Nabo::NNSearchD::InvalidIndex; ++j) {
+          Eigen::Vector3d offset = positions[buf[idx(j, c)]] - centroid;
+          scatter += offset * offset.transpose();
+        }
+        scatter /= static_cast<double>(num_neighbours);
+
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eigen_solver(scatter);
+        const Eigen::Vector3d normal = eigen_solver.eigenvectors().col(0);
+        const double theta = std::acos(std::min(1.0, std::abs(normal.z())));
+
+        int bin = static_cast<int>(theta / (kPi / 2.0) * params.n_iad_bins);
+        bin = std::clamp(bin, 0, params.n_iad_bins - 1);
+
+        const int64_t flat_idx = flat_indices[buf[c]];
+        auto& ah = tr.all_hist[flat_idx];
+        if (ah.empty()) ah.assign(params.n_iad_bins, 0.0);
+        ah[bin] += 1.0;
+
+        {
+          int bbin = static_cast<int>(beam_angles[buf[c]] / (kPi / 2.0) * params.n_iad_bins);
+          bbin = std::clamp(bbin, 0, params.n_iad_bins - 1);
+          auto& bh = tr.beam_hist[flat_idx];
+          if (bh.empty()) bh.assign(params.n_iad_bins, 0.0);
+          bh[bbin] += 1.0;
+        }
+
+        if (leaf_set.count(leaf_vals[buf[c]])) {
+          tr.leaf_hit_count[flat_idx] += 1.0f;
+          auto& lh = tr.leaf_hist[flat_idx];
+          if (lh.empty()) lh.assign(params.n_iad_bins, 0.0);
+          lh[bin] += 1.0;
+        }
+        if (wood_set.count(wood_vals[buf[c]])) {
+          tr.wood_hit_count[flat_idx] += 1.0f;
+          auto& wh = tr.wood_hist[flat_idx];
+          if (wh.empty()) wh.assign(params.n_iad_bins, 0.0);
+          wh[bin] += 1.0;
+        }
+      }
+
+      // Bailey triangle-facet histograms (single-owner per voxel to avoid
+      // double-counting area-weighted means across tile boundaries).
+      if (any_bailey) {
+        std::vector<Eigen::Vector3d> local_pos(Nb);
+        std::vector<int64_t> local_flat(Nb);
+        std::vector<int> labels(Nb, 0);
+        for (size_t c = 0; c < Nb; ++c) {
+          local_pos[c]  = positions[buf[c]];
+          local_flat[c] = flat_indices[buf[c]];
+          if (leaf_set.count(leaf_vals[buf[c]])) labels[c] = 1;
+          else if (wood_set.count(wood_vals[buf[c]])) labels[c] = -1;
+        }
+        auto th = buildTriangleInclinationHistograms(local_pos, idx, local_flat, labels,
+                                                     params.n_iad_bins, params.triangle_lmax);
+        for (auto& kv : th) {
+          auto oit = flat_owner.find(kv.first);
+          if (oit != flat_owner.end() && oit->second == t)
+            tr.triangle_histograms.emplace(kv.first, std::move(kv.second));
+        }
+      }
+    }
+  };
+
+  const size_t n_workers = std::min(resolved_threads, (size_t)std::max(1, n_tiles));
+  std::vector<std::thread> pool;
+  pool.reserve(n_workers);
+  for (size_t w = 0; w < n_workers; ++w) pool.emplace_back(worker, w);
+  for (auto& th : pool) th.join();
+
+  // Merge per-tile results. Histograms are additive (each point is accumulated by exactly
+  // one core tile). Triangle histograms use single-owner assignment (non-additive means).
+  auto merge_hist = [&](std::unordered_map<int64_t, std::vector<double>>& dst,
+                        std::unordered_map<int64_t, std::vector<double>>& src) {
+    for (auto& kv : src) {
+      auto& d = dst[kv.first];
+      if (d.empty()) d = std::move(kv.second);
+      else for (int b = 0; b < params.n_iad_bins; ++b) d[b] += kv.second[b];
+    }
+  };
+
+  for (auto& tr : results) {
+    merge_hist(all_hist, tr.all_hist);
+    merge_hist(leaf_hist, tr.leaf_hist);
+    merge_hist(wood_hist, tr.wood_hist);
+    merge_hist(beam_hist, tr.beam_hist);
+    for (auto& kv : tr.leaf_hit_count) leaf_hit_count[kv.first] += kv.second;
+    for (auto& kv : tr.wood_hit_count) wood_hit_count[kv.first] += kv.second;
+    for (auto& kv : tr.triangle_histograms) triangle_histograms.emplace(kv.first, std::move(kv.second));
+  }
+  } // end tiled path
 
   // L1-normalize each histogram (leave all-zero if its sum is zero).
   auto normalize = [](std::vector<double>& h) {
@@ -608,7 +816,7 @@ public:
   virtual bool execute(const std::string& cloud_name, VoxelGrid& grid,
                        const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
                        bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-                       const HeightField* dtm) = 0;
+                       const HeightField* dtm, int dtm_from_class, double dtm_filter_distance) = 0;
 };
 
 // --- In-Memory Strategy (Options 1 & 2) ---
@@ -618,7 +826,7 @@ public:
   bool execute(const std::string& cloud_name, VoxelGrid& grid,
                const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
                bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-               const HeightField* dtm) override;
+               const HeightField* dtm, int dtm_from_class, double dtm_filter_distance) override;
 private:
   size_t num_threads_;
 };
@@ -630,12 +838,13 @@ public:
   bool execute(const std::string& cloud_name, VoxelGrid& grid,
                const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
                bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-               const HeightField* dtm) override;
+               const HeightField* dtm, int dtm_from_class, double dtm_filter_distance) override;
 private:
   bool createShards(const std::string& cloud_name, VoxelGrid& grid,
                     const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
                     bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-                    const HeightField* dtm, std::vector<std::string>& out_shard_paths);
+                    const HeightField* dtm, int dtm_from_class, double dtm_filter_distance,
+                    std::vector<std::string>& out_shard_paths);
 
   bool mergeShards(const std::vector<std::string>& shard_paths, VoxelGrid& grid);
 
@@ -647,7 +856,7 @@ private:
 bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
                                 const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
                                 bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-                                const HeightField* dtm)
+                                const HeightField* dtm, int dtm_from_class, double dtm_filter_distance)
 {
   // Determine the final number of threads to use
   size_t resolved_threads = num_threads_;
@@ -763,6 +972,8 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
           const int32_t bid = (i < beam_ids_chunk.size()) ? beam_ids_chunk[i] : -1;
           const uint8_t alpha = (i < colours.size()) ? colours[i].alpha : 1;
           PointData pd = makePointData(starts[i], ends[i], times[i], bid, alpha, passthrough, i, stride);
+          if (isGroundHit(pd.x, pd.y, pd.z, pd.classification, dtm_from_class, dtm, dtm_filter_distance))
+            pd.bound = 0;
           const bool new_beam = beam_ids_chunk.empty()
             ? (pd.gps_time != pending_gps_time)
             : (pd.beam_id != pending_beam_id);
@@ -842,6 +1053,8 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
           const int32_t bid = (i < beam_ids_chunk.size()) ? beam_ids_chunk[i] : -1;
           const uint8_t alpha = (i < colours.size()) ? colours[i].alpha : 1;
           PointData pd = makePointData(starts[i], ends[i], times[i], bid, alpha, passthrough, i, stride);
+          if (isGroundHit(pd.x, pd.y, pd.z, pd.classification, dtm_from_class, dtm, dtm_filter_distance))
+            pd.bound = 0;
           const bool new_beam = beam_ids_chunk.empty()
             ? (pd.gps_time != pending_gps_time)
             : (pd.beam_id != pending_beam_id);
@@ -973,12 +1186,13 @@ public:
 bool OutOfCoreStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
                                 const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
                                 bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-                                const HeightField* dtm) {
+                                const HeightField* dtm, int dtm_from_class, double dtm_filter_distance) {
     std::vector<std::string> shard_paths;
     std::cout << "Starting out-of-core processing..." << std::endl;
 
     if (!createShards(cloud_name, grid, weighting_method, use_occlusion, apply_flat_top,
-                      calc_beam_metrics, beam_diameter, beam_divergence, subvoxel_split, dtm, shard_paths)) {
+                      calc_beam_metrics, beam_diameter, beam_divergence, subvoxel_split, dtm,
+                      dtm_from_class, dtm_filter_distance, shard_paths)) {
         std::cerr << "Error: Failed during sharding phase." << std::endl;
         return false;
     }
@@ -1012,7 +1226,8 @@ bool OutOfCoreStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
 bool OutOfCoreStrategy::createShards(const std::string& cloud_name, VoxelGrid& grid,
                                      const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
                                      bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-                                     const HeightField* dtm, std::vector<std::string>& out_shard_paths) {
+                                     const HeightField* dtm, int dtm_from_class, double dtm_filter_distance,
+                                     std::vector<std::string>& out_shard_paths) {
     std::cout << "Phase 1: Processing points and writing to temporary shards..." << std::endl;
 
     size_t resolved_threads = num_threads_ == 0 ? std::thread::hardware_concurrency() : num_threads_;
@@ -1121,6 +1336,8 @@ bool OutOfCoreStrategy::createShards(const std::string& cloud_name, VoxelGrid& g
           const int32_t bid = (i < beam_ids_chunk.size()) ? beam_ids_chunk[i] : -1;
           const uint8_t alpha = (i < colours.size()) ? colours[i].alpha : 1;
           PointData pd = makePointData(starts[i], ends[i], times[i], bid, alpha, passthrough, i, stride);
+          if (isGroundHit(pd.x, pd.y, pd.z, pd.classification, dtm_from_class, dtm, dtm_filter_distance))
+            pd.bound = 0;
           const bool new_beam = beam_ids_chunk.empty()
             ? (pd.gps_time != pending_gps_time)
             : (pd.beam_id != pending_beam_id);
@@ -1348,7 +1565,8 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
     }
 
     bool processing_success = strategy->execute(params.cloud_name, grid, params.weighting_method, params.use_occlusion, params.apply_flat_top,
-                                                 params.calc_beam_metrics, beam_diameter, beam_divergence, params.subvoxel_split, dtm_ptr.get());
+                                                 params.calc_beam_metrics, beam_diameter, beam_divergence, params.subvoxel_split, dtm_ptr.get(),
+                                                 params.dtm_from_class, params.dtm_filter_distance);
 
     if (!processing_success) {
       return false; // Strategy failed, exit early.
@@ -1375,7 +1593,7 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
         }
       }
       std::cout << "Building classification table and inclination angle distributions..." << std::endl;
-      buildClassAndIadTable(params.cloud_name, grid, params, class_table, iad_table);
+      buildClassAndIadTable(params.cloud_name, grid, params, dtm_ptr.get(), class_table, iad_table);
     } else {
       {
         static bool field_no_iad_warned = false;
@@ -1389,7 +1607,7 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
         }
       }
       std::cout << "Building classification table..." << std::endl;
-      class_table = buildClassTable(params.cloud_name, grid);
+      class_table = buildClassTable(params.cloud_name, grid, params.dtm_from_class, dtm_ptr.get(), params.dtm_filter_distance);
     }
 
     std::cout << "Calculating output metrics..." << std::endl;

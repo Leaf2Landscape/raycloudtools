@@ -8,6 +8,7 @@
 #include "raymesh.h"
 #include "rayply.h"
 #include "rayforeststructure.h"
+#include "raylasdecode.h"
 #include <vector>
 #include <fstream>
 #include <string>
@@ -323,4 +324,83 @@ namespace raytest
     EXPECT_TRUE(mesh_ifs.is_open());
   }
 #endif  // RAYLIB_WITH_QHULL
+
+#if RAYLIB_WITH_LAS
+  // Verify that the explicit `bound` extra-byte field takes precedence over alpha when both are
+  // present. This exercises the fix for old files (bound_offset == -1) vs new files.
+  TEST(BoundDecode, BoundAuthoritativeWhenPresent)
+  {
+    using namespace ray;
+
+    // Extra-bytes layout: [sx(4) sy(4) sz(4) alpha(1) bound(1)] = 14 bytes total.
+    // alpha_offset = 12, bound_offset = 13.
+    DecodeContext ctx;
+    ctx.is_raycloud = true;
+    ctx.alpha_offset = 12;
+    ctx.bound_offset = 13;
+    ctx.sx_offset = 0;
+    ctx.sy_offset = 4;
+    ctx.sz_offset = 8;
+
+    auto makePoint = [](uint8_t alpha, uint8_t bound, std::array<uint8_t, 14> &extra) -> laszip_point_struct {
+      std::fill(extra.begin(), extra.end(), 0);
+      extra[12] = alpha;
+      extra[13] = bound;
+      laszip_point_struct pt = {};
+      pt.extra_bytes = extra.data();
+      pt.num_extra_bytes = static_cast<laszip_I32>(extra.size());
+      pt.gps_time = 0.0;
+      return pt;
+    };
+
+    // Case 1: alpha > 0, bound == 0  →  bound wins: ray must be unbound (intensity == 0).
+    {
+      std::array<uint8_t, 14> extra;
+      laszip_point_struct pt = makePoint(5, 0, extra);
+      std::vector<Eigen::Vector3d> starts, ends;
+      std::vector<double> times;
+      std::vector<RGBA> colours;
+      std::vector<uint8_t> intensities;
+      size_t num_bounded = 0;
+      decodePointRecord(&pt, ctx, Eigen::Vector3d::Zero(), starts, ends, times, colours, intensities,
+                        num_bounded, nullptr, nullptr, nullptr, nullptr);
+      EXPECT_EQ(intensities.back(), 0u) << "bound=0 must suppress stray alpha";
+      EXPECT_EQ(num_bounded, 0u);
+    }
+
+    // Case 2: alpha == 0, bound == 1  →  bound wins: ray must be bounded (intensity == 1).
+    {
+      std::array<uint8_t, 14> extra;
+      laszip_point_struct pt = makePoint(0, 1, extra);
+      std::vector<Eigen::Vector3d> starts, ends;
+      std::vector<double> times;
+      std::vector<RGBA> colours;
+      std::vector<uint8_t> intensities;
+      size_t num_bounded = 0;
+      decodePointRecord(&pt, ctx, Eigen::Vector3d::Zero(), starts, ends, times, colours, intensities,
+                        num_bounded, nullptr, nullptr, nullptr, nullptr);
+      EXPECT_GT(intensities.back(), 0u) << "bound=1 must mark ray as bounded when alpha is zero";
+      EXPECT_EQ(num_bounded, 1u);
+    }
+
+    // Case 3: old file (bound_offset == -1) — alpha alone drives boundedness.
+    {
+      DecodeContext old_ctx = ctx;
+      old_ctx.bound_offset = -1;
+
+      std::array<uint8_t, 14> extra;
+      laszip_point_struct pt = makePoint(7, 0, extra);  // bound byte says unbound, but field absent
+      std::vector<Eigen::Vector3d> starts, ends;
+      std::vector<double> times;
+      std::vector<RGBA> colours;
+      std::vector<uint8_t> intensities;
+      size_t num_bounded = 0;
+      decodePointRecord(&pt, old_ctx, Eigen::Vector3d::Zero(), starts, ends, times, colours,
+                        intensities, num_bounded, nullptr, nullptr, nullptr, nullptr);
+      EXPECT_EQ(intensities.back(), 7u) << "old file: alpha is sole source of truth";
+      EXPECT_EQ(num_bounded, 1u);
+    }
+  }
+#endif  // RAYLIB_WITH_LAS
+
 } // raytest

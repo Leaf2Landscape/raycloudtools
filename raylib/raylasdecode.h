@@ -304,6 +304,17 @@ inline void decodePointRecord(const laszip_point_struct *point, const DecodeCont
     intensity = (point->num_extra_bytes > alpha_pos)
                   ? point->extra_bytes[alpha_pos]
                   : static_cast<uint8_t>(point->intensity);  // fallback for old files
+    // When the explicit bound field is present (new-format files), treat it as authoritative.
+    // Old files (bound_offset == -1) fall through to the alpha > 0 sentinel unchanged.
+    if (ctx.bound_offset >= 0 &&
+        point->num_extra_bytes > static_cast<uint16_t>(ctx.bound_offset))
+    {
+      const uint8_t b = point->extra_bytes[ctx.bound_offset];
+      if (b == 0 && intensity > 0)
+        intensity = 0;  // file says unbound; suppress stray alpha
+      else if (b != 0 && intensity == 0)
+        intensity = 1;  // file says bound but alpha was zero; mark as bounded
+    }
   }
   else
   {
@@ -437,6 +448,15 @@ inline void decodePointRecordIndexed(const laszip_point_struct *point, const Dec
     intensity = (point->num_extra_bytes > alpha_pos)
                   ? point->extra_bytes[alpha_pos]
                   : static_cast<uint8_t>(point->intensity);
+    if (ctx.bound_offset >= 0 &&
+        point->num_extra_bytes > static_cast<uint16_t>(ctx.bound_offset))
+    {
+      const uint8_t b = point->extra_bytes[ctx.bound_offset];
+      if (b == 0 && intensity > 0)
+        intensity = 0;
+      else if (b != 0 && intensity == 0)
+        intensity = 1;
+    }
   }
   else
   {

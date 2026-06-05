@@ -48,9 +48,10 @@ void usage()
   std::cout << "  --write_filled, -w              Creates an *additional* output file containing only FILLED voxels." << std::endl;
   std::cout << "  --write_amapvox_also, -a        In addition to primary output, also write an AMAPVox .vox file." << std::endl << std::endl;
   std::cout << "DTM / Ground Control Options:" << std::endl;
-  std::cout << "  --dtm <file.ply>                Use an external PLY mesh as a DTM for ground clipping and metrics." << std::endl;
-  std::cout << "  --dtm_from_class <class>        Generate a DTM internally from points with the given classification code." << std::endl;
-  std::cout << "  --dtm_cell_size <val>           Cell size (in metres) for the DTM rasterization. Default: 1.0." << std::endl << std::endl;
+  std::cout << "  --dtm <file.ply>                Use an external PLY mesh as a DTM for ground clipping and metrics. Use `--dtm_filter_distance` to set the ground proximity threshold (default 0.2 m)." << std::endl;
+  std::cout << "  --dtm_from_class <class>        Generate a DTM internally from points with the given classification code. Points of this class are treated as ground hits (observed but never counted as hits in PAD/LAD/WAD)." << std::endl;
+  std::cout << "  --dtm_cell_size <val>           Cell size (in metres) for the DTM rasterization. Default: 1.0." << std::endl;
+  std::cout << "  --dtm_filter_distance <val>     Vertical distance (in metres) above the DTM within which points are ground hits. Default: 0.2." << std::endl << std::endl;
   std::cout << "Post-Processing Options:" << std::endl;
   std::cout << "  --flat_top_compensation         Apply density correction for flat-topped canopies (e.g., crops)." << std::endl;
   std::cout << "  --neighbour_priors <min_rays>   Apply spatial smoothing to voxels with fewer than <min_rays>. Default: 0 (off)." << std::endl << std::endl;
@@ -65,11 +66,12 @@ void usage()
   std::cout << "  --beam_params <diam,div>        Manually specify beam diameter (m) and divergence (rad)." << std::endl;
   std::cout << "  --subvoxel_split <N>            Enable exploration rate calculation with an N x N x N grid (N=2,3,4). Default: 0 (off)." << std::endl;
   std::cout << "  --no_inclination_dist           Disable the inclination-distribution pass (skips KNN normal estimation) while keeping --veg_metrics." << std::endl;
-  std::cout << "  --output_iad                    Write per-bin LIAD/WIAD/PIAD histogram columns to output (default: off; G scalars are always written)." << std::endl;
+  std::cout << "  --output_iad                    Write per-bin LIAD/WIAD/PIAD histogram columns to output (default: off; G scalars are always written) (computed via a tiled parallel KNN pass; see --iad_tile_size)." << std::endl;
   std::cout << "  --n_iad_bins <N>                Number of inclination-angle histogram bins over [0, pi/2]. Default: 18." << std::endl;
   std::cout << "  --attenuation_method <methods>  Comma-separated PAD/LAD/WAD estimators: fpl (default), ppl, transmittance, bailey." << std::endl;
   std::cout << "  --knn_normal <N>                Number of nearest neighbours used for per-point normal estimation. Default: 10." << std::endl;
   std::cout << "  --triangle_lmax <m>             Max triangle edge length for Bailey facets (only used with --attenuation_method bailey). Default: 0.05." << std::endl;
+  std::cout << "  --iad_tile_size <m>             XY tile size (m) for the tiled parallel KNN normal/IAD pass. Default: 3.0. Smaller tiles use less memory; see also --threads." << std::endl;
   exit(1);
 }
 
@@ -114,6 +116,8 @@ int main_function(int argc, char *argv[])
   OptionalKeyValueArgument dtm_from_class("dtm_from_class", '\0', &dtm_from_class_val);
   DoubleArgument dtm_cell_size_val(0.1, 100.0, 1.0);
   OptionalKeyValueArgument dtm_cell_size("dtm_cell_size", '\0', &dtm_cell_size_val);
+  DoubleArgument dtm_filter_distance_val(0.0, 100.0, 0.2);
+  OptionalKeyValueArgument dtm_filter_distance("dtm_filter_distance", '\0', &dtm_filter_distance_val);
 
   // Post-Processing
   OptionalFlagArgument flat_top_compensation("flat_top_compensation", '\0');
@@ -148,6 +152,8 @@ int main_function(int argc, char *argv[])
   OptionalKeyValueArgument knn_normal("knn_normal", '\0', &knn_normal_val);
   DoubleArgument triangle_lmax_val(0.001, 10.0, 0.05);
   OptionalKeyValueArgument triangle_lmax("triangle_lmax", '\0', &triangle_lmax_val);
+  DoubleArgument iad_tile_size_val(1.0, 1000.0, 3.0);
+  OptionalKeyValueArgument iad_tile_size("iad_tile_size", '\0', &iad_tile_size_val);
 
   // --- Parse Command Line ---
   std::vector<FixedArgument *> fixed_args = { &cloud_file };
@@ -155,12 +161,12 @@ int main_function(int argc, char *argv[])
       &parallel_flag, &no_parallel_flag, &num_threads, &out_of_core_flag, &ram_budget_mb, &reserve_size,
       &voxel_size, &grid_bounds_min, &grid_bounds_max, &output_format, &weighting_method,
       &occlusion, &write_amapvox_also, &write_empty, &write_filled,
-      &dtm_file, &dtm_from_class, &dtm_cell_size,
+      &dtm_file, &dtm_from_class, &dtm_cell_size, &dtm_filter_distance,
       &flat_top_compensation, &neighbour_priors,
       &veg_metrics, &leaf_classes, &wood_classes, &lad, &lad_params,
       &beam_metrics, &laser_spec, &beam_params, &subvoxel_split,
       &inclination_dist, &no_inclination_dist, &output_iad, &n_iad_bins, &attenuation_method, &knn_normal,
-      &triangle_lmax };
+      &triangle_lmax, &iad_tile_size };
 
   if (!parseCommandLine(argc, argv, fixed_args, optional_args)) {
     usage();
@@ -266,6 +272,7 @@ int main_function(int argc, char *argv[])
   params.knn_normal = knn_normal_val.value();
   params.reserve_size = static_cast<size_t>(reserve_size_val.value());
   params.triangle_lmax     = triangle_lmax_val.value();
+  params.iad_tile_size = iad_tile_size_val.value();
   if (any_bailey) params.calc_inclination_dist = true;  // ensures KNN matrix exists
 
   // DTM parameters
@@ -277,6 +284,7 @@ int main_function(int argc, char *argv[])
     params.dtm_from_class = dtm_from_class_val.value();
   }
   params.dtm_cell_size = dtm_cell_size_val.value();
+  params.dtm_filter_distance = dtm_filter_distance_val.value();
 
   // Determine number of threads to use. 0 means auto-detect.
   // Strategy parameters

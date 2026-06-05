@@ -14,10 +14,13 @@
 #include "raylib/raylaz.h"
 #include "raylib/raysysinfo.h"
 
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <string>
 
 void usage(int exit_code = 1)
 {
@@ -123,35 +126,164 @@ int rayCombine(int argc, char *argv[])
   std::string combined_file = output.isSet() ? output_file.name() : file_stub + "_combined." + combine_ext;
   if (concatenate_all)
   {
-    // Pre-read extra-byte VLR from the first input file so the writer can register them.
-    std::vector<uint8_t> extra_bytes_vlr;
-    const std::string first_file = cloud_files.files()[0].name();
-    const std::string first_ext = ray::getFileNameExtension(first_file);
-    if (first_ext == "las" || first_ext == "laz")
+    // Each sensor-extra attribute declared in a file's EXTRA_BYTES VLR.
+    struct SensorAttr
+    {
+      std::string name;
+      uint16_t size   = 0;
+      uint16_t offset = 0;  ///< cumulative byte offset within this file's sensor-extras slice
+      std::array<uint8_t, 192> record{};  ///< raw 192-byte EXTRA_BYTES VLR record
+    };
+
+    // Parse a stripped EXTRA_BYTES VLR payload (as returned by readLasExtraBytesVlr) into
+    // named attributes with cumulative byte offsets.
+    auto parseSensorAttrs = [](const std::vector<uint8_t> &vlr)
+    {
+      constexpr uint16_t kTypeSize[11] = { 0, 1, 1, 2, 2, 4, 4, 8, 8, 4, 8 };
+      std::vector<SensorAttr> result;
+      uint16_t off = 0;
+      const int n = static_cast<int>(vlr.size()) / 192;
+      for (int a = 0; a < n; ++a)
+      {
+        const uint8_t *rec = vlr.data() + a * 192;
+        const uint8_t dtype = rec[2];
+        const uint16_t sz = (dtype > 0 && dtype <= 10) ? kTypeSize[dtype] : 0;
+        if (sz == 0)
+          continue;
+        SensorAttr attr;
+        char name_buf[33] = {};
+        std::memcpy(name_buf, rec + 4, 32);
+        attr.name   = name_buf;
+        attr.size   = sz;
+        attr.offset = off;
+        std::memcpy(attr.record.data(), rec, 192);
+        result.push_back(std::move(attr));
+        off += sz;
+      }
+      return result;
+    };
+
+    // Pre-pass: read the EXTRA_BYTES VLR from every LAS/LAZ input file.
+    struct FileSchema
     {
       uint16_t orig_extra = 0;
-      ray::readLasExtraBytesVlr(first_file, orig_extra, extra_bytes_vlr);
+      std::vector<SensorAttr> attrs;
+    };
+    const int nfiles = static_cast<int>(cloud_files.files().size());
+    std::vector<FileSchema> schemas(nfiles);
+    for (int f = 0; f < nfiles; ++f)
+    {
+      const std::string &fn = cloud_files.files()[f].name();
+      const std::string fe  = ray::getFileNameExtension(fn);
+      if (fe == "las" || fe == "laz")
+      {
+        std::vector<uint8_t> file_vlr;
+        ray::readLasExtraBytesVlr(fn, schemas[f].orig_extra, file_vlr);
+        schemas[f].attrs = parseSensorAttrs(file_vlr);
+      }
+    }
+
+    // Build the union sensor-attr schema: name-deduplicated, ordered by first appearance.
+    // Any attr absent in a particular file will have its union-layout slot filled with 0xFF
+    // (the -1 sentinel for signed interpretations) during passthrough reformatting below.
+    std::vector<SensorAttr> union_attrs;
+    std::vector<uint8_t> union_vlr;
+    uint16_t union_sensor_size = 0;
+    for (const auto &schema : schemas)
+    {
+      for (const auto &attr : schema.attrs)
+      {
+        bool already = false;
+        for (const auto &ua : union_attrs)
+          if (ua.name == attr.name) { already = true; break; }
+        if (!already)
+        {
+          SensorAttr ua = attr;
+          ua.offset     = union_sensor_size;
+          union_vlr.insert(union_vlr.end(), ua.record.begin(), ua.record.end());
+          union_sensor_size += ua.size;
+          union_attrs.push_back(std::move(ua));
+        }
+      }
+    }
+
+    // Per-file remap: for each union attr present in this file, record src_offset → dst_offset.
+    // Attrs absent in a file are left at the 0xFF sentinel initialised during reformatting.
+    struct AttrRemap { uint16_t src_off, dst_off, size; };
+    const uint16_t writer_pass_stride = static_cast<uint16_t>(10 + union_sensor_size);
+    std::vector<std::vector<AttrRemap>> remaps(nfiles);
+    std::vector<bool> needs_remap(nfiles, false);
+    for (int f = 0; f < nfiles; ++f)
+    {
+      for (const auto &ua : union_attrs)
+        for (const auto &fa : schemas[f].attrs)
+          if (fa.name == ua.name)
+          {
+            remaps[f].push_back({ fa.offset, ua.offset, std::min(fa.size, ua.size) });
+            break;
+          }
+      const uint16_t fp = static_cast<uint16_t>(10 + schemas[f].orig_extra);
+      needs_remap[f] = (fp != writer_pass_stride) || (remaps[f].size() < union_attrs.size());
+      if (!needs_remap[f])
+        for (const auto &r : remaps[f])
+          if (r.src_off != r.dst_off) { needs_remap[f] = true; break; }
     }
 
     ray::CloudWriter writer;
-    if (!writer.begin(combined_file, extra_bytes_vlr))
+    if (!writer.begin(combined_file, union_vlr))
       usage();
 
-    for (int i = 0; i < (int)cloud_files.files().size(); i++)
+    for (int i = 0; i < nfiles; ++i)
     {
       const std::string &fname = cloud_files.files()[i].name();
-      const std::string fext = ray::getFileNameExtension(fname);
+      const std::string fext   = ray::getFileNameExtension(fname);
+      const uint16_t file_pass_stride = static_cast<uint16_t>(10 + schemas[i].orig_extra);
       std::vector<uint8_t> passthrough_buf;
-      auto concatenate = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
-                             std::vector<double> &times, std::vector<ray::RGBA> &colours) {
-        std::vector<uint8_t> chunk_pass(std::move(passthrough_buf));
-        passthrough_buf.clear();
+      size_t passthrough_cursor = 0;  ///< byte offset into passthrough_buf for the next chunk
+
+      auto concatenate = [&, i, file_pass_stride](
+          std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
+          std::vector<double> &times, std::vector<ray::RGBA> &colours)
+      {
+        // Slice this chunk's passthrough at the cursor position.
+        // Sequential path: passthrough_buf grows per chunk; cursor stays aligned.
+        // laz-perf path: passthrough_buf is pre-allocated for all N points; cursor advances
+        //                through it so each chunk gets the correct absolute slice.
+        const size_t n_pts       = starts.size();
+        const size_t chunk_bytes = n_pts * file_pass_stride;
+        std::vector<uint8_t> chunk_pass;
+        if (passthrough_buf.size() >= passthrough_cursor + chunk_bytes)
+          chunk_pass.assign(
+            passthrough_buf.begin() + static_cast<ptrdiff_t>(passthrough_cursor),
+            passthrough_buf.begin() + static_cast<ptrdiff_t>(passthrough_cursor + chunk_bytes));
+        passthrough_cursor += chunk_bytes;
+
+        // Reformat sensor-extra bytes from this file's VLR layout to the union layout.
+        // Missing attrs keep their 0xFF sentinel; matching attrs are mapped by name.
+        if (needs_remap[i] && !chunk_pass.empty())
+        {
+          const size_t n = chunk_pass.size() / file_pass_stride;
+          std::vector<uint8_t> out(n * writer_pass_stride, 0xFFu);
+          for (size_t j = 0; j < n; ++j)
+          {
+            // Preserve the 10 fixed LAS bytes (return number, scan angle, intensity, …).
+            std::memcpy(out.data()       + j * writer_pass_stride,
+                        chunk_pass.data() + j * file_pass_stride, 10);
+            // Map each named sensor attr from this file's layout to the union layout.
+            for (const auto &r : remaps[i])
+              std::memcpy(out.data()       + j * writer_pass_stride + 10 + r.dst_off,
+                          chunk_pass.data() + j * file_pass_stride  + 10 + r.src_off, r.size);
+          }
+          chunk_pass = std::move(out);
+        }
         writer.writeChunk(starts, ends, times, colours, chunk_pass);
       };
+
       if (fext == "las" || fext == "laz")
       {
         size_t num_bounded;
-        if (!ray::readLas(fname, concatenate, num_bounded, 1.0, nullptr, ray::computeReadChunkSize(), nullptr, &passthrough_buf))
+        if (!ray::readLas(fname, concatenate, num_bounded, 1.0, nullptr,
+                          ray::computeReadChunkSize(), nullptr, &passthrough_buf))
           usage();
       }
       else

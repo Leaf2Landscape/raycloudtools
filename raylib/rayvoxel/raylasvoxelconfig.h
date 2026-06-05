@@ -31,6 +31,7 @@ namespace ray
     std::string dtm_file;
     int dtm_from_class = -1;
     double dtm_cell_size = 1.0;
+    double dtm_filter_distance = 0.2;
 
     // --- Core Processing Parameters ---
     std::string weighting_method = "equal";
@@ -68,6 +69,7 @@ namespace ray
     int  knn_normal = 10;
 
     double triangle_lmax     = 0.05;   // max triangle edge length (metres)
+    double iad_tile_size = 3.0;   // XY tile edge (m) for tiled parallel KNN in the IAD pass
 
     bool calc_beam_metrics = false;
     std::string laser_spec_name;
