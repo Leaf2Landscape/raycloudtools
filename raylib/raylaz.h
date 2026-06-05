@@ -98,13 +98,16 @@ private:
 /// When @c with_beam_id is true, an int32 "beam_id" extra attribute is added (per-pulse beam ID).
 /// When @c extra_bytes_vlr is non-empty, the original sensor extra-byte attributes are
 /// registered from its 192-byte EXTRA_BYTES VLR records and written per point from passthrough[8+].
+///
+/// Authoritative extra-byte write order (see writeChunk):
+///   sx, sy, sz, [tree_id], [stem_id], [beam_id], alpha, bound, <sensor extras>
+/// Bracketed attributes are present only when the corresponding with_*_id flag is set.
 class RAYLIB_EXPORT LasRayCloudWriter
 {
 public:
   explicit LasRayCloudWriter(const std::string &file_name, bool with_tree_id = false,
-                             bool with_stem_id = false,
-                             const std::vector<uint8_t> &extra_bytes_vlr = {},
-                             bool with_beam_id = false);
+                             bool with_stem_id = false, bool with_beam_id = false,
+                             const std::vector<uint8_t> &extra_bytes_vlr = {});
   ~LasRayCloudWriter();
   bool writeChunk(const std::vector<Eigen::Vector3d> &starts, const std::vector<Eigen::Vector3d> &ends,
                   const std::vector<double> &times, const std::vector<RGBA> &colours,

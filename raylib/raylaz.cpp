@@ -990,7 +990,8 @@ bool RAYLIB_EXPORT writeLasRayCloud(const std::string &file_name, const std::vec
                                     const std::vector<uint8_t> &extra_bytes_vlr)
 {
 #if RAYLIB_WITH_LAS
-  LasRayCloudWriter writer(file_name, !tree_ids.empty(), !stem_ids.empty(), extra_bytes_vlr);
+  // No beam_ids are carried through this entry point, so with_beam_id is always false here.
+  LasRayCloudWriter writer(file_name, !tree_ids.empty(), !stem_ids.empty(), false, extra_bytes_vlr);
   return writer.writeChunk(starts, ends, times, colours, tree_ids, stem_ids, passthrough);
 #else   // RAYLIB_WITH_LAS
   RAYLIB_UNUSED(file_name);
@@ -1006,7 +1007,7 @@ bool RAYLIB_EXPORT writeLasRayCloud(const std::string &file_name, const std::vec
 
 #if RAYLIB_WITH_LAS
 LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tree_id, bool with_stem_id,
-                                     const std::vector<uint8_t> &extra_bytes_vlr, bool with_beam_id)
+                                     bool with_beam_id, const std::vector<uint8_t> &extra_bytes_vlr)
   : file_name_(file_name)
   , points_written_(0)
   , with_tree_id_(with_tree_id)
@@ -1144,7 +1145,7 @@ LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tre
 }
 #else   // RAYLIB_WITH_LAS
 LasRayCloudWriter::LasRayCloudWriter(const std::string &file_name, bool with_tree_id, bool with_stem_id,
-                                     const std::vector<uint8_t> &extra_bytes_vlr, bool with_beam_id)
+                                     bool with_beam_id, const std::vector<uint8_t> &extra_bytes_vlr)
   : file_name_(file_name)
   , with_tree_id_(with_tree_id)
   , with_stem_id_(with_stem_id)

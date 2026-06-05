@@ -110,7 +110,8 @@ void segmentCloud(const std::string &cloud_name_stub, const std::string &cloud_f
 {
   const std::string filename = cloud_file;
   ray::CloudWriter writer;
-  if (!writer.begin(cloud_name_stub + "_segmented.las"))
+  // Segmented cloud carries per-point tree_id and stem_id labels.
+  if (!writer.begin(cloud_name_stub + "_segmented.las", {}, false, /*with_tree_id=*/true, /*with_stem_id=*/true))
     return;
 
   ray::Cloud chunk;
