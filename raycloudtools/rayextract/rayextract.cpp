@@ -101,6 +101,8 @@ void usage(int exit_code = 1)
     std::cout << "                            --leaf_density 0.5  - leaf area density per cubic metre (default: 0.5)" << std::endl;
     std::cout << "                            --leaf_angle 1      - leaf angle distribution set with int value (default: uniform (1))" << std::endl;
     std::cout << "                                                    Options: uniform (1), spherical (2), erectophile (3), plagiophile (4), planophile (5), extremophile (6)" << std::endl;
+    std::cout << "                            --rayvoxel <file>_rayvoxel.vox  - use per-voxel LAD and LIAD from rayvoxel output" << std::endl;
+    std::cout << "                            --rayvoxel_method fpl           - attenuation method column (default: fpl; fallback: ladG0.5, then --leaf_density)" << std::endl;
     std::cout << "                            --stalks            - include stalks to closest branch." << std::endl;
   }
   if (extract_type == "grid" || none)
@@ -170,6 +172,10 @@ int rayExtract(int argc, char *argv[])
   ray::OptionalKeyValueArgument leaf_droop_option("leaf_droop", 'd', &leaf_droop);
   ray::OptionalKeyValueArgument leaf_density_option("leaf_density", 'ld', &leaf_density);
   ray::OptionalKeyValueArgument leaf_angle_option("leaf_angle", 'la', &leaf_angle);
+  ray::FileArgument vox_file;
+  ray::StringArgument rayvoxel_method("fpl");
+  ray::OptionalKeyValueArgument rayvoxel_option("rayvoxel", 'rv', &vox_file);
+  ray::OptionalKeyValueArgument rayvoxel_method_option("rayvoxel_method", 'rm', &rayvoxel_method);
   ray::OptionalKeyValueArgument voxel_size_option("voxel_size", 'vs', &voxel_size);
   ray::OptionalKeyValueArgument grid_bounds_min_option("grid_bounds_min", 'bmin', &grid_bounds_min);
   ray::OptionalKeyValueArgument grid_bounds_max_option("grid_bounds_max", 'bmax', &grid_bounds_max);
@@ -193,7 +199,7 @@ int rayExtract(int argc, char *argv[])
                             &largest_diameter, &save_paths, &verbose });
   bool extract_leaves = ray::parseCommandLine(
     argc, argv, { &leaves, &cloud_file, &trees_file },
-    { &leaf_option, &leaf_area_option, &leaf_droop_option, &leaf_angle_option, &leaf_density_option, &stalks });
+    { &leaf_option, &leaf_area_option, &leaf_droop_option, &leaf_angle_option, &leaf_density_option, &stalks, &rayvoxel_option, &rayvoxel_method_option });
   bool extract_grid = ray::parseCommandLine(
     argc, argv, { &grid, &cloud_file },
     { &voxel_size_option, &grid_bounds_min_option, &grid_bounds_max_option, &write_empty, &write_netcdf, &extended_output, &add_neighbour_priors, &intensity_weight, &verbose });
@@ -442,7 +448,8 @@ int rayExtract(int argc, char *argv[])
   else if (extract_leaves)
   {
     ray::generateLeaves(cloud_file.nameStub(), trees_file.name(), leaf_file.name(), leaf_area.value(),
-                        leaf_droop.value(), leaf_angle.value(), leaf_density.value(), stalks.isSet());
+                        leaf_droop.value(), leaf_angle.value(), leaf_density.value(), stalks.isSet(),
+                        vox_file.name(), rayvoxel_method.text());
   }
   else if (extract_grid)
   {

@@ -16,6 +16,9 @@
 #include <functional>
 #include <string>
 #include "raylib/imageread.h"
+#include "raylib/rayvoxel/rayvox.h"
+#include <sstream>
+#include <unordered_map>
 
 namespace ray
 {
@@ -45,7 +48,8 @@ std::function<double(double)> getLeafAngleDistribution(int distribution)
 }
 
 bool generateLeaves(const std::string &cloud_stub, const std::string &trees_file, const std::string &leaf_file,
-                    double leaf_area, double droop, int distribution, double leafAreaDensity, bool stalks)
+                    double leaf_area, double droop, int distribution, double leafAreaDensity, bool stalks,
+                    const std::string &vox_file, const std::string &rayvoxel_method)
 {
   // For now we assume that woody points have been set as unbounded (alpha=0). e.g. through raycolour foliage or
   // raysplit file distance 0.2 as examples. so firstly we must calculate the foliage density across the whole map.
@@ -65,6 +69,147 @@ bool generateLeaves(const std::string &cloud_stub, const std::string &trees_file
   DensityGrid grid(grid_bounds, vox_width, dims);
   grid.calculateDensities(cloud_name);
   grid.addNeighbourPriors();
+
+  // Optional per-voxel leaf area density (LAD) and leaf inclination angle distribution (LIAD)
+  // loaded from a rayvoxel .vox file. When present, these override the scalar --leaf_density
+  // and analytic --leaf_angle values on a per-voxel / per-cell basis.
+  struct VoxKey {
+    long i, j, k;
+    bool operator==(const VoxKey& o) const { return i==o.i && j==o.j && k==o.k; }
+  };
+  struct VoxKeyHash {
+    size_t operator()(const VoxKey& v) const {
+      size_t h = std::hash<long>{}(v.i);
+      h ^= std::hash<long>{}(v.j) + 0x9e3779b9 + (h<<6) + (h>>2);
+      h ^= std::hash<long>{}(v.k) + 0x9e3779b9 + (h<<6) + (h>>2);
+      return h;
+    }
+  };
+  struct VoxLeafData { double lad; std::vector<double> liad; };
+  using VoxMap = std::unordered_map<VoxKey, VoxLeafData, VoxKeyHash>;
+
+  VoxMap vox_map;
+  Eigen::Vector3d vox_min(0,0,0), vox_res(1,1,1);
+  int n_iad_bins = 0;
+  // per-DensityGrid-cell LIAD accumulator (keyed by flat 1m-grid index)
+  std::unordered_map<int, std::vector<double>> cell_liad_sum;
+  bool has_lad_vox = false;
+  bool has_liad_vox = false;
+
+  if (!vox_file.empty())
+  {
+    ray::VoxelSpace space;
+    if (!ray::readVox(vox_file, space))
+    {
+      std::cerr << "Error: cannot read rayvoxel file: " << vox_file << std::endl;
+      return false;
+    }
+
+    // Parse min_corner and res from header (format: "x y z")
+    auto parse_vec3 = [](const std::string& s, Eigen::Vector3d& out) {
+      std::istringstream ss(s);
+      return static_cast<bool>(ss >> out.x() >> out.y() >> out.z());
+    };
+    auto it_min = space.header.find("min_corner");
+    auto it_res = space.header.find("res");
+    if (it_min == space.header.end() || it_res == space.header.end() ||
+        !parse_vec3(it_min->second, vox_min) || !parse_vec3(it_res->second, vox_res))
+    {
+      std::cerr << "Error: rayvoxel file missing min_corner or res header." << std::endl;
+      return false;
+    }
+
+    // Parse colnames to find lad and liad column indices (0-based after i j k)
+    auto it_col = space.header.find("colnames");
+    std::vector<std::string> colnames;
+    if (it_col != space.header.end())
+    {
+      std::istringstream ss(it_col->second);
+      std::string tok;
+      while (ss >> tok) colnames.push_back(tok);
+    }
+    // Skip the first 3 (i j k)
+    auto col_idx = [&](const std::string& name) -> int {
+      for (int c = 3; c < (int)colnames.size(); ++c)
+        if (colnames[c] == name) return c - 3; // 0-based into variables[]
+      return -1;
+    };
+
+    // LAD column: user method -> fpl -> ladG0.5 -> scalar
+    int lad_col = col_idx("lad_" + rayvoxel_method);
+    if (lad_col < 0) lad_col = col_idx("lad_fpl");
+    if (lad_col < 0) lad_col = col_idx("ladG0.5");
+    has_lad_vox = (lad_col >= 0);
+    if (!has_lad_vox)
+      std::cout << "Note: rayvoxel file has no lad column for method '" << rayvoxel_method
+                << "'; using --leaf_density as fallback." << std::endl;
+
+    // LIAD columns: liad_0, liad_1, ...
+    std::vector<int> liad_cols;
+    for (int b = 0; ; ++b)
+    {
+      int c = col_idx("liad_" + std::to_string(b));
+      if (c < 0) break;
+      liad_cols.push_back(c);
+    }
+    n_iad_bins = (int)liad_cols.size();
+    has_liad_vox = (n_iad_bins > 0);
+    if (!has_liad_vox)
+      std::cout << "Note: rayvoxel file has no liad_* columns; using --leaf_angle distribution as fallback." << std::endl;
+
+    // One-time notification if user also provided --leaf_density or --leaf_angle
+    // (caller already passed leafAreaDensity and distribution; just note fallback role)
+    if (has_lad_vox)
+      std::cout << "Note: --rayvoxel active; --leaf_density used only as fallback for uncovered voxels." << std::endl;
+    if (has_liad_vox)
+      std::cout << "Note: --rayvoxel active; --leaf_angle used only as fallback when liad data is absent." << std::endl;
+
+    // Build VoxMap
+    auto safe_val = [](const VoxelData& v, int col) -> double {
+      if (col < 0 || col >= (int)v.variables.size()) return 0.0;
+      try { return std::stod(v.variables[col]); } catch (...) { return 0.0; }
+    };
+    for (auto& vd : space.voxels)
+    {
+      VoxLeafData ld;
+      ld.lad = has_lad_vox ? safe_val(vd, lad_col) : 0.0;
+      if (has_liad_vox)
+      {
+        ld.liad.resize(n_iad_bins);
+        for (int b = 0; b < n_iad_bins; ++b)
+          ld.liad[b] = safe_val(vd, liad_cols[b]);
+      }
+      vox_map[{vd.i, vd.j, vd.k}] = std::move(ld);
+    }
+
+    // Aggregate LIAD into 1m DensityGrid cells
+    if (has_liad_vox)
+    {
+      for (auto& [key, ld] : vox_map)
+      {
+        Eigen::Vector3d world_centre = vox_min + vox_res.cwiseProduct(
+          Eigen::Vector3d(key.i + 0.5, key.j + 0.5, key.k + 0.5));
+        if (!((world_centre.array() >= grid_bounds.min_bound_.array()).all() &&
+              (world_centre.array() < grid_bounds.max_bound_.array()).all()))
+          continue;
+        int cell = grid.getIndexFromPos(world_centre);
+        auto& acc = cell_liad_sum[cell];
+        if (acc.empty()) acc.assign(n_iad_bins, 0.0);
+        for (int b = 0; b < n_iad_bins; ++b)
+          acc[b] += ld.liad[b];
+      }
+      // Build per-cell CDFs (normalize then prefix-sum); stored in-place in cell_liad_sum
+      for (auto& [cell, hist] : cell_liad_sum)
+      {
+        double sum = 0.0;
+        for (double v : hist) sum += v;
+        if (sum <= 0.0) { hist.clear(); continue; }
+        for (double& v : hist) v /= sum;
+        // convert to CDF
+        for (int b = 1; b < (int)hist.size(); ++b) hist[b] += hist[b-1];
+      }
+    }
+  }
 
   // we want to find the few branches that are nearest to each voxel
   // possibly we want there to be no maximum distance... which is weird, but more robust I guess.
@@ -188,6 +333,7 @@ bool generateLeaves(const std::string &cloud_stub, const std::string &trees_file
   std::random_device rd;
   std::mt19937 gen(rd());
   std::uniform_real_distribution<> dis(0.0, 1.0);
+  std::uniform_real_distribution<> bin_dis(0.0, 1.0);  // for CDF inversion within bin
 
   auto add_leaves = [&](std::vector<Eigen::Vector3d> &, std::vector<Eigen::Vector3d> &ends, std::vector<double> &,
                         std::vector<ray::RGBA> &colours) {
@@ -197,14 +343,26 @@ bool generateLeaves(const std::string &cloud_stub, const std::string &trees_file
         continue;
       int index = grid.getIndexFromPos(ends[i]);
       auto &voxel = grid.voxels()[index];
-      
-      double leaf_area_per_voxel_volume = leafAreaDensity; 
 
-      if (leaf_area_per_voxel_volume <= 0.0)
+      double desired_leaf_area;
+      if (!vox_file.empty() && has_lad_vox)
       {
-        continue;
+        Eigen::Vector3d frac = (ends[i] - vox_min).cwiseQuotient(vox_res);
+        VoxKey vk{ static_cast<long>(std::floor(frac.x())),
+                   static_cast<long>(std::floor(frac.y())),
+                   static_cast<long>(std::floor(frac.z())) };
+        auto it = vox_map.find(vk);
+        if (it != vox_map.end())
+          desired_leaf_area = it->second.lad * vox_res.prod();
+        else
+          desired_leaf_area = leafAreaDensity * vox_width * vox_width * vox_width; // fallback
       }
-      double desired_leaf_area = leaf_area_per_voxel_volume * vox_width * vox_width * vox_width;
+      else
+      {
+        desired_leaf_area = leafAreaDensity * vox_width * vox_width * vox_width;
+      }
+      if (desired_leaf_area <= 0.0)
+        continue;
       double num_leaves_d = desired_leaf_area / leaf_area;
       double num_points = (double)voxel.numHits();
       double &count = leaf_counter[index];
@@ -249,9 +407,29 @@ bool generateLeaves(const std::string &cloud_stub, const std::string &trees_file
         
         // Generate a random angle using the distribution
         double angle;
-        do {
-          angle = dis(gen) * 90.0; // Random angle between 0 and 90 degrees
-        } while (dis(gen) > leafAngleDistribution(angle));
+        bool used_liad = false;
+        if (!vox_file.empty() && has_liad_vox)
+        {
+          auto cit = cell_liad_sum.find(index);
+          if (cit != cell_liad_sum.end() && !cit->second.empty())
+          {
+            // Inverse-transform sample from the per-cell CDF
+            double u = dis(gen);
+            int bin = 0;
+            const auto& cdf = cit->second;
+            for (int b = 0; b < (int)cdf.size(); ++b)
+              if (u <= cdf[b]) { bin = b; break; }
+            // Uniform within the bin
+            angle = (bin + bin_dis(gen)) * 90.0 / n_iad_bins;
+            used_liad = true;
+          }
+        }
+        if (!used_liad)
+        {
+          do {
+            angle = dis(gen) * 90.0; // Random angle between 0 and 90 degrees
+          } while (dis(gen) > leafAngleDistribution(angle));
+        }
 
         // Convert angle to radians
         double angle_rad = angle * M_PI / 180.0;
