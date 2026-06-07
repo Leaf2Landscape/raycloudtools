@@ -379,7 +379,9 @@ void walkGrid(const Eigen::Vector3d &start, const Eigen::Vector3d &end, T &objec
   
   const Eigen::Vector3i step(sign(direction[0]), sign(direction[1]), sign(direction[2]));
   direction /= max_length;
-  float eps = 1e-10; // remove tiny about so grid walking doesn't exceed its boundary
+  float eps = 1e-10; // shrink max_length slightly so the DDA never steps into the endpoint's
+                    // adjacent voxel when the endpoint sits exactly on a face. Safe at the
+                    // CLI minimum voxel_size of 0.001 m (eps is then ~1e-7 of a voxel).
   max_length -= eps;
   Eigen::Vector3d lengths, length_delta;
   for (int j = 0; j<3; j++)

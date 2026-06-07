@@ -16,6 +16,8 @@
 #include <cstdlib>
 #include "raylaz.h"
 #include "raysysinfo.h"
+#include "rayvoxel/raylasvoxelprocessor.h"
+#include "raycuboid.h"
 
 /// Raycloud testing framework. In each test, the statistics of the resulting clouds are compared to the statistics
 /// of the cloud when it was confirmed to be operating correctly. 
@@ -511,5 +513,45 @@ namespace raytest
     EXPECT_GT(combined.ends.size(), original.ends.size());
   }
 #endif
+
+  // Verify that an unbound (miss) beam never registers a hit, but does mark
+  // voxels as observed (free-space traversal).
+  TEST(RayVoxel, UnboundBeamNoHits)
+  {
+    const double voxel_size = 1.0;
+    // weighting_method_ is stored as const std::string& — must outlive the processor.
+    const std::string weighting = "full";
+    ray::Cuboid bounds(Eigen::Vector3d(0, 0, 0), Eigen::Vector3d(10, 10, 10));
+    ray::VoxelProcessor vp(bounds, voxel_size, weighting,
+                           /*use_occlusion_rays=*/false,
+                           /*use_flat_top=*/false, /*peaks=*/nullptr,
+                           /*calc_beam_metrics=*/false, 0.0, 0.0,
+                           /*subvoxel_split=*/0, /*dtm=*/nullptr);
+
+    ray::BeamData beam;
+    beam.beam_origin = Eigen::Vector3d(0.5, 0.5, 0.5);
+    beam.gps_time    = 0.0;
+    beam.num_returns = 1;
+    beam.returns[0].x = 8.5;  beam.returns[0].y = 0.5;  beam.returns[0].z = 0.5;
+    beam.returns[0].beam_origin     = beam.beam_origin;
+    beam.returns[0].return_number   = 1;
+    beam.returns[0].number_of_returns = 1;
+    beam.returns[0].distance_to_sensor = 8.0;
+    beam.returns[0].bound = 0;  // unbound / floating endpoint
+
+    vp.processBeam(beam);
+
+    const ray::VoxelProcessor::Map& m = vp.getMap();
+    EXPECT_FALSE(m.empty()) << "traversal should have populated at least one voxel";
+    float total_hits     = 0.0f;
+    float total_observed = 0.0f;
+    for (const auto& kv : m)
+    {
+      total_hits     += kv.second.num_hits;
+      total_observed += kv.second.num_rays_observed;
+    }
+    EXPECT_EQ(total_hits, 0.0f)  << "unbound endpoint must not register as a hit";
+    EXPECT_GT(total_observed, 0.0f) << "ray path must be marked as observed/free";
+  }
 
 } // raytest

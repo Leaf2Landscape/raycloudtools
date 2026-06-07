@@ -90,94 +90,6 @@ bool VoxelProcessor::flushToShard(const std::string& shard_path)
 }
 
 
-void VoxelProcessor::processPoint(const PointData& p)
-{
-  Eigen::Vector3d end_pos(p.x, p.y, p.z);
-  Eigen::Vector3d start_pos = p.beam_origin;
-
-// Get pulse and return information
-  U8 return_number = p.return_number;
-  U8 number_of_returns = p.number_of_returns;
-  if (number_of_returns == 0) number_of_returns = 1; // Handle older LAS files where this might be 0
-  if (return_number == 0) return_number = 1;
-
-  bool is_return = (return_number > 0);
-
-  // The weight for the hit itself is always 1.0 (unweighted count).
-  const double hit_weight = 1.0;
-
-  // The weight for the observed ray path depends on the weighting method.
-  double shot_weight = 1.0;
-  if (weighting_method_ == "equal") {
-      shot_weight = 1.0 / static_cast<double>(number_of_returns);
-  } else if (weighting_method_ == "full") {
-      shot_weight = 1.0;
-  } else {
-      // Future weighting methods can be added here.
-      // For now, default to 1.0 and warn if an unknown method is requested.
-      static bool warned = false;
-      if (!warned) {
-          std::cerr << "Warning: Unknown weighting method '" << weighting_method_ << "'. Defaulting to a weight of 1.0." << std::endl;
-          warned = true;
-      }
-  }
-
-  Eigen::Vector3d clipped_start_obs = start_pos;
-  Eigen::Vector3d clipped_end_obs = end_pos;
-  if (bounds_.clipRay(clipped_start_obs, clipped_end_obs, 1e-10)) {
-    Eigen::Vector3d vox_start = (clipped_start_obs - bounds_.min_bound_) / voxel_width_;
-    Eigen::Vector3d vox_end = (clipped_end_obs - bounds_.min_bound_) / voxel_width_;
-    current_ray_vox_start_ = vox_start;
-    current_ray_vox_dir_ = (vox_end - vox_start).normalized();
-    current_ray_world_start_ = start_pos;
-    walkGrid(vox_start, vox_end, RayType::OBSERVED, shot_weight);
-  }
-
-  if (is_return) {
-    Eigen::Vector3d vox_coord_filled = (end_pos - bounds_.min_bound_) / voxel_width_;
-    int64_t ix = static_cast<int64_t>(vox_coord_filled.x()), iy = static_cast<int64_t>(vox_coord_filled.y()), iz = static_cast<int64_t>(vox_coord_filled.z());
-    if (ix >= 0 && ix < voxel_dims_[0] && iy >= 0 && iy < voxel_dims_[1] && iz >= 0 && iz < voxel_dims_[2]) {
-      if (flat_array_) {
-        VoxelGrid::Voxel& v = flat_array_[ix + iy * flat_dim_x_ + iz * flat_dim_xy_];
-        atomic_fadd(v.num_hits, static_cast<float>(hit_weight));
-        if (calc_beam_metrics_) {
-          double dist = p.distance_to_sensor;
-          double r = tan_half_divergence_ * dist + 0.5 * beam_diameter_;
-          atomic_fadd(v.bs_intercepted, static_cast<float>(kPi * r * r * shot_weight * hit_weight));
-        }
-      } else {
-        VoxelCoord coord = {ix, iy, iz};
-        VoxelGrid::Voxel& v = sparse_voxels_[coord];
-        v.num_hits += static_cast<float>(hit_weight);
-        if (calc_beam_metrics_) {
-          double dist = p.distance_to_sensor;
-          double r = tan_half_divergence_ * dist + 0.5 * beam_diameter_;
-          v.bs_intercepted += static_cast<float>(kPi * r * r * shot_weight * hit_weight);
-        }
-      }
-    }
-  }
-
-  if (is_return && use_occlusion_rays_ && (return_number == number_of_returns)) {
-    Eigen::Vector3d start_occ = end_pos;
-    Eigen::Vector3d direction = (end_pos - start_pos).normalized();
-
-    // Trace a "long" ray and filter invalid voxels during the grid walk.
-    double large_distance = (bounds_.max_bound_ - bounds_.min_bound_).norm() * 2.0;
-    Eigen::Vector3d end_occ = start_occ + direction * large_distance;
-
-    if (bounds_.clipRay(start_occ, end_occ, 1e-10)) {
-      Eigen::Vector3d vox_start = (start_occ - bounds_.min_bound_) / voxel_width_;
-      Eigen::Vector3d vox_end = (end_occ - bounds_.min_bound_) / voxel_width_;
-      current_ray_vox_start_ = vox_start;
-      current_ray_vox_dir_ = (vox_end - vox_start).normalized();
-      current_ray_world_start_ = end_pos;
-      walkGrid(vox_start, vox_end, RayType::OCCLUDED, 1.0);
-    }
-  }
-}
-
-
 void VoxelProcessor::processBeam(const BeamData& beam)
 {
   if (beam.num_returns == 0) return;
@@ -196,6 +108,9 @@ void VoxelProcessor::processBeam(const BeamData& beam)
   // weight = 1.0 (full) treats the full pulse as a single unattenuated traversal.
   // This matches DensityGrid's one-walk-per-pulse model and eliminates the
   // per-segment ray-count inflation of the old segmented approach.
+  // If farthest.bound == 0 (unbound/miss ray), traversal still sweeps through those
+  // voxels — correctly marking them as observed/free — but the hit-recording loop
+  // below gates on p.bound and will not count the endpoint as a hit.
   const double beam_weight = (weighting_method_ == "equal") ? 1.0 / N : 1.0;
   Eigen::Vector3d cs = beam.beam_origin, ce = farthest_pos;
   if (bounds_.clipRay(cs, ce, 1e-10)) {

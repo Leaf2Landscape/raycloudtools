@@ -59,10 +59,6 @@ namespace ray
                    bool calc_beam_metrics, double beam_diameter, double tan_half_divergence, int subvoxel_split,
                    const HeightField* dtm);
 
-    /// @brief Processes a single point, tracing its rays and accumulating results
-    ///        into the processor's internal map.
-    void processPoint(const PointData& p);
-
     /// @brief Processes a whole beam (all returns of a single pulse), tracing the
     ///        consecutive sensor->R0->R1->... segments with corrected per-segment
     ///        weights and accumulating results into the processor's internal map.
