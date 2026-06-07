@@ -18,6 +18,7 @@
 #include "raysysinfo.h"
 #include "rayvoxel/raylasvoxelprocessor.h"
 #include "raycuboid.h"
+#include "rayvoxel/raylasbailey.h"
 
 /// Raycloud testing framework. In each test, the statistics of the resulting clouds are compared to the statistics
 /// of the cloud when it was confirmed to be operating correctly. 
@@ -667,6 +668,221 @@ namespace raytest
           << "full weighting must contribute multiples of 1.0 per voxel";
       }
     }
+  }
+
+  // --- RayVoxelAttenuation: Voxel::pad_g0_5 ---
+
+  // Guard: fewer than 2 observed rays returns 0 regardless of hits/path.
+  TEST(RayVoxelAttenuation, PadG05Guard)
+  {
+    ray::VoxelGrid::Voxel v{};
+    v.num_rays_observed = 1.0f;
+    v.num_hits = 1.0f;
+    v.path_length_observed = 1.0f;
+    EXPECT_EQ(v.pad_g0_5(), 0.0);
+  }
+
+  // Zero hits produces zero PAD regardless of the observed-ray count.
+  TEST(RayVoxelAttenuation, PadG05ZeroHits)
+  {
+    ray::VoxelGrid::Voxel v{};
+    v.num_rays_observed = 10.0f;
+    v.num_hits = 0.0f;
+    v.path_length_observed = 5.0f;
+    EXPECT_EQ(v.pad_g0_5(), 0.0);
+  }
+
+  // N=4, H=2, L=3.0: 2*(3/4)*(2/3.0) = 1.0 (eps in denominator is negligible).
+  TEST(RayVoxelAttenuation, PadG05KnownValue)
+  {
+    ray::VoxelGrid::Voxel v{};
+    v.num_rays_observed = 4.0f;
+    v.num_hits = 2.0f;
+    v.path_length_observed = 3.0f;
+    EXPECT_NEAR(v.pad_g0_5(), 1.0, 1e-6);
+  }
+
+  // N=10, H=1, L=2.0: 2*(9/10)*(1/2.0) = 0.9.
+  TEST(RayVoxelAttenuation, PadG05SingleHit)
+  {
+    ray::VoxelGrid::Voxel v{};
+    v.num_rays_observed = 10.0f;
+    v.num_hits = 1.0f;
+    v.path_length_observed = 2.0f;
+    EXPECT_NEAR(v.pad_g0_5(), 0.9, 1e-6);
+  }
+
+  // --- RayVoxelAttenuation: Voxel::transmittance ---
+
+  // Guard: bs_entering below threshold returns 1.0 (no interception data).
+  TEST(RayVoxelAttenuation, TransmittanceGuard)
+  {
+    ray::VoxelGrid::Voxel v{};
+    v.bs_entering = 0.0f;
+    v.bs_intercepted = 0.0f;
+    EXPECT_EQ(v.transmittance(), 1.0);
+  }
+
+  // Full transmittance: nothing intercepted.
+  TEST(RayVoxelAttenuation, TransmittanceFull)
+  {
+    ray::VoxelGrid::Voxel v{};
+    v.bs_entering = 1.0f;
+    v.bs_intercepted = 0.0f;
+    EXPECT_NEAR(v.transmittance(), 1.0, 1e-10);
+  }
+
+  // Full interception: entering equals intercepted → 0.
+  TEST(RayVoxelAttenuation, TransmittanceZero)
+  {
+    ray::VoxelGrid::Voxel v{};
+    v.bs_entering = 1.0f;
+    v.bs_intercepted = 1.0f;
+    EXPECT_NEAR(v.transmittance(), 0.0, 1e-10);
+  }
+
+  // Partial: (4-1)/4 = 0.75.
+  TEST(RayVoxelAttenuation, TransmittancePartial)
+  {
+    ray::VoxelGrid::Voxel v{};
+    v.bs_entering = 4.0f;
+    v.bs_intercepted = 1.0f;
+    EXPECT_NEAR(v.transmittance(), 0.75, 1e-10);
+  }
+
+  // Over-interception clamps to 0 via max(0,...).
+  TEST(RayVoxelAttenuation, TransmittanceOverInterception)
+  {
+    ray::VoxelGrid::Voxel v{};
+    v.bs_entering = 1.0f;
+    v.bs_intercepted = 2.0f;
+    EXPECT_NEAR(v.transmittance(), 0.0, 1e-10);
+  }
+
+  // --- RayVoxelAttenuation: solveBaileyPadEq10 ---
+
+  // G=0: function must return 0.
+  TEST(RayVoxelAttenuation, BaileyGuardZeroG)
+  {
+    EXPECT_EQ(ray::solveBaileyPadEq10(2.0, 5.0, 2.0, 0.0), 0.0);
+  }
+
+  // num_rays < 1: function must return 0.
+  TEST(RayVoxelAttenuation, BaileyGuardFewRays)
+  {
+    EXPECT_EQ(ray::solveBaileyPadEq10(2.0, 0.5, 0.0, 0.5), 0.0);
+  }
+
+  // r_bar = path_length/num_rays = 0: function must return 0.
+  TEST(RayVoxelAttenuation, BaileyGuardZeroRBar)
+  {
+    EXPECT_EQ(ray::solveBaileyPadEq10(0.0, 5.0, 2.0, 0.5), 0.0);
+  }
+
+  // Low attenuation: a_L=0.5, G=0.5, r_bar=1.0.
+  // P_bar = exp(-0.25); num_rays=100, path=100, num_hits=(1-P_bar)*100.
+  TEST(RayVoxelAttenuation, BaileyLowAttenuation)
+  {
+    const double a_L = 0.5, G = 0.5, r_bar = 1.0;
+    const double P_bar = std::exp(-a_L * G * r_bar);
+    const double num_rays = 100.0;
+    const double path_length = num_rays * r_bar;
+    const double num_hits = (1.0 - P_bar) * num_rays;
+    EXPECT_NEAR(ray::solveBaileyPadEq10(path_length, num_rays, num_hits, G), a_L, 1e-6);
+  }
+
+  // High attenuation: a_L=5.0, G=0.5, r_bar=1.0.
+  // P_bar = exp(-2.5); num_rays=100, path=100, num_hits=(1-P_bar)*100.
+  TEST(RayVoxelAttenuation, BaileyHighAttenuation)
+  {
+    const double a_L = 5.0, G = 0.5, r_bar = 1.0;
+    const double P_bar = std::exp(-a_L * G * r_bar);
+    const double num_rays = 100.0;
+    const double path_length = num_rays * r_bar;
+    const double num_hits = (1.0 - P_bar) * num_rays;
+    EXPECT_NEAR(ray::solveBaileyPadEq10(path_length, num_rays, num_hits, G), a_L, 1e-4);
+  }
+
+  // Unity G: a_L=2.0, G=1.0, r_bar=0.5.
+  // P_bar = exp(-1.0); num_rays=50, path=25, num_hits=(1-P_bar)*50.
+  TEST(RayVoxelAttenuation, BaileyUnityG)
+  {
+    const double a_L = 2.0, G = 1.0, r_bar = 0.5;
+    const double P_bar = std::exp(-a_L * G * r_bar);
+    const double num_rays = 50.0;
+    const double path_length = num_rays * r_bar;
+    const double num_hits = (1.0 - P_bar) * num_rays;
+    EXPECT_NEAR(ray::solveBaileyPadEq10(path_length, num_rays, num_hits, G), a_L, 1e-4);
+  }
+
+  // --- RayVoxelAttenuation: buildTriangleInclinationHistograms ---
+
+  // A single horizontal triangle (z=0 plane) has normal (0,0,1), G_i=1.0,
+  // so bailey_g_leaf should be 1.0 and total_leaf_area ≈ 0.5.
+  TEST(RayVoxelAttenuation, TriHistHorizontalLeaf)
+  {
+    std::vector<Eigen::Vector3d> positions = {
+      Eigen::Vector3d(0.0, 0.0, 0.0),
+      Eigen::Vector3d(1.0, 0.0, 0.0),
+      Eigen::Vector3d(0.0, 1.0, 0.0),
+    };
+    // K=2 neighbours per point; knn_indices is (2,3): column i lists neighbours of point i.
+    Eigen::MatrixXi knn(2, 3);
+    knn(0, 0) = 1;  knn(1, 0) = 2;
+    knn(0, 1) = 0;  knn(1, 1) = 2;
+    knn(0, 2) = 0;  knn(1, 2) = 1;
+    std::vector<int64_t> flat_indices = { 0, 0, 0 };
+    std::vector<int> class_labels = { 1, 1, 1 };
+    auto result = ray::buildTriangleInclinationHistograms(positions, knn, flat_indices, class_labels, 4, 2.0);
+    EXPECT_FALSE(result.empty()) << "horizontal leaf facet must produce a histogram entry";
+    auto it = result.find(0);
+    ASSERT_NE(it, result.end());
+    EXPECT_FALSE(it->second.tiad_leaf.empty());
+    EXPECT_NEAR(it->second.bailey_g_leaf, 1.0, 1e-6)
+      << "horizontal facet normal is vertical so G_i = |r_hat.(0,0,1)| = 1";
+    EXPECT_NEAR(it->second.total_leaf_area, 0.5, 1e-6)
+      << "area of unit right triangle = 0.5";
+  }
+
+  // A single vertical triangle (yz-plane) has normal (1,0,0), G_i=0.0,
+  // so bailey_g_leaf should be 0.0.
+  TEST(RayVoxelAttenuation, TriHistVerticalLeaf)
+  {
+    std::vector<Eigen::Vector3d> positions = {
+      Eigen::Vector3d(0.0, 0.0, 0.0),
+      Eigen::Vector3d(0.0, 1.0, 0.0),
+      Eigen::Vector3d(0.0, 0.0, 1.0),
+    };
+    Eigen::MatrixXi knn(2, 3);
+    knn(0, 0) = 1;  knn(1, 0) = 2;
+    knn(0, 1) = 0;  knn(1, 1) = 2;
+    knn(0, 2) = 0;  knn(1, 2) = 1;
+    std::vector<int64_t> flat_indices = { 0, 0, 0 };
+    std::vector<int> class_labels = { 1, 1, 1 };
+    auto result = ray::buildTriangleInclinationHistograms(positions, knn, flat_indices, class_labels, 4, 2.0);
+    EXPECT_FALSE(result.empty()) << "vertical leaf facet must produce a histogram entry";
+    auto it = result.find(0);
+    ASSERT_NE(it, result.end());
+    EXPECT_NEAR(it->second.bailey_g_leaf, 0.0, 1e-6)
+      << "vertical facet normal is horizontal so G_i = |r_hat.(1,0,0)| = 0";
+  }
+
+  // Unknown class (label=0) points are skipped — result must be empty.
+  TEST(RayVoxelAttenuation, TriHistUnknownClassSkipped)
+  {
+    std::vector<Eigen::Vector3d> positions = {
+      Eigen::Vector3d(0.0, 0.0, 0.0),
+      Eigen::Vector3d(1.0, 0.0, 0.0),
+      Eigen::Vector3d(0.0, 1.0, 0.0),
+    };
+    Eigen::MatrixXi knn(2, 3);
+    knn(0, 0) = 1;  knn(1, 0) = 2;
+    knn(0, 1) = 0;  knn(1, 1) = 2;
+    knn(0, 2) = 0;  knn(1, 2) = 1;
+    std::vector<int64_t> flat_indices = { 0, 0, 0 };
+    std::vector<int> class_labels = { 0, 0, 0 };  // all unknown
+    auto result = ray::buildTriangleInclinationHistograms(positions, knn, flat_indices, class_labels, 4, 2.0);
+    EXPECT_TRUE(result.empty()) << "unknown-class points must not produce any facets";
   }
 
 } // raytest
