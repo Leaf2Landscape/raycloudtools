@@ -245,6 +245,8 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
         data.path_length_observed = v.path_length_observed;
         data.num_rays_occluded = v.num_rays_occluded;
         data.path_length_occluded = v.path_length_occluded;
+        data.num_unbound_rays = v.num_unbound_rays;
+        data.path_length_unbound = v.path_length_unbound;
 
         // Classification from the post-traversal table
         auto cit = class_table.find(flat_idx);
@@ -281,6 +283,8 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
             for (int code : wood_classes)
                 if (code >= 0 && code <= 255) wood_hits += data.classification_hits[code];
         }
+        data.num_hit_leaf = leaf_hits;
+        data.num_hit_wood = wood_hits;
 
         if (v.num_hits > 0) {
             const double hit_total = static_cast<double>(v.num_hits);
@@ -514,8 +518,11 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
   outfile << std::fixed << std::setprecision(6);
   std::string header = "i j k x y z voxel_state pointclass absolute_pointclass num_hits num_rays_observed path_length_observed "
                        "num_rays_occluded path_length_occluded pad_g0.5 surface_area voxel_size "
-                       "mean_zenith_angle_rad mean_azimuth_rad azimuth_concentration mean_laser_dist";
+                       "mean_zenith_angle_rad mean_azimuth_rad azimuth_concentration mean_laser_dist"
+                       " num_unbound_rays path_length_unbound";
   if (params.has_leaf) header += " lad_g0.5";
+  if (params.has_leaf) header += " num_hit_leaf";
+  if (params.has_wood) header += " num_hit_wood";
   if (params.has_wood) header += " wad_g0.5";
   if (!params.dtm_file.empty() || params.dtm_from_class >= 0) { header += " distance_from_ground"; }
   if (params.calc_veg_metrics) header += " pad_g_corrected pad_leaf pad_wood";
@@ -548,8 +555,11 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
             << data.num_hits << " " << data.num_rays_observed << " " << data.path_length_observed << " "
             << data.num_rays_occluded << " " << data.path_length_occluded << " "
             << data.pad_g0_5 << " " << data.surface_area << " " << grid.getVoxelWidth() << " "
-            << data.mean_zenith_angle_rad << " " << data.mean_azimuth_rad << " " << data.azimuth_concentration << " " << data.mean_laser_dist;
+            << data.mean_zenith_angle_rad << " " << data.mean_azimuth_rad << " " << data.azimuth_concentration << " " << data.mean_laser_dist
+            << " " << data.num_unbound_rays << " " << data.path_length_unbound;
     if (params.has_leaf) outfile << " " << data.lad_g0_5;
+    if (params.has_leaf) outfile << " " << data.num_hit_leaf;
+    if (params.has_wood) outfile << " " << data.num_hit_wood;
     if (params.has_wood) outfile << " " << data.wad_g0_5;
     if (!params.dtm_file.empty() || params.dtm_from_class >= 0) {
         if (data.distance_from_ground != std::numeric_limits<double>::lowest()) {

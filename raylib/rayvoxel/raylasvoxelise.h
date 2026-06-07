@@ -105,6 +105,8 @@ namespace ray
       float sum_bs_path    = 0.0f;        // FPL: beam-section-weighted clipped path length (all observed).
       float sum_hit_delta  = 0.0f;        // PPL: weight*full_δ for terminal (hit) rays.
       float sum_miss_delta = 0.0f;        // PPL: weight*full_δ for traversing rays.
+      float num_unbound_rays = 0.0f;    // weighted count of unbound (miss) rays traversing this voxel
+      float path_length_unbound = 0.0f; // weighted sum of clipped path lengths for unbound rays
       uint64_t subvoxel_bitmap = 0;       // Bitmap for tracking subvoxel coverage (up to 4x4x4).
 
       /// @brief Calculates Plant Area Density (PAD) assuming spherical LAD (G=0.5).
@@ -206,6 +208,8 @@ namespace ray
     sum_bs_path += other.sum_bs_path;
     sum_hit_delta += other.sum_hit_delta;
     sum_miss_delta += other.sum_miss_delta;
+    num_unbound_rays += other.num_unbound_rays;
+    path_length_unbound += other.path_length_unbound;
     subvoxel_bitmap |= other.subvoxel_bitmap;
   }
 
@@ -226,6 +230,8 @@ namespace ray
     v.sum_bs_path = static_cast<float>(sum_bs_path * scale);
     v.sum_hit_delta = static_cast<float>(sum_hit_delta * scale);
     v.sum_miss_delta = static_cast<float>(sum_miss_delta * scale);
+    v.num_unbound_rays = static_cast<float>(num_unbound_rays * scale);
+    v.path_length_unbound = static_cast<float>(path_length_unbound * scale);
     v.subvoxel_bitmap = subvoxel_bitmap;
     return v;
   }

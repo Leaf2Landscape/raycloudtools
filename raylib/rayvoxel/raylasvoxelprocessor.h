@@ -123,6 +123,7 @@ namespace ray
     Eigen::Vector3d current_ray_vox_start_;
     Eigen::Vector3d current_ray_vox_dir_;
     Eigen::Vector3d current_ray_world_start_;
+    bool current_ray_unbound_ = false;
 
     // --- Flat-array write mode (optional) ---
     VoxelGrid::Voxel* flat_array_ = nullptr;  // non-null → write direct, skip map

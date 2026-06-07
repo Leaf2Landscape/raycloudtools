@@ -119,6 +119,7 @@ void VoxelProcessor::processBeam(const BeamData& beam)
     current_ray_vox_start_   = vs;
     current_ray_vox_dir_     = (ve - vs).normalized();
     current_ray_world_start_ = beam.beam_origin;
+    current_ray_unbound_ = (farthest.bound == 0);
     walkGrid(vs, ve, RayType::OBSERVED, beam_weight);
   }
 
@@ -268,6 +269,10 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                             atomic_fadd(v.sum_miss_delta, static_cast<float>(weight * full_delta));
                         }
                     }
+                    if (current_ray_unbound_) {
+                        atomic_fadd(v.num_unbound_rays, static_cast<float>(weight));
+                        atomic_fadd(v.path_length_unbound, static_cast<float>(length_in_voxel * weight));
+                    }
                 } else {
                     atomic_fadd(v.num_rays_occluded, static_cast<float>(weight));
                     atomic_fadd(v.path_length_occluded, static_cast<float>(length_in_voxel * weight));
@@ -305,6 +310,10 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                         } else {
                             v.sum_miss_delta += static_cast<float>(weight * full_delta);
                         }
+                    }
+                    if (current_ray_unbound_) {
+                        v.num_unbound_rays += static_cast<float>(weight);
+                        v.path_length_unbound += static_cast<float>(length_in_voxel * weight);
                     }
                 } else {
                     v.num_rays_occluded += static_cast<float>(weight);

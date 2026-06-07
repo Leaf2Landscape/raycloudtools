@@ -36,6 +36,10 @@ namespace ray
     float path_length_observed = 0.0f;
     float num_rays_occluded = 0.0f;
     float path_length_occluded = 0.0f;
+    float num_unbound_rays = 0.0f;
+    float path_length_unbound = 0.0f;
+    float num_hit_leaf = 0.0f;
+    float num_hit_wood = 0.0f;
     std::array<float, 256> classification_hits{};
 
     // Calculated Metrics
