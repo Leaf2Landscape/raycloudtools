@@ -545,13 +545,128 @@ namespace raytest
     EXPECT_FALSE(m.empty()) << "traversal should have populated at least one voxel";
     float total_hits     = 0.0f;
     float total_observed = 0.0f;
+    float total_unbound_rays = 0.0f;
+    float total_path_length_unbound = 0.0f;
     for (const auto& kv : m)
     {
       total_hits     += kv.second.num_hits;
       total_observed += kv.second.num_rays_observed;
+      total_unbound_rays += kv.second.num_unbound_rays;
+      total_path_length_unbound += kv.second.path_length_unbound;
     }
     EXPECT_EQ(total_hits, 0.0f)  << "unbound endpoint must not register as a hit";
     EXPECT_GT(total_observed, 0.0f) << "ray path must be marked as observed/free";
+    EXPECT_GT(total_unbound_rays, 0.0f)      << "unbound ray must increment num_unbound_rays";
+    EXPECT_GT(total_path_length_unbound, 0.0f) << "unbound ray must accumulate path_length_unbound";
+  }
+
+  // Verify that a bound (hit) beam registers exactly one endpoint hit and never
+  // populates the unbound accumulators.
+  TEST(RayVoxel, BoundBeamPathLength)
+  {
+    const double voxel_size = 1.0;
+    const std::string weighting = "full";
+    ray::Cuboid bounds(Eigen::Vector3d(0, 0, 0), Eigen::Vector3d(3, 1, 1));
+    ray::VoxelProcessor vp(bounds, voxel_size, weighting,
+                           /*use_occlusion_rays=*/false,
+                           /*use_flat_top=*/false, /*peaks=*/nullptr,
+                           /*calc_beam_metrics=*/false, 0.0, 0.0,
+                           /*subvoxel_split=*/0, /*dtm=*/nullptr);
+
+    ray::BeamData beam;
+    beam.beam_origin = Eigen::Vector3d(0.5, 0.5, 0.5);
+    beam.gps_time    = 0.0;
+    beam.num_returns = 1;
+    beam.returns[0].x = 2.5;  beam.returns[0].y = 0.5;  beam.returns[0].z = 0.5;
+    beam.returns[0].beam_origin     = beam.beam_origin;
+    beam.returns[0].return_number   = 1;
+    beam.returns[0].number_of_returns = 1;
+    beam.returns[0].distance_to_sensor = 2.0;
+    beam.returns[0].bound = 1;  // bound / real return
+
+    vp.processBeam(beam);
+
+    const ray::VoxelProcessor::Map& m = vp.getMap();
+    EXPECT_FALSE(m.empty()) << "traversal should have populated at least one voxel";
+    float total_hits     = 0.0f;
+    float total_path_length_observed = 0.0f;
+    float total_unbound_rays = 0.0f;
+    float total_path_length_unbound = 0.0f;
+    int   hit_voxels = 0;
+    for (const auto& kv : m)
+    {
+      total_hits += kv.second.num_hits;
+      total_path_length_observed += kv.second.path_length_observed;
+      total_unbound_rays += kv.second.num_unbound_rays;
+      total_path_length_unbound += kv.second.path_length_unbound;
+      if (kv.second.num_hits == 1.0f) ++hit_voxels;
+    }
+    EXPECT_EQ(hit_voxels, 1) << "exactly one (endpoint) voxel should register a hit";
+    EXPECT_EQ(total_hits, 1.0f) << "a single bound return is exactly one hit";
+    EXPECT_GT(total_path_length_observed, 0.0f) << "traversal must accumulate observed path length";
+    EXPECT_EQ(total_unbound_rays, 0.0f) << "bound ray must not populate num_unbound_rays";
+    EXPECT_EQ(total_path_length_unbound, 0.0f) << "bound ray must not populate path_length_unbound";
+  }
+
+  // Verify multi-return weighting: with weighting="equal" each return contributes
+  // weight 1/N per voxel traversal; with weighting="full" each contributes 1.0.
+  TEST(RayVoxel, MultiReturnWeighting)
+  {
+    const double voxel_size = 1.0;
+    ray::Cuboid bounds(Eigen::Vector3d(0, 0, 0), Eigen::Vector3d(10, 1, 1));
+
+    ray::BeamData beam;
+    beam.beam_origin = Eigen::Vector3d(0.5, 0.5, 0.5);
+    beam.gps_time    = 0.0;
+    beam.num_returns = 2;
+    beam.returns[0].x = 3.5;  beam.returns[0].y = 0.5;  beam.returns[0].z = 0.5;
+    beam.returns[0].beam_origin       = beam.beam_origin;
+    beam.returns[0].return_number     = 1;
+    beam.returns[0].number_of_returns = 2;
+    beam.returns[0].distance_to_sensor = 3.0;
+    beam.returns[0].bound = 0;
+    beam.returns[1].x = 7.5;  beam.returns[1].y = 0.5;  beam.returns[1].z = 0.5;
+    beam.returns[1].beam_origin       = beam.beam_origin;
+    beam.returns[1].return_number     = 2;
+    beam.returns[1].number_of_returns = 2;
+    beam.returns[1].distance_to_sensor = 7.0;
+    beam.returns[1].bound = 0;
+
+    // weighting="equal": per-voxel num_rays_observed is a multiple of 1/N = 0.5.
+    {
+      const std::string weighting = "equal";
+      ray::VoxelProcessor vp(bounds, voxel_size, weighting,
+                             /*use_occlusion_rays=*/false,
+                             /*use_flat_top=*/false, /*peaks=*/nullptr,
+                             /*calc_beam_metrics=*/false, 0.0, 0.0,
+                             /*subvoxel_split=*/0, /*dtm=*/nullptr);
+      vp.processBeam(beam);
+      const ray::VoxelProcessor::Map& m = vp.getMap();
+      EXPECT_FALSE(m.empty()) << "traversal should have populated at least one voxel";
+      for (const auto& kv : m)
+      {
+        EXPECT_LT(std::fmod(kv.second.num_rays_observed, 0.5f), 1e-4f)
+          << "equal weighting must contribute multiples of 1/N (0.5) per voxel";
+      }
+    }
+
+    // weighting="full": per-voxel num_rays_observed is a multiple of 1.0.
+    {
+      const std::string weighting = "full";
+      ray::VoxelProcessor vp(bounds, voxel_size, weighting,
+                             /*use_occlusion_rays=*/false,
+                             /*use_flat_top=*/false, /*peaks=*/nullptr,
+                             /*calc_beam_metrics=*/false, 0.0, 0.0,
+                             /*subvoxel_split=*/0, /*dtm=*/nullptr);
+      vp.processBeam(beam);
+      const ray::VoxelProcessor::Map& m = vp.getMap();
+      EXPECT_FALSE(m.empty()) << "traversal should have populated at least one voxel";
+      for (const auto& kv : m)
+      {
+        EXPECT_LT(std::fmod(kv.second.num_rays_observed, 1.0f), 1e-4f)
+          << "full weighting must contribute multiples of 1.0 per voxel";
+      }
+    }
   }
 
 } // raytest
