@@ -318,11 +318,8 @@ inline void decodePointRecord(const laszip_point_struct *point, const DecodeCont
   }
   else
   {
-    const double normalised = (ctx.max_intensity > 0) ? (255.0 * point->intensity) / ctx.max_intensity : 255.0;
+    const double normalised = (ctx.max_intensity > 0) ? 1.0 + (254.0 * point->intensity) / ctx.max_intensity : 255.0;
     intensity = static_cast<uint8_t>(std::min(normalised, 255.0));
-    // Ensure any non-zero raw intensity maps to at least alpha=1 (bounded ray).
-    if (intensity == 0 && point->intensity > 0)
-      intensity = 1;
   }
   if (intensity > 0)
     num_bounded++;
@@ -460,10 +457,8 @@ inline void decodePointRecordIndexed(const laszip_point_struct *point, const Dec
   }
   else
   {
-    const double normalised = (ctx.max_intensity > 0) ? (255.0 * point->intensity) / ctx.max_intensity : 255.0;
+    const double normalised = (ctx.max_intensity > 0) ? 1.0 + (254.0 * point->intensity) / ctx.max_intensity : 255.0;
     intensity = static_cast<uint8_t>(std::min(normalised, 255.0));
-    if (intensity == 0 && point->intensity > 0)
-      intensity = 1;
   }
   if (intensity > 0)
     num_bounded_out = 1;

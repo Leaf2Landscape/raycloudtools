@@ -28,7 +28,7 @@ void usage(int exit_code = 1)
   std::cout << "                                           trajectoryfile is a text file using 'time x y z' format per line" << std::endl;
   std::cout << "rayimport pointcloudfile 0,0,0           - use 0,0,0 as the sensor location" << std::endl;
   std::cout << "rayimport pointcloudfile ray 0,0,-10     - use 0,0,-10 as the constant ray vector from start to point" << std::endl;
-  std::cout << "                                          --max_intensity 100 - specify maximum intensity value (default 100)." << std::endl;
+  std::cout << "                                          --max_intensity 100 - specify maximum intensity value (default: 65535 for .las/.laz, 100 otherwise)." << std::endl;
   std::cout << "                                                              0 sets all to full intensity (bounded rays)." << std::endl;
   std::cout << "                                        --remove_start_pos  - translate so first point is at 0,0,0" << std::endl;
   std::cout << "                                        --beam_id           - assign a per-pulse beam_id extra attribute" << std::endl;
@@ -62,8 +62,12 @@ int rayImport(int argc, char *argv[])
   ray::Cloud cloud;
   const std::string &traj_file = trajectory_file.name();
   const std::string &trans_file = transform_file.name();
-  // Sensors we use have 0 to 100 for normal output, and to 255 for special reflective surfaces
   double maximum_intensity = max_intensity.value();
+  if (!max_intensity_option.isSet())
+  {
+    const std::string ext = cloud_file.nameExt();
+    maximum_intensity = (ext == "las" || ext == "laz") ? 65535.0 : 100.0;
+  }
 
   // init transformation
   std::vector<double> transformation;
@@ -100,7 +104,8 @@ int rayImport(int argc, char *argv[])
   std::string save_file = cloud_file.nameStub() + "_raycloud";
   const std::string in_ext = cloud_file.nameExt();
   const std::string save_ext = (in_ext == "laz") ? "laz" : "las";
-  size_t num_bounded;
+  size_t num_bounded = 0;
+  uint8_t max_alpha_seen = 0;
 
   // Pre-read original sensor extra-byte attributes from the input LAS/LAZ header so the writer
   // can register and preserve them before opening the output file.
@@ -201,6 +206,8 @@ int rayImport(int argc, char *argv[])
         start -= start_pos;
       }
     }
+    for (const auto &c : colours)
+      max_alpha_seen = std::max(max_alpha_seen, c.alpha);
     if (maximum_intensity == 0.0)
     {
       for (auto &c : colours)
@@ -299,6 +306,8 @@ int rayImport(int argc, char *argv[])
     }
   }
 
+  if (!unbound_format)
+    std::cout << "max_intensity: " << maximum_intensity << std::endl;
   Eigen::Vector3d *offset = remove.isSet() ? &start_pos : nullptr;
   if (cloud_file.nameExt() == "ply")
   {
@@ -356,6 +365,15 @@ int rayImport(int argc, char *argv[])
     std::cout << "warning: all point cloud intensities are 0." << std::endl;
     std::cout << "If your sensor lacks intensity information, set them to full using:" << std::endl;
     std::cout << "rayimport <point cloud> <trajectory file> --max_intensity 0" << std::endl;
+  }
+  if (!unbound_format && maximum_intensity > 0.0 && max_alpha_seen > 0)
+  {
+    if (max_alpha_seen == 255)
+      std::cout << "warning: intensity values hit or exceeded max_intensity (" << maximum_intensity
+                << "); data may be clipped. Consider increasing --max_intensity." << std::endl;
+    else if (max_alpha_seen < 26)
+      std::cout << "warning: peak intensity is <10% of max_intensity (" << maximum_intensity
+                << "); consider reducing --max_intensity for better precision." << std::endl;
   }
   writer.end();
   // if we remove the start position, then it is useful to print this value that is removed

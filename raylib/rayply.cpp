@@ -672,8 +672,7 @@ bool readPly(const std::string &file_name, bool is_ray_cloud,
           intensity = (double)((unsigned short &)vertices[intensity_offset]);
         if (intensity >= 0.0)
         {
-          // only intensity exactly 0 will be used for alpha=0 in uint_8 format.
-          intensity = std::ceil(255.0 * clamped(intensity / max_intensity, 0.0, 1.0));  
+          intensity = 1.0 + std::floor(254.0 * clamped(intensity / max_intensity, 0.0, 1.0));
         }
         // support for special codes for out of range cases, defined by intensity:
         // -1 non-return of unknown length
