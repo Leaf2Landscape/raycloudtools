@@ -817,8 +817,9 @@ namespace raytest
 
   // --- RayVoxelAttenuation: buildTriangleInclinationHistograms ---
 
-  // A single horizontal triangle (z=0 plane) has normal (0,0,1), G_i=1.0,
-  // so bailey_g_leaf should be 1.0 and total_leaf_area ≈ 0.5.
+  // A horizontal triangle (z=0 plane): area=0.5 is recorded correctly.
+  // bailey_g_leaf stays 0 because the eq.(4) weight is area*sin(theta)=0 at theta=0,
+  // so the denominator guard fires and G_bar is never written.
   TEST(RayVoxelAttenuation, TriHistHorizontalLeaf)
   {
     std::vector<Eigen::Vector3d> positions = {
@@ -838,10 +839,35 @@ namespace raytest
     auto it = result.find(0);
     ASSERT_NE(it, result.end());
     EXPECT_FALSE(it->second.tiad_leaf.empty());
-    EXPECT_NEAR(it->second.bailey_g_leaf, 1.0, 1e-6)
-      << "horizontal facet normal is vertical so G_i = |r_hat.(0,0,1)| = 1";
     EXPECT_NEAR(it->second.total_leaf_area, 0.5, 1e-6)
       << "area of unit right triangle = 0.5";
+    // sin(theta)=0 for horizontal facet → weight=0 → denominator guard → G_bar=0.
+    EXPECT_NEAR(it->second.bailey_g_leaf, 0.0, 1e-6)
+      << "horizontal facet has zero eq.(4) weight; G_bar denominator guard must leave it at 0";
+  }
+
+  // A 45-degree tilted triangle has normal (1/√2, 0, 1/√2), theta=pi/4,
+  // G_i=|r_hat·n_hat|=1/√2, weight=area*sin(pi/4)>0, so G_bar = 1/√2 ≈ 0.707.
+  // Vertices: p0=(0,0,0), p1=(0,1,0), p2=(-1/√2, 0, 1/√2) — all within l_max=2.
+  TEST(RayVoxelAttenuation, TriHist45DegreeLeaf)
+  {
+    const double s = 1.0 / std::sqrt(2.0);
+    std::vector<Eigen::Vector3d> positions = {
+      Eigen::Vector3d(0.0, 0.0, 0.0),
+      Eigen::Vector3d(0.0, 1.0, 0.0),
+      Eigen::Vector3d(-s,  0.0,  s),
+    };
+    Eigen::MatrixXi knn(2, 3);
+    knn(0, 0) = 1;  knn(1, 0) = 2;
+    knn(0, 1) = 0;  knn(1, 1) = 2;
+    knn(0, 2) = 0;  knn(1, 2) = 1;
+    std::vector<int64_t> flat_indices = { 0, 0, 0 };
+    std::vector<int> class_labels = { 1, 1, 1 };
+    auto result = ray::buildTriangleInclinationHistograms(positions, knn, flat_indices, class_labels, 4, 2.0);
+    auto it = result.find(0);
+    ASSERT_NE(it, result.end());
+    EXPECT_NEAR(it->second.bailey_g_leaf, s, 1e-6)
+      << "45-degree facet: G_bar = G_i = |r_hat·n_hat| = 1/sqrt(2)";
   }
 
   // A single vertical triangle (yz-plane) has normal (1,0,0), G_i=0.0,
