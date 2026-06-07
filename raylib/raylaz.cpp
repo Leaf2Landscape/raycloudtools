@@ -343,6 +343,10 @@ bool readLas(const std::string &file_name,
   std::vector<double> all_times;
   std::vector<RGBA> all_colours;
   std::vector<uint8_t> all_intensities;
+  // Private passthrough buffer for the indexed (parallel) paths. passthrough_out is filled
+  // incrementally in flush_indexed so add_chunk's prev_pass_size tracking works correctly.
+  std::vector<uint8_t> all_passthrough_internal;
+  uint16_t passthrough_pstride = 0;  // per-point stride for all_passthrough_internal
   IndexedDecodeBuffers buf;
 
   // Populate @c buf and pre-size every active output for an index-addressed decode of all points.
@@ -358,12 +362,15 @@ bool readLas(const std::string &file_name,
     buf.colours = using_colour ? all_colours.data() : nullptr;
     buf.intensities = all_intensities.data();
 
-    const uint16_t pstride = static_cast<uint16_t>(10 + local_orig_extra);
+    passthrough_pstride = static_cast<uint16_t>(10 + local_orig_extra);
     if (passthrough_out)
     {
-      passthrough_out->resize(static_cast<size_t>(pstride) * number_of_points);
-      buf.passthrough = passthrough_out->data();
-      buf.passthrough_stride = pstride;
+      // Decode into a private buffer; flush_indexed appends per-chunk slices to passthrough_out
+      // incrementally so that add_chunk's prev_pass_size tracking sees the same growth pattern
+      // as the sequential laszip path.
+      all_passthrough_internal.resize(static_cast<size_t>(passthrough_pstride) * number_of_points);
+      buf.passthrough = all_passthrough_internal.data();
+      buf.passthrough_stride = passthrough_pstride;
     }
     // ID outputs are present iff the sequential path would have produced them. These conditions
     // depend only on per-file state (num_extra_bytes is constant), so they hold for every point.
@@ -419,8 +426,20 @@ bool readLas(const std::string &file_name,
     });
 
     std::shared_ptr<ChunkBuffer> cb;
+    size_t pts_flushed = 0;
     while (queue.pop(cb))
     {
+      // Append this chunk's passthrough slice to passthrough_out before calling apply so that
+      // the callback's prev_pass_size tracking sees incremental growth, matching the sequential path.
+      if (passthrough_out && passthrough_pstride > 0 && !all_passthrough_internal.empty())
+      {
+        const size_t n = cb->ends.size();
+        const size_t byte_off = pts_flushed * passthrough_pstride;
+        passthrough_out->insert(passthrough_out->end(),
+                                all_passthrough_internal.begin() + byte_off,
+                                all_passthrough_internal.begin() + byte_off + n * passthrough_pstride);
+        pts_flushed += n;
+      }
       apply(cb->starts, cb->ends, cb->times, cb->colours);
       progress.increment();
       cb.reset();  // free the buffer back to the allocator before popping the next
