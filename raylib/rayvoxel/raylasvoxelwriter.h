@@ -32,6 +32,7 @@ namespace ray
     int dominant_class = -1;
     int absolute_class = -1;
     float num_hits = 0.0f;
+    int num_beams_observed = 0;
     float num_rays_observed = 0.0f;
     float path_length_observed = 0.0f;
     float num_rays_occluded = 0.0f;

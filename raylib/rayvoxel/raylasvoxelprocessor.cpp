@@ -239,6 +239,7 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                 // Direct atomic writes into the shared flat array — no per-thread map.
                 VoxelGrid::Voxel& v = flat_array_[p.x() + p.y() * flat_dim_x_ + p.z() * flat_dim_xy_];
                 if (type == RayType::OBSERVED) {
+                    atomic_fadd(v.num_beams_observed, 1.0f);
                     atomic_fadd(v.num_rays_observed, static_cast<float>(weight));
                     atomic_fadd(v.path_length_observed, static_cast<float>(length_in_voxel * weight));
                     atomic_fadd(v.sum_of_angles, static_cast<float>(zenith_angle * weight));
@@ -282,6 +283,7 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                 VoxelCoord coord = {p.x(), p.y(), p.z()};
                 VoxelGrid::Voxel& v = sparse_voxels_[coord];
                 if (type == RayType::OBSERVED) {
+                    v.num_beams_observed += 1.0f;
                     v.num_rays_observed += static_cast<float>(weight);
                     v.path_length_observed += static_cast<float>(length_in_voxel * weight);
 

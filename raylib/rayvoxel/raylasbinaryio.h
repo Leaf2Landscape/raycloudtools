@@ -30,7 +30,7 @@ namespace ray
   }
 
   static constexpr uint32_t kShardMagic   = 0x564F584C; // "VOXL"
-  static constexpr uint16_t kShardVersion = 3;          // v3: + num_unbound_rays / path_length_unbound
+  static constexpr uint16_t kShardVersion = 4;          // v4: + num_beams_observed (integer beam counter for nbSampling)
 
   /// @brief Writes shard-file header. Call once at the start of each shard.
   inline bool writeShardHeader(std::ofstream& out) {
@@ -54,6 +54,7 @@ namespace ray
     writeBinary(out, coord.y);
     writeBinary(out, coord.z);
     writeBinary(out, voxel.num_hits);
+    writeBinary(out, voxel.num_beams_observed);
     writeBinary(out, voxel.num_rays_observed);
     writeBinary(out, voxel.path_length_observed);
     writeBinary(out, voxel.num_rays_occluded);
@@ -79,6 +80,7 @@ namespace ray
     if (!in.good()) return false;
 
     readBinary(in, voxel.num_hits);
+    readBinary(in, voxel.num_beams_observed);
     readBinary(in, voxel.num_rays_observed);
     readBinary(in, voxel.path_length_observed);
     readBinary(in, voxel.num_rays_occluded);

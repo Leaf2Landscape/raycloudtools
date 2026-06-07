@@ -92,6 +92,7 @@ namespace ray
     struct Voxel
     {
       float num_hits = 0.0f;              // Sum of hit events (unweighted).
+      float num_beams_observed = 0.0f;    // Count of beams traversing this voxel (1 per beam, regardless of N returns).
       float num_rays_observed = 0.0f;     // Sum of observed rays passing through (weighted).
       float path_length_observed = 0.0f;  // Sum of path lengths of observed rays (weighted).
       float num_rays_occluded = 0.0f;     // Sum of occluded rays passing through (unweighted).
@@ -195,6 +196,7 @@ namespace ray
   inline void VoxelGrid::Voxel::operator+=(const VoxelGrid::Voxel &other)
   {
     num_hits += other.num_hits;
+    num_beams_observed += other.num_beams_observed;
     num_rays_observed += other.num_rays_observed;
     path_length_observed += other.path_length_observed;
     num_rays_occluded += other.num_rays_occluded;
@@ -217,6 +219,7 @@ namespace ray
   {
     Voxel v;
     v.num_hits = static_cast<float>(num_hits * scale);
+    v.num_beams_observed = static_cast<float>(num_beams_observed * scale);
     v.num_rays_observed = static_cast<float>(num_rays_observed * scale);
     v.path_length_observed = static_cast<float>(path_length_observed * scale);
     v.num_rays_occluded = static_cast<float>(num_rays_occluded * scale);
