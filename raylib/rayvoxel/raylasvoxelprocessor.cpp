@@ -111,7 +111,16 @@ void VoxelProcessor::processBeam(const BeamData& beam)
   // If farthest.bound == 0 (unbound/miss ray), traversal still sweeps through those
   // voxels — correctly marking them as observed/free — but the hit-recording loop
   // below gates on p.bound and will not count the endpoint as a hit.
-  const double beam_weight = (weighting_method_ == "equal") ? 1.0 / N : 1.0;
+  double beam_weight = 1.0;
+  if (N == 0) {
+    if (farthest.bound == 0) {
+      beam_weight = 1.0;
+    } else {
+      return;  // silently fail
+    }
+  } else {
+    beam_weight = (weighting_method_ == "equal") ? 1.0 / N : 1.0;
+  }
   Eigen::Vector3d cs = beam.beam_origin, ce = farthest_pos;
   if (bounds_.clipRay(cs, ce, 1e-10)) {
     Eigen::Vector3d vs = (cs - bounds_.min_bound_) / voxel_width_;
