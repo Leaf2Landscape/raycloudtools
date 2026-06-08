@@ -442,8 +442,8 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
     v_data.j = j - padding;
     v_data.k = k - padding;
     v_data.variables.push_back(std::to_string(static_cast<int>(state)));
-    v_data.variables.push_back(std::to_string(static_cast<int>(data ? data->num_hits : 0.0f)));
     v_data.variables.push_back(std::to_string(data ? data->num_beams_observed : 0));
+    v_data.variables.push_back(std::to_string(static_cast<int>(data ? data->num_hits : 0.0f)));
     v_data.variables.push_back(std::to_string(data ? data->pad_g0_5 : 0.0));
     v_data.variables.push_back(std::to_string(data ? data->path_length_observed : 0.0f));
     if (params.has_leaf) v_data.variables.push_back(std::to_string(data ? data->lad_g0_5 : 0.0));
