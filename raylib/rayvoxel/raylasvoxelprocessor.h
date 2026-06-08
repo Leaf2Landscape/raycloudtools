@@ -37,7 +37,7 @@ namespace ray
 
   constexpr uint8_t kMaxReturnsPerBeam = 16;
 
-  // A bundle of all returns sharing the same pulse (grouped by gps_time),
+  // A bundle of all returns sharing the same pulse (grouped by gps_time and number_of_returns),
   // passed from the producer thread to the consumer threads.
   struct BeamData
   {

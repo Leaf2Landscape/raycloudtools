@@ -41,6 +41,7 @@ namespace ray
     float path_length_occluded = 0.0f;
     float num_unbound_rays = 0.0f;
     float path_length_unbound = 0.0f;
+    int32_t num_miss_rays = 0;
     float num_hit_leaf = 0.0f;
     float num_hit_wood = 0.0f;
     std::array<float, 256> classification_hits{};
@@ -65,6 +66,16 @@ namespace ray
     double transmittance = 1.0;
     float bs_entering = 0.0f;       // raw beam-sample accumulator (AMAPVox bsEntering)
     float bs_intercepted = 0.0f;    // raw beam-sample accumulator (AMAPVox bsIntercepted)
+    float sum_bs_path = 0.0f;       // beam-area-weighted clipped path (AMAPVox weightedFreepathLength)
+    double lMeanTotal = 0.0;        // lgTotal / nbSampling (AMAPVox lMeanTotal)
+    double sd_length = 0.0;         // SD of per-beam path lengths (not yet tracked; always 0)
+    double bs_potential = 0.0;      // potential beam cross-section (not yet tracked; always 0)
+    double attenuation_fpl_biased = 0.0;
+    double attenuation_fpl_correction = 0.0;
+    double attenuation_fpl_unbiased = 0.0;
+    double weighted_fpl = 0.0;
+    double weighted_effective_fpl = 0.0;
+    double attenuation_ppl = 0.0;
     double exploration_rate = 0.0;
     double leaf_g  = 0.0;
     double wood_g  = 0.0;

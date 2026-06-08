@@ -205,6 +205,31 @@ PointData makePointData(const Eigen::Vector3d& start, const Eigen::Vector3d& end
   return pd;
 }
 
+// Decide whether the incoming point pd starts a new beam relative to the pending return group.
+// has_beam_ids selects the authoritative beam-id grouping; otherwise points are grouped by GPS
+// time, number-of-returns consistency, and monotonically increasing distance-to-sensor.
+static bool isNewBeam(const PointData& pd,
+                      double pending_gps_time,
+                      int32_t pending_beam_id,
+                      const std::vector<PointData>& pending_returns,
+                      bool has_beam_ids)
+{
+    if (pending_returns.empty()) return true;
+    if (has_beam_ids)
+        return pd.beam_id != pending_beam_id
+            || pd.number_of_returns != pending_returns.front().number_of_returns
+            || pd.distance_to_sensor <= pending_returns.back().distance_to_sensor;
+
+    // nor <= 1: each point is its own beam by definition
+    if (pd.number_of_returns <= 1) return true;
+    if (pending_returns.front().number_of_returns <= 1) return true;
+
+    // nor > 1: group by GPS time + nor consistency + monotonic distance
+    return pd.gps_time != pending_gps_time
+        || pd.number_of_returns != pending_returns.front().number_of_returns
+        || pd.distance_to_sensor <= pending_returns.back().distance_to_sensor;
+}
+
 // Returns true if a point is a ground hit and should be excluded from PAD/LAD/WAD.
 // Two mutually exclusive modes: dtm_from_class >= 0 selects a class-match path; otherwise a
 // valid DTM mesh selects the vertical-distance path (point above DTM within dtm_filter_distance).
@@ -974,12 +999,8 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
           PointData pd = makePointData(starts[i], ends[i], times[i], bid, alpha, passthrough, i, stride);
           if (isGroundHit(pd.x, pd.y, pd.z, pd.classification, dtm_from_class, dtm, dtm_filter_distance))
             pd.bound = 0;
-          const bool new_beam = beam_ids_chunk.empty()
-            ? (pd.gps_time != pending_gps_time)
-            : (pd.beam_id != pending_beam_id)
-            || (!pending_returns.empty() &&
-                (pd.number_of_returns != pending_returns.front().number_of_returns ||
-                 pd.distance_to_sensor <= pending_returns.back().distance_to_sensor));
+          const bool new_beam = isNewBeam(pd, pending_gps_time, pending_beam_id,
+                                          pending_returns, !beam_ids_chunk.empty());
           if (new_beam) {
             flush_beam();
             pending_gps_time    = pd.gps_time;
@@ -1058,12 +1079,8 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
           PointData pd = makePointData(starts[i], ends[i], times[i], bid, alpha, passthrough, i, stride);
           if (isGroundHit(pd.x, pd.y, pd.z, pd.classification, dtm_from_class, dtm, dtm_filter_distance))
             pd.bound = 0;
-          const bool new_beam = beam_ids_chunk.empty()
-            ? (pd.gps_time != pending_gps_time)
-            : (pd.beam_id != pending_beam_id)
-            || (!pending_returns.empty() &&
-                (pd.number_of_returns != pending_returns.front().number_of_returns ||
-                 pd.distance_to_sensor <= pending_returns.back().distance_to_sensor));
+          const bool new_beam = isNewBeam(pd, pending_gps_time, pending_beam_id,
+                                          pending_returns, !beam_ids_chunk.empty());
           if (new_beam) {
             flush_beam();
             pending_gps_time    = pd.gps_time;
@@ -1344,12 +1361,8 @@ bool OutOfCoreStrategy::createShards(const std::string& cloud_name, VoxelGrid& g
           PointData pd = makePointData(starts[i], ends[i], times[i], bid, alpha, passthrough, i, stride);
           if (isGroundHit(pd.x, pd.y, pd.z, pd.classification, dtm_from_class, dtm, dtm_filter_distance))
             pd.bound = 0;
-          const bool new_beam = beam_ids_chunk.empty()
-            ? (pd.gps_time != pending_gps_time)
-            : (pd.beam_id != pending_beam_id)
-            || (!pending_returns.empty() &&
-                (pd.number_of_returns != pending_returns.front().number_of_returns ||
-                 pd.distance_to_sensor <= pending_returns.back().distance_to_sensor));
+          const bool new_beam = isNewBeam(pd, pending_gps_time, pending_beam_id,
+                                          pending_returns, !beam_ids_chunk.empty());
           if (new_beam) {
             flush_beam();
             pending_gps_time    = pd.gps_time;

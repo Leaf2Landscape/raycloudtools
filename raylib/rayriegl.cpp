@@ -81,7 +81,7 @@ protected:
     void on_shot_end() override {
         static constexpr float MAX_Z_DIRECTION = 0.866f;
         static constexpr float DEFAULT_RANGE = 1000.0f;
-        static constexpr float MIN_RANGE = 0.1f;
+        static constexpr float MIN_RANGE = DEFAULT_RANGE; // 0.1f;
 
         // Skip hits (bound data) and near-vertical beams at top of scan lines
         if (target_count != 0 ||

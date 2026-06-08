@@ -136,6 +136,7 @@ int rayImport(int argc, char *argv[])
   if (!writer.begin(save_file + "." + save_ext, input_extra_bytes_vlr, beam_id_opt.isSet(), false, false, input_has_rgb))
     usage();
   Eigen::Vector3d start_pos(0, 0, 0);
+  bool first_chunk_done = false;
   double min_time = std::numeric_limits<double>::max();
   double max_time = std::numeric_limits<double>::lowest();
   std::vector<uint8_t> all_passthrough;
@@ -147,12 +148,14 @@ int rayImport(int argc, char *argv[])
   std::vector<int32_t> chunk_beam_ids;
   auto add_chunk = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                        std::vector<double> &times, std::vector<ray::RGBA> &colours) {
-    if (start_pos.squaredNorm() == 0.0)
+    // Capture the first point position once, used only by --remove_start_pos.
+    if (!first_chunk_done)
     {
       start_pos = ends[0];
+      first_chunk_done = true;
     }
     // user provides a single sensor location (e.g. for static scanners)
-    else if (position_format)
+    if (position_format)
     {
       starts = ends;
       Eigen::Vector3d pos = position.value();

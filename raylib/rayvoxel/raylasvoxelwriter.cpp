@@ -250,6 +250,7 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
         data.path_length_occluded = v.path_length_occluded;
         data.num_unbound_rays = v.num_unbound_rays;
         data.path_length_unbound = v.path_length_unbound;
+        data.num_miss_rays = v.num_miss_rays;
 
         // Classification from the post-traversal table
         auto cit = class_table.find(flat_idx);
@@ -352,10 +353,27 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
           }
         }
 
-        if (params.calc_beam_metrics) {
-            data.transmittance   = v.transmittance();
-            data.bs_entering     = v.bs_entering;
-            data.bs_intercepted  = v.bs_intercepted;
+        // Always populate AMAPVox core columns (flag-free).
+        data.bs_entering    = v.bs_entering;
+        data.bs_intercepted = v.bs_intercepted;
+        data.transmittance  = v.transmittance();
+        data.sum_bs_path    = v.sum_bs_path;
+        data.lMeanTotal     = (v.num_beams_observed > 0)
+                              ? static_cast<double>(v.path_length_weighted) / v.num_beams_observed
+                              : 0.0;
+        // sd_length: needs sum_path_sq accumulator — not yet tracked.
+        // bs_potential: needs occluded beam cross-section — not yet tracked.
+        {
+            const double fpl = computeLambda(v, "fpl");
+            const double fpl_bias = (v.num_beams_observed > 1 && data.lMeanTotal > 0.0)
+                                    ? fpl * fpl * data.lMeanTotal / v.num_beams_observed
+                                    : 0.0;
+            data.attenuation_fpl_biased     = fpl;
+            data.attenuation_fpl_correction = fpl_bias;
+            data.attenuation_fpl_unbiased   = fpl - fpl_bias;
+            data.weighted_fpl               = v.sum_bs_path;
+            data.weighted_effective_fpl     = v.sum_bs_path;
+            data.attenuation_ppl            = computeLambda(v, "ppl");
         }
 
         if (params.subvoxel_split > 0) {
@@ -411,12 +429,13 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
                       user_extent.z() / static_cast<double>(user_dims.z()));
   space.header["res"] = format_vec_string(res);
 
-  std::string colnames = "i j k classification nbEchos nbSampling padG0.5 lgTotal zenithAngleMean azimuthAngleMean azimuthConcentration distLaser";
+  std::string colnames = "i j k classification nbEchos nbSampling padG0.5 lgTotal lMeanTotal sdLength"
+                         " zenithAngleMean azimuthAngleMean azimuthConcentration distLaser"
+                         " bsPotential bsEntering bsIntercepted transmittance"
+                         " attenuation_FPL_biasedMLE attenuation_FPL_biasCorrection attenuation_FPL_unbiasedMLE"
+                         " weightedEffectiveFreepathLength weightedFreepathLength attenuation_PPL_MLE";
   if (params.has_leaf) colnames += " ladG0.5";
   if (params.has_wood) colnames += " wadG0.5";
-  if (params.calc_beam_metrics) {
-    colnames += " bsEntering bsIntercepted";
-  }
   if (params.calc_inclination_dist) {
     colnames += " leaf_g wood_g plant_g";
     if (params.output_iad) {
@@ -448,18 +467,24 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
     v_data.variables.push_back(std::to_string(data ? data->num_beams_observed : 0));
     v_data.variables.push_back(std::to_string(data ? data->pad_g0_5 : 0.0));
     v_data.variables.push_back(std::to_string(data ? data->path_length_weighted : 0.0f));
-    if (params.has_leaf) v_data.variables.push_back(std::to_string(data ? data->lad_g0_5 : 0.0));
-    if (params.has_wood) v_data.variables.push_back(std::to_string(data ? data->wad_g0_5 : 0.0));
+    v_data.variables.push_back(std::to_string(data ? data->lMeanTotal : 0.0));
+    v_data.variables.push_back(std::to_string(data ? data->sd_length : 0.0));
     v_data.variables.push_back(std::to_string(data ? data->mean_zenith_angle_rad * 180.0 / kPi : 0.0));
     v_data.variables.push_back(std::to_string(data ? data->mean_azimuth_rad * 180.0 / kPi : 0.0));
     v_data.variables.push_back(std::to_string(data ? data->azimuth_concentration : 0.0));
     v_data.variables.push_back(std::to_string(data ? data->mean_laser_dist : 0.0));
-
-    if (params.calc_beam_metrics) {
-      const VoxelGrid::Voxel& original_voxel = grid.getVoxel(i, j, k);
-      v_data.variables.push_back(std::to_string(original_voxel.bs_entering));
-      v_data.variables.push_back(std::to_string(original_voxel.bs_intercepted));
-    }
+    v_data.variables.push_back(std::to_string(data ? data->bs_potential : 0.0));
+    v_data.variables.push_back(std::to_string(data ? data->bs_entering : 0.0f));
+    v_data.variables.push_back(std::to_string(data ? data->bs_intercepted : 0.0f));
+    v_data.variables.push_back(std::to_string(data ? data->transmittance : 1.0));
+    v_data.variables.push_back(std::to_string(data ? data->attenuation_fpl_biased : 0.0));
+    v_data.variables.push_back(std::to_string(data ? data->attenuation_fpl_correction : 0.0));
+    v_data.variables.push_back(std::to_string(data ? data->attenuation_fpl_unbiased : 0.0));
+    v_data.variables.push_back(std::to_string(data ? data->weighted_effective_fpl : 0.0f));
+    v_data.variables.push_back(std::to_string(data ? data->weighted_fpl : 0.0f));
+    v_data.variables.push_back(std::to_string(data ? data->attenuation_ppl : 0.0));
+    if (params.has_leaf) v_data.variables.push_back(std::to_string(data ? data->lad_g0_5 : 0.0));
+    if (params.has_wood) v_data.variables.push_back(std::to_string(data ? data->wad_g0_5 : 0.0));
     if (params.calc_inclination_dist) {
       v_data.variables.push_back(std::to_string(data ? data->leaf_g  : 0.0));
       v_data.variables.push_back(std::to_string(data ? data->wood_g  : 0.0));
@@ -522,7 +547,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
   std::string header = "i j k x y z voxel_state pointclass absolute_pointclass num_hits num_hits_weighted num_beams_observed num_beams_weighted path_length_observed path_length_weighted "
                        "num_rays_occluded path_length_occluded pad_g0.5 surface_area voxel_size "
                        "mean_zenith_angle_rad mean_azimuth_rad azimuth_concentration mean_laser_dist"
-                       " num_unbound_rays path_length_unbound";
+                       " num_unbound_rays path_length_unbound num_miss_rays";
   if (params.has_leaf) header += " lad_g0.5";
   if (params.has_leaf) header += " num_hit_leaf";
   if (params.has_wood) header += " num_hit_wood";
@@ -559,7 +584,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
             << data.num_rays_occluded << " " << data.path_length_occluded << " "
             << data.pad_g0_5 << " " << data.surface_area << " " << grid.getVoxelWidth() << " "
             << data.mean_zenith_angle_rad << " " << data.mean_azimuth_rad << " " << data.azimuth_concentration << " " << data.mean_laser_dist
-            << " " << data.num_unbound_rays << " " << data.path_length_unbound;
+            << " " << data.num_unbound_rays << " " << data.path_length_unbound << " " << data.num_miss_rays;
     if (params.has_leaf) outfile << " " << data.lad_g0_5;
     if (params.has_leaf) outfile << " " << data.num_hit_leaf;
     if (params.has_wood) outfile << " " << data.num_hit_wood;
