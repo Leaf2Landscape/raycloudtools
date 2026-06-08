@@ -136,6 +136,7 @@ void VoxelProcessor::processBeam(const BeamData& beam)
       if (flat_array_) {
         VoxelGrid::Voxel& v = flat_array_[ix + iy * flat_dim_x_ + iz * flat_dim_xy_];
         atomic_iadd(v.num_hits, 1);
+        atomic_fadd(v.num_hits_weighted, static_cast<float>(beam_weight));
         if (calc_beam_metrics_) {
           double dist = p.distance_to_sensor;
           double r = tan_half_divergence_ * dist + 0.5 * beam_diameter_;
@@ -145,6 +146,7 @@ void VoxelProcessor::processBeam(const BeamData& beam)
         VoxelCoord coord = {ix, iy, iz};
         VoxelGrid::Voxel& v = sparse_voxels_[coord];
         v.num_hits += 1;
+        v.num_hits_weighted += static_cast<float>(beam_weight);
         if (calc_beam_metrics_) {
           double dist = p.distance_to_sensor;
           double r = tan_half_divergence_ * dist + 0.5 * beam_diameter_;
@@ -241,7 +243,8 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                 if (type == RayType::OBSERVED) {
                     atomic_iadd(v.num_beams_observed, 1);
                     atomic_fadd(v.num_beams_weighted, static_cast<float>(weight));
-                    atomic_fadd(v.path_length_observed, static_cast<float>(length_in_voxel * weight));
+                    atomic_fadd(v.path_length_observed, static_cast<float>(length_in_voxel));
+                    atomic_fadd(v.path_length_weighted, static_cast<float>(length_in_voxel * weight));
                     atomic_fadd(v.sum_of_angles, static_cast<float>(zenith_angle * weight));
                     atomic_fadd(v.sum_sin_azimuth, static_cast<float>(sin_az * weight));
                     atomic_fadd(v.sum_cos_azimuth, static_cast<float>(cos_az * weight));
@@ -285,7 +288,8 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                 if (type == RayType::OBSERVED) {
                     v.num_beams_observed += 1;
                     v.num_beams_weighted += static_cast<float>(weight);
-                    v.path_length_observed += static_cast<float>(length_in_voxel * weight);
+                    v.path_length_observed += static_cast<float>(length_in_voxel);
+                    v.path_length_weighted += static_cast<float>(length_in_voxel * weight);
 
                     Eigen::Vector3d voxel_center_world = bounds_.min_bound_ + (p.cast<double>() + Eigen::Vector3d(0.5, 0.5, 0.5)) * voxel_width_;
                     double dist_to_center = (voxel_center_world - current_ray_world_start_).norm();

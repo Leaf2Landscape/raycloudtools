@@ -92,9 +92,11 @@ namespace ray
     struct Voxel
     {
       int32_t num_hits = 0;               // Count of echo returns landing in this voxel (nbEchos).
+      float num_hits_weighted = 0.0f;     // Weighted hit count: Σ beam_weight per hit endpoint; used for PPL m term.
       int32_t num_beams_observed = 0;     // Count of beams traversing this voxel (nbSampling).
-      float num_beams_weighted = 0.0f;     // Weighted beam traversal sum (beam_weight per traversal); used for attenuation.
-      float path_length_observed = 0.0f;  // Sum of path lengths of observed rays (weighted).
+      float num_beams_weighted = 0.0f;    // Weighted beam traversal sum: Σ beam_weight per traversal; used for attenuation.
+      float path_length_observed = 0.0f;  // Unweighted path length sum: Σ segment_length across all observed traversals.
+      float path_length_weighted = 0.0f;  // Weighted path length sum: Σ (segment_length × beam_weight); used for PAD.
       float num_rays_occluded = 0.0f;     // Sum of occluded rays passing through (unweighted).
       float path_length_occluded = 0.0f;  // Sum of path lengths of occluded rays (unweighted).
       float sum_of_angles = 0.0f;         // Weighted sum of zenith angles of rays passing through.
@@ -196,9 +198,11 @@ namespace ray
   inline void VoxelGrid::Voxel::operator+=(const VoxelGrid::Voxel &other)
   {
     num_hits += other.num_hits;
+    num_hits_weighted += other.num_hits_weighted;
     num_beams_observed += other.num_beams_observed;
     num_beams_weighted += other.num_beams_weighted;
     path_length_observed += other.path_length_observed;
+    path_length_weighted += other.path_length_weighted;
     num_rays_occluded += other.num_rays_occluded;
     path_length_occluded += other.path_length_occluded;
     sum_of_angles += other.sum_of_angles;
@@ -218,10 +222,14 @@ namespace ray
   inline VoxelGrid::Voxel VoxelGrid::Voxel::operator*(double scale) const
   {
     Voxel v;
+    // NOTE: scaling int32_t fields by a fractional scale then truncating is only used
+    // for neighbour-prior interpolation (non-critical path). Low counts may round to 0.
     v.num_hits = static_cast<int32_t>(num_hits * scale);
+    v.num_hits_weighted = static_cast<float>(num_hits_weighted * scale);
     v.num_beams_observed = static_cast<int32_t>(num_beams_observed * scale);
     v.num_beams_weighted = static_cast<float>(num_beams_weighted * scale);
     v.path_length_observed = static_cast<float>(path_length_observed * scale);
+    v.path_length_weighted = static_cast<float>(path_length_weighted * scale);
     v.num_rays_occluded = static_cast<float>(num_rays_occluded * scale);
     v.path_length_occluded = static_cast<float>(path_length_occluded * scale);
     v.sum_of_angles = static_cast<float>(sum_of_angles * scale);

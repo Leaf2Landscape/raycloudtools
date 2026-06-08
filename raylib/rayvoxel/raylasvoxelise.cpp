@@ -151,7 +151,7 @@ double VoxelGrid::Voxel::pad_g0_5() const
   // Bias-corrected MLE assuming spherical LAD (G=0.5): PAD = 2*(N-1)/N * H / L_obs.
   const double eps = 1e-10;
   if (num_beams_weighted < 2.0f) return 0.0;
-  return 2.0 * (num_beams_weighted - 1.0f) * num_hits / (eps + num_beams_weighted * path_length_observed);
+  return 2.0 * (num_beams_weighted - 1.0f) * num_hits / (eps + num_beams_weighted * path_length_weighted);
 }
 
 double VoxelGrid::Voxel::transmittance() const

@@ -134,7 +134,7 @@ void parseLadParams(const std::string& lad_params_str, double& param1, double& p
 // ==================================================================================
 
 // Per-voxel attenuation-coefficient (lambda) estimators reproducing the AMAPVox
-// PAD estimator family. Symbol mapping: path_length_observed/sum_bs_path -> total
+// PAD estimator family. Symbol mapping: path_length_weighted/sum_bs_path -> total
 // traversed path; num_beams_weighted/bs_entering -> beams entering; num_hits/
 // bs_intercepted -> beams intercepted; sum_hit_delta/sum_miss_delta -> total hit/
 // miss path lengths used by the PPL MLE.
@@ -156,8 +156,8 @@ double computeLambda(const VoxelGrid::Voxel& v, const std::string& method)
     if (method == "fpl") {
         if (v.sum_bs_path > eps)
             return static_cast<double>(v.bs_intercepted) / static_cast<double>(v.sum_bs_path);
-        if (v.path_length_observed > eps)
-            return static_cast<double>(v.num_hits) / static_cast<double>(v.path_length_observed);
+        if (v.path_length_weighted > eps)
+            return static_cast<double>(v.num_hits) / static_cast<double>(v.path_length_weighted);
         return 0.0;
     }
     if (method == "transmittance") {
@@ -174,7 +174,7 @@ double computeLambda(const VoxelGrid::Voxel& v, const std::string& method)
         return 0.0;
     }
     if (method == "ppl") {
-        double n      = static_cast<double>(v.num_hits);
+        double n      = static_cast<double>(v.num_hits_weighted);
         double m      = std::max(0.0, static_cast<double>(v.num_beams_weighted) - n);
         double dbar_n = (n > eps) ? static_cast<double>(v.sum_hit_delta)  / n : 0.0;
         double dbar_m = (m > eps) ? static_cast<double>(v.sum_miss_delta) / m : 0.0;
@@ -202,8 +202,8 @@ double computeLambda(const VoxelGrid::Voxel& v, const std::string& method)
         return 0.5 * (lo + hi);
     }
     // unknown method — FPL simplified fallback
-    if (v.path_length_observed > eps)
-        return static_cast<double>(v.num_hits) / static_cast<double>(v.path_length_observed);
+    if (v.path_length_weighted > eps)
+        return static_cast<double>(v.num_hits) / static_cast<double>(v.path_length_weighted);
     return 0.0;
 }
 
@@ -241,9 +241,11 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
         data.z = bmin.z() + vox_w * (static_cast<double>(ck) + 0.5);
         data.state = grid.getVoxelState(ci, cj, ck);
         data.num_hits = v.num_hits;
+        data.num_hits_weighted = v.num_hits_weighted;
         data.num_beams_observed = v.num_beams_observed;
         data.num_beams_weighted = v.num_beams_weighted;
         data.path_length_observed = v.path_length_observed;
+        data.path_length_weighted = v.path_length_weighted;
         data.num_rays_occluded = v.num_rays_occluded;
         data.path_length_occluded = v.path_length_occluded;
         data.num_unbound_rays = v.num_unbound_rays;
@@ -293,7 +295,7 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
             if (params.has_wood) data.wad_g0_5 = data.pad_g0_5 * (wood_hits / hit_total);
         }
 
-        if (params.calc_veg_metrics && v.path_length_observed > 0) {
+        if (params.calc_veg_metrics && v.path_length_weighted > 0) {
             // G evaluated at mean beam zenith angle — first-order approximation.
             // Use --veg_metrics (IAD active by default) for angle-integrated G_eff via pad/lad/wad.
             double g_theta = computeG(data.mean_zenith_angle_rad, params.lad, lad_param1, lad_param2);
@@ -316,7 +318,7 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
             data.liad = iad.liad;
             data.wiad = iad.wiad;
             data.piad = iad.piad;
-            if (v.path_length_observed > 0) {
+            if (v.path_length_weighted > 0) {
               const double hit_total = std::max(1e-10, static_cast<double>(v.num_hits));
               const double leaf_hits = static_cast<double>(iad.leaf_hits);
               const double wood_hits = static_cast<double>(iad.wood_hits);
@@ -325,15 +327,15 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
                   // Bailey (2017) eq.10: per-class G from triangle facets (Eq.4).
                   double pad_v = 0.0, lad_v = 0.0, wad_v = 0.0;
                   if (iad.bailey_g_leaf > 0 && leaf_hits > 0)
-                    lad_v = solveBaileyPadEq10(v.path_length_observed, v.num_beams_weighted,
+                    lad_v = solveBaileyPadEq10(v.path_length_weighted, v.num_beams_weighted,
                                                v.num_hits * (leaf_hits / hit_total), iad.bailey_g_leaf);
                   if (iad.bailey_g_wood > 0 && wood_hits > 0)
-                    wad_v = solveBaileyPadEq10(v.path_length_observed, v.num_beams_weighted,
+                    wad_v = solveBaileyPadEq10(v.path_length_weighted, v.num_beams_weighted,
                                                v.num_hits * (wood_hits / hit_total), iad.bailey_g_wood);
                   if      (leaf_hits == 0 && wood_hits  > 0) pad_v = wad_v;
                   else if (leaf_hits  > 0 && wood_hits == 0) pad_v = lad_v;
                   else if (leaf_hits  > 0 && wood_hits  > 0 && iad.plant_g > 0)
-                    pad_v = solveBaileyPadEq10(v.path_length_observed, v.num_beams_weighted,
+                    pad_v = solveBaileyPadEq10(v.path_length_weighted, v.num_beams_weighted,
                                                v.num_hits, iad.plant_g);
                   data.pad_per_method[method] = pad_v;
                   data.lad_per_method[method] = lad_v;
@@ -445,7 +447,7 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
     v_data.variables.push_back(std::to_string(data ? data->num_hits : 0));
     v_data.variables.push_back(std::to_string(data ? data->num_beams_observed : 0));
     v_data.variables.push_back(std::to_string(data ? data->pad_g0_5 : 0.0));
-    v_data.variables.push_back(std::to_string(data ? data->path_length_observed : 0.0f));
+    v_data.variables.push_back(std::to_string(data ? data->path_length_weighted : 0.0f));
     if (params.has_leaf) v_data.variables.push_back(std::to_string(data ? data->lad_g0_5 : 0.0));
     if (params.has_wood) v_data.variables.push_back(std::to_string(data ? data->wad_g0_5 : 0.0));
     v_data.variables.push_back(std::to_string(data ? data->mean_zenith_angle_rad * 180.0 / kPi : 0.0));
@@ -517,7 +519,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
     return false;
   }
   outfile << std::fixed << std::setprecision(6);
-  std::string header = "i j k x y z voxel_state pointclass absolute_pointclass num_hits num_beams_weighted path_length_observed "
+  std::string header = "i j k x y z voxel_state pointclass absolute_pointclass num_hits num_hits_weighted num_beams_observed num_beams_weighted path_length_observed path_length_weighted "
                        "num_rays_occluded path_length_occluded pad_g0.5 surface_area voxel_size "
                        "mean_zenith_angle_rad mean_azimuth_rad azimuth_concentration mean_laser_dist"
                        " num_unbound_rays path_length_unbound";
@@ -553,7 +555,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
     outfile << (data.i - padding) << " " << (data.j - padding) << " " << (data.k - padding) << " "
             << data.x << " " << data.y << " " << data.z << " "
             << static_cast<int>(data.state) << " " << data.dominant_class << " " << data.absolute_class << " "
-            << data.num_hits << " " << data.num_beams_weighted << " " << data.path_length_observed << " "
+            << data.num_hits << " " << data.num_hits_weighted << " " << data.num_beams_observed << " " << data.num_beams_weighted << " " << data.path_length_observed << " " << data.path_length_weighted << " "
             << data.num_rays_occluded << " " << data.path_length_occluded << " "
             << data.pad_g0_5 << " " << data.surface_area << " " << grid.getVoxelWidth() << " "
             << data.mean_zenith_angle_rad << " " << data.mean_azimuth_rad << " " << data.azimuth_concentration << " " << data.mean_laser_dist

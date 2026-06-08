@@ -40,18 +40,18 @@ namespace ray
   // Inputs: raw voxel accumulators — no new fields needed.
   //
   // Variable mapping (paper symbol -> local variable):
-  //   r_bar  = path_length_observed / num_beams_weighted  (mean scan path through voxel)
+  //   r_bar  = path_length_weighted / num_beams_weighted  (mean scan path through voxel)
   //   P_bar  = 1 - (num_hits / num_beams_weighted)         (mean gap probability)
   //   G      = projection coefficient from IAD histogram
   //
-  // Consistency check: at thin-medium limit, -ln(P_bar)/r_bar -> num_hits/path_length_observed
+  // Consistency check: at thin-medium limit, -ln(P_bar)/r_bar -> num_hits/path_length_weighted
   // (recovers the existing Vicari estimator). Bailey is preferred at higher attenuation.
   //
   // Iterative form: secant method on residual f(a_L) per eq.10.
   // Seed: a_L0 = -ln(P_bar) / (G * r_bar)   (closed-form thin-limit)
   // Convergence: |f| < 1e-9 or 50 iterations.
   // Guard: return 0.0 if G <= 0 or r_bar <= 0 or num_beams_weighted < 1.
-  double solveBaileyPadEq10(double path_length_observed,
+  double solveBaileyPadEq10(double path_length_weighted,
                             double num_beams_weighted,
                             double num_hits,
                             double G);
