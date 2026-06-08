@@ -553,7 +553,7 @@ namespace raytest
     for (const auto& kv : m)
     {
       total_hits     += kv.second.num_hits;
-      total_observed += kv.second.num_rays_observed;
+      total_observed += kv.second.num_beams_weighted;
       total_unbound_rays += kv.second.num_unbound_rays;
       total_path_length_unbound += kv.second.path_length_unbound;
     }
@@ -635,7 +635,7 @@ namespace raytest
     beam.returns[1].distance_to_sensor = 7.0;
     beam.returns[1].bound = 0;
 
-    // weighting="equal": per-voxel num_rays_observed is a multiple of 1/N = 0.5.
+    // weighting="equal": per-voxel num_beams_weighted is a multiple of 1/N = 0.5.
     {
       const std::string weighting = "equal";
       ray::VoxelProcessor vp(bounds, voxel_size, weighting,
@@ -648,12 +648,12 @@ namespace raytest
       EXPECT_FALSE(m.empty()) << "traversal should have populated at least one voxel";
       for (const auto& kv : m)
       {
-        EXPECT_LT(std::fmod(kv.second.num_rays_observed, 0.5f), 1e-4f)
+        EXPECT_LT(std::fmod(kv.second.num_beams_weighted, 0.5f), 1e-4f)
           << "equal weighting must contribute multiples of 1/N (0.5) per voxel";
       }
     }
 
-    // weighting="full": per-voxel num_rays_observed is a multiple of 1.0.
+    // weighting="full": per-voxel num_beams_weighted is a multiple of 1.0.
     {
       const std::string weighting = "full";
       ray::VoxelProcessor vp(bounds, voxel_size, weighting,
@@ -666,7 +666,7 @@ namespace raytest
       EXPECT_FALSE(m.empty()) << "traversal should have populated at least one voxel";
       for (const auto& kv : m)
       {
-        EXPECT_LT(std::fmod(kv.second.num_rays_observed, 1.0f), 1e-4f)
+        EXPECT_LT(std::fmod(kv.second.num_beams_weighted, 1.0f), 1e-4f)
           << "full weighting must contribute multiples of 1.0 per voxel";
       }
     }
@@ -678,7 +678,7 @@ namespace raytest
   TEST(RayVoxelAttenuation, PadG05Guard)
   {
     ray::VoxelGrid::Voxel v{};
-    v.num_rays_observed = 1.0f;
+    v.num_beams_weighted = 1.0f;
     v.num_hits = 1.0f;
     v.path_length_observed = 1.0f;
     EXPECT_EQ(v.pad_g0_5(), 0.0);
@@ -688,7 +688,7 @@ namespace raytest
   TEST(RayVoxelAttenuation, PadG05ZeroHits)
   {
     ray::VoxelGrid::Voxel v{};
-    v.num_rays_observed = 10.0f;
+    v.num_beams_weighted = 10.0f;
     v.num_hits = 0.0f;
     v.path_length_observed = 5.0f;
     EXPECT_EQ(v.pad_g0_5(), 0.0);
@@ -698,7 +698,7 @@ namespace raytest
   TEST(RayVoxelAttenuation, PadG05KnownValue)
   {
     ray::VoxelGrid::Voxel v{};
-    v.num_rays_observed = 4.0f;
+    v.num_beams_weighted = 4.0f;
     v.num_hits = 2.0f;
     v.path_length_observed = 3.0f;
     EXPECT_NEAR(v.pad_g0_5(), 1.0, 1e-6);
@@ -708,7 +708,7 @@ namespace raytest
   TEST(RayVoxelAttenuation, PadG05SingleHit)
   {
     ray::VoxelGrid::Voxel v{};
-    v.num_rays_observed = 10.0f;
+    v.num_beams_weighted = 10.0f;
     v.num_hits = 1.0f;
     v.path_length_observed = 2.0f;
     EXPECT_NEAR(v.pad_g0_5(), 0.9, 1e-6);
