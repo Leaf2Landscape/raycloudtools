@@ -123,11 +123,7 @@ void VoxelProcessor::processBeam(const BeamData& beam)
     walkGrid(vs, ve, RayType::OBSERVED, beam_weight);
   }
 
-  // Record hits: one count per (beam, voxel) pair regardless of how many returns from
-  // this beam land in the same voxel. This matches AMAPVox nbEchos semantics (beams
-  // intercepted per voxel) rather than counting individual return endpoints.
-  struct HitVoxel { int64_t ix, iy, iz; };
-  HitVoxel seen[16]; int seen_count = 0;
+  // Record hits for all returns (num_hits only; traversal already counted above).
   for (int i = 0; i < N; ++i) {
     const PointData& p = *sorted[i];
     if (p.bound == 0) continue;  // unbound (miss) ray: traversed as observed, never a hit
@@ -137,11 +133,6 @@ void VoxelProcessor::processBeam(const BeamData& beam)
     int64_t iy = static_cast<int64_t>(vox_coord_filled.y());
     int64_t iz = static_cast<int64_t>(vox_coord_filled.z());
     if (ix >= 0 && ix < voxel_dims_[0] && iy >= 0 && iy < voxel_dims_[1] && iz >= 0 && iz < voxel_dims_[2]) {
-      bool dup = false;
-      for (int s = 0; s < seen_count; ++s)
-        if (seen[s].ix == ix && seen[s].iy == iy && seen[s].iz == iz) { dup = true; break; }
-      if (dup) continue;
-      if (seen_count < 16) seen[seen_count++] = {ix, iy, iz};
       if (flat_array_) {
         VoxelGrid::Voxel& v = flat_array_[ix + iy * flat_dim_x_ + iz * flat_dim_xy_];
         atomic_fadd(v.num_hits, 1.0f);
@@ -198,9 +189,8 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
 {
     // Pre-calculate angle for this ray, as it's constant throughout traversal.
     // Zenith angle is the angle between the ray direction and the vertical Z-axis (0,0,1).
-    // We normalize it to a maximum of 90 degrees by using the absolute z-component,
-    // so downward rays are treated symmetrically with upward rays.
-    double zenith_angle = acos(clamped(std::abs(current_ray_vox_dir_.z()), -1.0, 1.0));
+    // The cosine of this angle is simply the z-component of the normalized direction vector.
+    double zenith_angle = acos(clamped(current_ray_vox_dir_.z(), -1.0, 1.0));
     double azimuth_angle = std::atan2(current_ray_vox_dir_.x(), current_ray_vox_dir_.y());
     if (azimuth_angle < 0.0) azimuth_angle += 2.0 * kPi;
     const double sin_az = std::sin(azimuth_angle);
