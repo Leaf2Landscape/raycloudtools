@@ -976,7 +976,10 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
             pd.bound = 0;
           const bool new_beam = beam_ids_chunk.empty()
             ? (pd.gps_time != pending_gps_time)
-            : (pd.beam_id != pending_beam_id);
+            : (pd.beam_id != pending_beam_id)
+            || (!pending_returns.empty() &&
+                (pd.number_of_returns != pending_returns.front().number_of_returns ||
+                 pd.distance_to_sensor <= pending_returns.back().distance_to_sensor));
           if (new_beam) {
             flush_beam();
             pending_gps_time    = pd.gps_time;
@@ -1057,7 +1060,10 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
             pd.bound = 0;
           const bool new_beam = beam_ids_chunk.empty()
             ? (pd.gps_time != pending_gps_time)
-            : (pd.beam_id != pending_beam_id);
+            : (pd.beam_id != pending_beam_id)
+            || (!pending_returns.empty() &&
+                (pd.number_of_returns != pending_returns.front().number_of_returns ||
+                 pd.distance_to_sensor <= pending_returns.back().distance_to_sensor));
           if (new_beam) {
             flush_beam();
             pending_gps_time    = pd.gps_time;
@@ -1340,7 +1346,10 @@ bool OutOfCoreStrategy::createShards(const std::string& cloud_name, VoxelGrid& g
             pd.bound = 0;
           const bool new_beam = beam_ids_chunk.empty()
             ? (pd.gps_time != pending_gps_time)
-            : (pd.beam_id != pending_beam_id);
+            : (pd.beam_id != pending_beam_id)
+            || (!pending_returns.empty() &&
+                (pd.number_of_returns != pending_returns.front().number_of_returns ||
+                 pd.distance_to_sensor <= pending_returns.back().distance_to_sensor));
           if (new_beam) {
             flush_beam();
             pending_gps_time    = pd.gps_time;
