@@ -123,6 +123,16 @@ void VoxelProcessor::processBeam(const BeamData& beam)
     walkGrid(vs, ve, RayType::OBSERVED, beam_weight);
   }
 
+  // Pre-compute unit ray direction for sum_bs_path free-path corrections below.
+  // Only needed when beam-section metrics are active.
+  Eigen::Vector3d ray_dir_unit = Eigen::Vector3d::Zero();
+  bool ray_dir_valid = false;
+  if (calc_beam_metrics_) {
+    const Eigen::Vector3d raw_dir = farthest_pos - beam.beam_origin;
+    const double raw_len = raw_dir.norm();
+    if (raw_len > 1e-12) { ray_dir_unit = raw_dir / raw_len; ray_dir_valid = true; }
+  }
+
   // Record hits for all returns (num_hits only; traversal already counted above).
   for (int i = 0; i < N; ++i) {
     const PointData& p = *sorted[i];
@@ -141,6 +151,30 @@ void VoxelProcessor::processBeam(const BeamData& beam)
           double dist = p.distance_to_sensor;
           double r = tan_half_divergence_ * dist + 0.5 * beam_diameter_;
           atomic_fadd(v.bs_intercepted, static_cast<float>(kPi * r * r * beam_weight));
+          if (ray_dir_valid) {
+            // sum_bs_path correction: walkGrid added beam_area × weight × full_transit;
+            // FPL needs beam_area × weight × free_path (entry→hit, not entry→exit).
+            // Subtract the excess: beam_area × weight × (t_exit − t_hit).
+            const Eigen::Vector3d vox_min_w = bounds_.min_bound_ + Eigen::Vector3d(static_cast<double>(ix), static_cast<double>(iy), static_cast<double>(iz)) * voxel_width_;
+            double t_entry = 0.0, t_exit = 1e30;
+            for (int d = 0; d < 3; ++d) {
+              if (std::abs(ray_dir_unit[d]) > 1e-15) {
+                const double t1 = (vox_min_w[d]                - beam.beam_origin[d]) / ray_dir_unit[d];
+                const double t2 = (vox_min_w[d] + voxel_width_ - beam.beam_origin[d]) / ray_dir_unit[d];
+                t_entry = std::max(t_entry, std::min(t1, t2));
+                t_exit  = std::min(t_exit,  std::max(t1, t2));
+              }
+            }
+            t_entry = std::max(0.0, t_entry);
+            const double full_transit = std::max(0.0, t_exit - t_entry);
+            const double excess = std::max(0.0, std::min(full_transit, t_exit - p.distance_to_sensor));
+            if (excess > 1e-12) {
+              const Eigen::Vector3d vox_center = vox_min_w + Eigen::Vector3d::Constant(0.5 * voxel_width_);
+              const double dc = (vox_center - beam.beam_origin).norm();
+              const double rc = tan_half_divergence_ * dc + 0.5 * beam_diameter_;
+              atomic_fadd(v.sum_bs_path, -static_cast<float>(kPi * rc * rc * beam_weight * excess));
+            }
+          }
         }
       } else {
         VoxelCoord coord = {ix, iy, iz};
@@ -151,6 +185,27 @@ void VoxelProcessor::processBeam(const BeamData& beam)
           double dist = p.distance_to_sensor;
           double r = tan_half_divergence_ * dist + 0.5 * beam_diameter_;
           v.bs_intercepted += static_cast<float>(kPi * r * r * beam_weight);
+          if (ray_dir_valid) {
+            const Eigen::Vector3d vox_min_w = bounds_.min_bound_ + Eigen::Vector3d(static_cast<double>(ix), static_cast<double>(iy), static_cast<double>(iz)) * voxel_width_;
+            double t_entry = 0.0, t_exit = 1e30;
+            for (int d = 0; d < 3; ++d) {
+              if (std::abs(ray_dir_unit[d]) > 1e-15) {
+                const double t1 = (vox_min_w[d]                - beam.beam_origin[d]) / ray_dir_unit[d];
+                const double t2 = (vox_min_w[d] + voxel_width_ - beam.beam_origin[d]) / ray_dir_unit[d];
+                t_entry = std::max(t_entry, std::min(t1, t2));
+                t_exit  = std::min(t_exit,  std::max(t1, t2));
+              }
+            }
+            t_entry = std::max(0.0, t_entry);
+            const double full_transit = std::max(0.0, t_exit - t_entry);
+            const double excess = std::max(0.0, std::min(full_transit, t_exit - p.distance_to_sensor));
+            if (excess > 1e-12) {
+              const Eigen::Vector3d vox_center = vox_min_w + Eigen::Vector3d::Constant(0.5 * voxel_width_);
+              const double dc = (vox_center - beam.beam_origin).norm();
+              const double rc = tan_half_divergence_ * dc + 0.5 * beam_diameter_;
+              v.sum_bs_path -= static_cast<float>(kPi * rc * rc * beam_weight * excess);
+            }
+          }
         }
       }
     }
