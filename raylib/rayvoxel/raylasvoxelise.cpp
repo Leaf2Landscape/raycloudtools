@@ -124,7 +124,7 @@ void VoxelGrid::absorbMap(VoxelProcessor::Map&& m)
 VoxelGrid::VoxelState VoxelGrid::getVoxelState(int64_t i, int64_t j, int64_t k) const {
     const Voxel& v = getVoxel(i, j, k);
     if (v.num_hits > 0.0f) return VoxelState::FILLED;
-    if (v.num_rays_observed > 0.0f) return VoxelState::EMPTY;
+    if (v.num_beams_weighted > 0.0f) return VoxelState::EMPTY;
     if (v.num_rays_occluded > 0.0f) return VoxelState::OCCLUDED;
     return VoxelState::UNOBSERVED;
 }
@@ -150,8 +150,8 @@ double VoxelGrid::Voxel::pad_g0_5() const
 {
   // Bias-corrected MLE assuming spherical LAD (G=0.5): PAD = 2*(N-1)/N * H / L_obs.
   const double eps = 1e-10;
-  if (num_rays_observed < 2.0f) return 0.0;
-  return 2.0 * (num_rays_observed - 1.0f) * num_hits / (eps + num_rays_observed * path_length_observed);
+  if (num_beams_weighted < 2.0f) return 0.0;
+  return 2.0 * (num_beams_weighted - 1.0f) * num_hits / (eps + num_beams_weighted * path_length_observed);
 }
 
 double VoxelGrid::Voxel::transmittance() const
@@ -785,7 +785,7 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
       const int64_t cj = (flat_idx / dims[0]) % dims[1];
       const int64_t ck = flat_idx / (dims[0] * dims[1]);
       const VoxelGrid::Voxel& vv = grid.getVoxel(ci, cj, ck);
-      const double mean_zenith = (vv.num_rays_observed > 0) ? (vv.sum_of_angles / vv.num_rays_observed) : 0.0;
+      const double mean_zenith = (vv.num_beams_weighted > 0) ? (vv.sum_of_angles / vv.num_beams_weighted) : 0.0;
       iad.plant_g = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.piad);
       iad.leaf_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.liad);
       iad.wood_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.wiad);

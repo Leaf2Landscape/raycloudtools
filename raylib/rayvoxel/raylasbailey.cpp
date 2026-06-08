@@ -114,24 +114,24 @@ std::unordered_map<int64_t, TriangleHistograms> buildTriangleInclinationHistogra
 }
 
 double solveBaileyPadEq10(double path_length_observed,
-                          double num_rays_observed,
+                          double num_beams_weighted,
                           double num_hits,
                           double G)
 {
   // Guard: no usable geometry / projection.
-  if (G <= 0.0 || num_rays_observed < 1.0) return 0.0;
-  const double r_bar = path_length_observed / num_rays_observed;  // mean scan path through voxel
+  if (G <= 0.0 || num_beams_weighted < 1.0) return 0.0;
+  const double r_bar = path_length_observed / num_beams_weighted;  // mean scan path through voxel
   if (r_bar <= 0.0) return 0.0;
 
   // Mean gap probability. Clamp away from 0 so -ln is finite; a fully-blocked voxel
   // would otherwise drive a_L -> infinity.
   const double eps = 1e-12;
-  double P_bar = 1.0 - (num_hits / num_rays_observed);
+  double P_bar = 1.0 - (num_hits / num_beams_weighted);
   P_bar = std::clamp(P_bar, eps, 1.0 - eps);
 
   // Bailey & Mahaffee (2017) Eq. 10 residual: f(a_L) = P_bar - exp(-a_L * G * r_bar).
   // Approximation: Eq. 10 specifies an exponentially-weighted mean path r̄_exp; only an
-  // arithmetic mean (path_length_observed / num_rays_observed) is available from the voxel
+  // arithmetic mean (path_length_observed / num_beams_weighted) is available from the voxel
   // accumulators, so r̄_exp is replaced by r_bar. This biases a_L when path length varies
   // significantly within a voxel. Higher-accuracy accumulation is a tracked follow-up.
   auto residual = [&](double a_L) -> double {

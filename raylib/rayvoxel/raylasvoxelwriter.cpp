@@ -135,7 +135,7 @@ void parseLadParams(const std::string& lad_params_str, double& param1, double& p
 
 // Per-voxel attenuation-coefficient (lambda) estimators reproducing the AMAPVox
 // PAD estimator family. Symbol mapping: path_length_observed/sum_bs_path -> total
-// traversed path; num_rays_observed/bs_entering -> beams entering; num_hits/
+// traversed path; num_beams_weighted/bs_entering -> beams entering; num_hits/
 // bs_intercepted -> beams intercepted; sum_hit_delta/sum_miss_delta -> total hit/
 // miss path lengths used by the PPL MLE.
 //
@@ -166,16 +166,16 @@ double computeLambda(const VoxelGrid::Voxel& v, const std::string& method)
                                     / static_cast<double>(v.bs_entering));
             return -std::log(T);
         }
-        if (v.num_rays_observed > eps) {
+        if (v.num_beams_weighted > eps) {
             double hf = std::min(1.0 - eps,
-                                 static_cast<double>(v.num_hits) / static_cast<double>(v.num_rays_observed));
+                                 static_cast<double>(v.num_hits) / static_cast<double>(v.num_beams_weighted));
             return -std::log(1.0 - hf);
         }
         return 0.0;
     }
     if (method == "ppl") {
         double n      = static_cast<double>(v.num_hits);
-        double m      = std::max(0.0, static_cast<double>(v.num_rays_observed) - n);
+        double m      = std::max(0.0, static_cast<double>(v.num_beams_weighted) - n);
         double dbar_n = (n > eps) ? static_cast<double>(v.sum_hit_delta)  / n : 0.0;
         double dbar_m = (m > eps) ? static_cast<double>(v.sum_miss_delta) / m : 0.0;
         if (n < eps || dbar_n < eps) {
@@ -242,7 +242,7 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
         data.state = grid.getVoxelState(ci, cj, ck);
         data.num_hits = v.num_hits;
         data.num_beams_observed = static_cast<int>(v.num_beams_observed);
-        data.num_rays_observed = v.num_rays_observed;
+        data.num_beams_weighted = v.num_beams_weighted;
         data.path_length_observed = v.path_length_observed;
         data.num_rays_occluded = v.num_rays_occluded;
         data.path_length_occluded = v.path_length_occluded;
@@ -259,16 +259,16 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
 
         data.pad_g0_5      = v.pad_g0_5();
         data.surface_area  = data.pad_g0_5 * voxel_volume;
-        data.mean_zenith_angle_rad  = (v.num_rays_observed > 0) ? (v.sum_of_angles / v.num_rays_observed) : 0.0;
-        if (v.num_rays_observed > 0) {
-          const double mean_sin = v.sum_sin_azimuth / v.num_rays_observed;
-          const double mean_cos = v.sum_cos_azimuth / v.num_rays_observed;
+        data.mean_zenith_angle_rad  = (v.num_beams_weighted > 0) ? (v.sum_of_angles / v.num_beams_weighted) : 0.0;
+        if (v.num_beams_weighted > 0) {
+          const double mean_sin = v.sum_sin_azimuth / v.num_beams_weighted;
+          const double mean_cos = v.sum_cos_azimuth / v.num_beams_weighted;
           double az = std::atan2(mean_sin, mean_cos);
           if (az < 0.0) az += 2.0 * kPi;
           data.mean_azimuth_rad = az;
           data.azimuth_concentration = std::sqrt(mean_sin * mean_sin + mean_cos * mean_cos);
         }
-        data.mean_laser_dist = (v.num_rays_observed > 0) ? (v.sum_of_laser_distances / v.num_rays_observed) : 0.0;
+        data.mean_laser_dist = (v.num_beams_weighted > 0) ? (v.sum_of_laser_distances / v.num_beams_weighted) : 0.0;
 
         if (dtm && dtm->isValid()) {
             double ground_height;
@@ -325,15 +325,15 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
                   // Bailey (2017) eq.10: per-class G from triangle facets (Eq.4).
                   double pad_v = 0.0, lad_v = 0.0, wad_v = 0.0;
                   if (iad.bailey_g_leaf > 0 && leaf_hits > 0)
-                    lad_v = solveBaileyPadEq10(v.path_length_observed, v.num_rays_observed,
+                    lad_v = solveBaileyPadEq10(v.path_length_observed, v.num_beams_weighted,
                                                v.num_hits * (leaf_hits / hit_total), iad.bailey_g_leaf);
                   if (iad.bailey_g_wood > 0 && wood_hits > 0)
-                    wad_v = solveBaileyPadEq10(v.path_length_observed, v.num_rays_observed,
+                    wad_v = solveBaileyPadEq10(v.path_length_observed, v.num_beams_weighted,
                                                v.num_hits * (wood_hits / hit_total), iad.bailey_g_wood);
                   if      (leaf_hits == 0 && wood_hits  > 0) pad_v = wad_v;
                   else if (leaf_hits  > 0 && wood_hits == 0) pad_v = lad_v;
                   else if (leaf_hits  > 0 && wood_hits  > 0 && iad.plant_g > 0)
-                    pad_v = solveBaileyPadEq10(v.path_length_observed, v.num_rays_observed,
+                    pad_v = solveBaileyPadEq10(v.path_length_observed, v.num_beams_weighted,
                                                v.num_hits, iad.plant_g);
                   data.pad_per_method[method] = pad_v;
                   data.lad_per_method[method] = lad_v;
@@ -369,7 +369,7 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
         const int64_t dimX = dims[0], dimY = dims[1];
         for (int64_t flat_idx = 0; flat_idx < total; ++flat_idx) {
             const VoxelGrid::Voxel& v = grid.voxelAt(flat_idx);
-            if (v.num_hits == 0.0f && v.num_rays_observed == 0.0f && v.num_rays_occluded == 0.0f) continue;
+            if (v.num_hits == 0.0f && v.num_beams_weighted == 0.0f && v.num_rays_occluded == 0.0f) continue;
             const int64_t ci = flat_idx % dimX;
             const int64_t cj = (flat_idx / dimX) % dimY;
             const int64_t ck = flat_idx / (dimX * dimY);
@@ -517,7 +517,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
     return false;
   }
   outfile << std::fixed << std::setprecision(6);
-  std::string header = "i j k x y z voxel_state pointclass absolute_pointclass num_hits num_rays_observed path_length_observed "
+  std::string header = "i j k x y z voxel_state pointclass absolute_pointclass num_hits num_beams_weighted path_length_observed "
                        "num_rays_occluded path_length_occluded pad_g0.5 surface_area voxel_size "
                        "mean_zenith_angle_rad mean_azimuth_rad azimuth_concentration mean_laser_dist"
                        " num_unbound_rays path_length_unbound";
@@ -553,7 +553,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
     outfile << (data.i - padding) << " " << (data.j - padding) << " " << (data.k - padding) << " "
             << data.x << " " << data.y << " " << data.z << " "
             << static_cast<int>(data.state) << " " << data.dominant_class << " " << data.absolute_class << " "
-            << data.num_hits << " " << data.num_rays_observed << " " << data.path_length_observed << " "
+            << data.num_hits << " " << data.num_beams_weighted << " " << data.path_length_observed << " "
             << data.num_rays_occluded << " " << data.path_length_occluded << " "
             << data.pad_g0_5 << " " << data.surface_area << " " << grid.getVoxelWidth() << " "
             << data.mean_zenith_angle_rad << " " << data.mean_azimuth_rad << " " << data.azimuth_concentration << " " << data.mean_laser_dist
@@ -690,7 +690,7 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
     vars["pointclass"] = dataFile.addVar("pointclass", netCDF::ncInt, {nPoints});
     vars["absolute_pointclass"] = dataFile.addVar("absolute_pointclass", netCDF::ncInt, {nPoints});
     vars["num_hits"] = dataFile.addVar("num_hits", netCDF::ncFloat, {nPoints});
-    vars["num_rays_observed"] = dataFile.addVar("num_rays_observed", netCDF::ncFloat, {nPoints});
+    vars["num_beams_weighted"] = dataFile.addVar("num_beams_weighted", netCDF::ncFloat, {nPoints});
     vars["pad_g0_5"] = dataFile.addVar("pad_g0_5", netCDF::ncDouble, {nPoints});
     if (params.has_leaf) vars["lad_g0_5"] = dataFile.addVar("lad_g0_5", netCDF::ncDouble, {nPoints});
     if (params.has_wood) vars["wad_g0_5"] = dataFile.addVar("wad_g0_5", netCDF::ncDouble, {nPoints});
@@ -780,7 +780,7 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
         pclass_data.push_back(data.dominant_class);
         abs_pclass_data.push_back(data.absolute_class);
         hits_data.push_back(data.num_hits);
-        rays_data.push_back(data.num_rays_observed);
+        rays_data.push_back(data.num_beams_weighted);
         pad_data.push_back(data.pad_g0_5);
         if (params.has_leaf) lad_g05_data.push_back(data.lad_g0_5);
         if (params.has_wood) wad_g05_data.push_back(data.wad_g0_5);
@@ -842,7 +842,7 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
     vars["pointclass"].putVar(pclass_data.data());
     vars["absolute_pointclass"].putVar(abs_pclass_data.data());
     vars["num_hits"].putVar(hits_data.data());
-    vars["num_rays_observed"].putVar(rays_data.data());
+    vars["num_beams_weighted"].putVar(rays_data.data());
     vars["pad_g0_5"].putVar(pad_data.data());
     if (params.has_leaf) vars["lad_g0_5"].putVar(lad_g05_data.data());
     if (params.has_wood) vars["wad_g0_5"].putVar(wad_g05_data.data());

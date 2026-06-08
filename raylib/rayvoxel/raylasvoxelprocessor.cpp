@@ -240,7 +240,7 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                 VoxelGrid::Voxel& v = flat_array_[p.x() + p.y() * flat_dim_x_ + p.z() * flat_dim_xy_];
                 if (type == RayType::OBSERVED) {
                     atomic_fadd(v.num_beams_observed, 1.0f);
-                    atomic_fadd(v.num_rays_observed, static_cast<float>(weight));
+                    atomic_fadd(v.num_beams_weighted, static_cast<float>(weight));
                     atomic_fadd(v.path_length_observed, static_cast<float>(length_in_voxel * weight));
                     atomic_fadd(v.sum_of_angles, static_cast<float>(zenith_angle * weight));
                     atomic_fadd(v.sum_sin_azimuth, static_cast<float>(sin_az * weight));
@@ -284,7 +284,7 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                 VoxelGrid::Voxel& v = sparse_voxels_[coord];
                 if (type == RayType::OBSERVED) {
                     v.num_beams_observed += 1.0f;
-                    v.num_rays_observed += static_cast<float>(weight);
+                    v.num_beams_weighted += static_cast<float>(weight);
                     v.path_length_observed += static_cast<float>(length_in_voxel * weight);
 
                     Eigen::Vector3d voxel_center_world = bounds_.min_bound_ + (p.cast<double>() + Eigen::Vector3d(0.5, 0.5, 0.5)) * voxel_width_;

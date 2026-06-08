@@ -77,15 +77,15 @@ void applyNeighbourPriors(VoxelGrid& grid, int min_rays_for_density)
     for (int64_t i = 1; i < dimX - 1; ++i) {
       const int64_t flat_idx = i + j * dimX + k * dimX * dimY;
       const VoxelGrid::Voxel& read_voxel = read_voxels[flat_idx];
-      if (read_voxel.num_hits == 0.0f && read_voxel.num_rays_observed == 0.0f) continue;
+      if (read_voxel.num_hits == 0.0f && read_voxel.num_beams_weighted == 0.0f) continue;
 
-      bool was_undersampled = (read_voxel.num_rays_observed < static_cast<float>(min_rays_for_density));
+      bool was_undersampled = (read_voxel.num_beams_weighted < static_cast<float>(min_rays_for_density));
       if (read_voxel.num_hits > 0.0f) {
         num_hit_voxels++;
         if (was_undersampled) num_hit_voxels_unsatisfied++;
       }
 
-      float needed = static_cast<float>(min_rays_for_density) - read_voxel.num_rays_observed;
+      float needed = static_cast<float>(min_rays_for_density) - read_voxel.num_beams_weighted;
       if (needed <= 0.0f) continue;
 
       VoxelGrid::Voxel& center_voxel = grid.flat_voxels_[flat_idx];
@@ -94,10 +94,10 @@ void applyNeighbourPriors(VoxelGrid& grid, int min_rays_for_density)
       shell1_sum += grid.getVoxel(i-1,j,k); shell1_sum += grid.getVoxel(i+1,j,k);
       shell1_sum += grid.getVoxel(i,j-1,k); shell1_sum += grid.getVoxel(i,j+1,k);
       shell1_sum += grid.getVoxel(i,j,k-1); shell1_sum += grid.getVoxel(i,j,k+1);
-      if (shell1_sum.num_rays_observed > 0) {
-        double r = std::min(1.0, static_cast<double>(needed) / shell1_sum.num_rays_observed);
+      if (shell1_sum.num_beams_weighted > 0) {
+        double r = std::min(1.0, static_cast<double>(needed) / shell1_sum.num_beams_weighted);
         center_voxel += shell1_sum * r;
-        needed -= static_cast<float>(shell1_sum.num_rays_observed * r);
+        needed -= static_cast<float>(shell1_sum.num_beams_weighted * r);
       }
       if (needed <= 0.0f) continue;
 
@@ -105,18 +105,18 @@ void applyNeighbourPriors(VoxelGrid& grid, int min_rays_for_density)
       shell2_sum += grid.getVoxel(i-1,j-1,k); shell2_sum += grid.getVoxel(i-1,j+1,k); shell2_sum += grid.getVoxel(i+1,j-1,k); shell2_sum += grid.getVoxel(i+1,j+1,k);
       shell2_sum += grid.getVoxel(i-1,j,k-1); shell2_sum += grid.getVoxel(i-1,j,k+1); shell2_sum += grid.getVoxel(i+1,j,k-1); shell2_sum += grid.getVoxel(i+1,j,k+1);
       shell2_sum += grid.getVoxel(i,j-1,k-1); shell2_sum += grid.getVoxel(i,j-1,k+1); shell2_sum += grid.getVoxel(i,j+1,k-1); shell2_sum += grid.getVoxel(i,j+1,k+1);
-      if (shell2_sum.num_rays_observed > 0) {
-        double r = std::min(1.0, static_cast<double>(needed) / shell2_sum.num_rays_observed);
+      if (shell2_sum.num_beams_weighted > 0) {
+        double r = std::min(1.0, static_cast<double>(needed) / shell2_sum.num_beams_weighted);
         center_voxel += shell2_sum * r;
-        needed -= static_cast<float>(shell2_sum.num_rays_observed * r);
+        needed -= static_cast<float>(shell2_sum.num_beams_weighted * r);
       }
       if (needed <= 0.0f) continue;
 
       VoxelGrid::Voxel shell3_sum;
       shell3_sum += grid.getVoxel(i-1,j-1,k-1); shell3_sum += grid.getVoxel(i-1,j-1,k+1); shell3_sum += grid.getVoxel(i-1,j+1,k-1); shell3_sum += grid.getVoxel(i-1,j+1,k+1);
       shell3_sum += grid.getVoxel(i+1,j-1,k-1); shell3_sum += grid.getVoxel(i+1,j-1,k+1); shell3_sum += grid.getVoxel(i+1,j+1,k-1); shell3_sum += grid.getVoxel(i+1,j+1,k+1);
-      if (shell3_sum.num_rays_observed > 0) {
-        double r = std::min(1.0, static_cast<double>(needed) / shell3_sum.num_rays_observed);
+      if (shell3_sum.num_beams_weighted > 0) {
+        double r = std::min(1.0, static_cast<double>(needed) / shell3_sum.num_beams_weighted);
         center_voxel += shell3_sum * r;
       }
     }}}
@@ -137,23 +137,23 @@ void applyNeighbourPriors(VoxelGrid& grid, int min_rays_for_density)
 
       VoxelGrid::Voxel& center_voxel = grid.sparse_voxels_.at(coord);
 
-      bool was_undersampled = (read_voxel.num_rays_observed < static_cast<float>(min_rays_for_density));
+      bool was_undersampled = (read_voxel.num_beams_weighted < static_cast<float>(min_rays_for_density));
       if (read_voxel.num_hits > 0.0f) {
         num_hit_voxels++;
         if (was_undersampled) num_hit_voxels_unsatisfied++;
       }
 
-      float needed = static_cast<float>(min_rays_for_density) - read_voxel.num_rays_observed;
+      float needed = static_cast<float>(min_rays_for_density) - read_voxel.num_beams_weighted;
       if (needed <= 0.0f) continue;
 
       VoxelGrid::Voxel shell1_sum;
       shell1_sum += grid.getVoxel(coord.x-1,coord.y,coord.z); shell1_sum += grid.getVoxel(coord.x+1,coord.y,coord.z);
       shell1_sum += grid.getVoxel(coord.x,coord.y-1,coord.z); shell1_sum += grid.getVoxel(coord.x,coord.y+1,coord.z);
       shell1_sum += grid.getVoxel(coord.x,coord.y,coord.z-1); shell1_sum += grid.getVoxel(coord.x,coord.y,coord.z+1);
-      if (shell1_sum.num_rays_observed > 0) {
-        double r = std::min(1.0, static_cast<double>(needed) / shell1_sum.num_rays_observed);
+      if (shell1_sum.num_beams_weighted > 0) {
+        double r = std::min(1.0, static_cast<double>(needed) / shell1_sum.num_beams_weighted);
         center_voxel += shell1_sum * r;
-        needed -= static_cast<float>(shell1_sum.num_rays_observed * r);
+        needed -= static_cast<float>(shell1_sum.num_beams_weighted * r);
       }
       if (needed <= 0.0f) continue;
 
@@ -161,18 +161,18 @@ void applyNeighbourPriors(VoxelGrid& grid, int min_rays_for_density)
       shell2_sum += grid.getVoxel(coord.x-1,coord.y-1,coord.z); shell2_sum += grid.getVoxel(coord.x-1,coord.y+1,coord.z); shell2_sum += grid.getVoxel(coord.x+1,coord.y-1,coord.z); shell2_sum += grid.getVoxel(coord.x+1,coord.y+1,coord.z);
       shell2_sum += grid.getVoxel(coord.x-1,coord.y,coord.z-1); shell2_sum += grid.getVoxel(coord.x-1,coord.y,coord.z+1); shell2_sum += grid.getVoxel(coord.x+1,coord.y,coord.z-1); shell2_sum += grid.getVoxel(coord.x+1,coord.y,coord.z+1);
       shell2_sum += grid.getVoxel(coord.x,coord.y-1,coord.z-1); shell2_sum += grid.getVoxel(coord.x,coord.y-1,coord.z+1); shell2_sum += grid.getVoxel(coord.x,coord.y+1,coord.z-1); shell2_sum += grid.getVoxel(coord.x,coord.y+1,coord.z+1);
-      if (shell2_sum.num_rays_observed > 0) {
-        double r = std::min(1.0, static_cast<double>(needed) / shell2_sum.num_rays_observed);
+      if (shell2_sum.num_beams_weighted > 0) {
+        double r = std::min(1.0, static_cast<double>(needed) / shell2_sum.num_beams_weighted);
         center_voxel += shell2_sum * r;
-        needed -= static_cast<float>(shell2_sum.num_rays_observed * r);
+        needed -= static_cast<float>(shell2_sum.num_beams_weighted * r);
       }
       if (needed <= 0.0f) continue;
 
       VoxelGrid::Voxel shell3_sum;
       shell3_sum += grid.getVoxel(coord.x-1,coord.y-1,coord.z-1); shell3_sum += grid.getVoxel(coord.x-1,coord.y-1,coord.z+1); shell3_sum += grid.getVoxel(coord.x-1,coord.y+1,coord.z-1); shell3_sum += grid.getVoxel(coord.x-1,coord.y+1,coord.z+1);
       shell3_sum += grid.getVoxel(coord.x+1,coord.y-1,coord.z-1); shell3_sum += grid.getVoxel(coord.x+1,coord.y-1,coord.z+1); shell3_sum += grid.getVoxel(coord.x+1,coord.y+1,coord.z-1); shell3_sum += grid.getVoxel(coord.x+1,coord.y+1,coord.z+1);
-      if (shell3_sum.num_rays_observed > 0) {
-        double r = std::min(1.0, static_cast<double>(needed) / shell3_sum.num_rays_observed);
+      if (shell3_sum.num_beams_weighted > 0) {
+        double r = std::min(1.0, static_cast<double>(needed) / shell3_sum.num_beams_weighted);
         center_voxel += shell3_sum * r;
       }
     }

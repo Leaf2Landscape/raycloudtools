@@ -93,7 +93,7 @@ namespace ray
     {
       float num_hits = 0.0f;              // Sum of hit events (unweighted).
       float num_beams_observed = 0.0f;    // Count of beams traversing this voxel (1 per beam, regardless of N returns).
-      float num_rays_observed = 0.0f;     // Sum of observed rays passing through (weighted).
+      float num_beams_weighted = 0.0f;     // Weighted beam traversal sum (beam_weight per traversal); used for attenuation.
       float path_length_observed = 0.0f;  // Sum of path lengths of observed rays (weighted).
       float num_rays_occluded = 0.0f;     // Sum of occluded rays passing through (unweighted).
       float path_length_occluded = 0.0f;  // Sum of path lengths of occluded rays (unweighted).
@@ -197,7 +197,7 @@ namespace ray
   {
     num_hits += other.num_hits;
     num_beams_observed += other.num_beams_observed;
-    num_rays_observed += other.num_rays_observed;
+    num_beams_weighted += other.num_beams_weighted;
     path_length_observed += other.path_length_observed;
     num_rays_occluded += other.num_rays_occluded;
     path_length_occluded += other.path_length_occluded;
@@ -220,7 +220,7 @@ namespace ray
     Voxel v;
     v.num_hits = static_cast<float>(num_hits * scale);
     v.num_beams_observed = static_cast<float>(num_beams_observed * scale);
-    v.num_rays_observed = static_cast<float>(num_rays_observed * scale);
+    v.num_beams_weighted = static_cast<float>(num_beams_weighted * scale);
     v.path_length_observed = static_cast<float>(path_length_observed * scale);
     v.num_rays_occluded = static_cast<float>(num_rays_occluded * scale);
     v.path_length_occluded = static_cast<float>(path_length_occluded * scale);
