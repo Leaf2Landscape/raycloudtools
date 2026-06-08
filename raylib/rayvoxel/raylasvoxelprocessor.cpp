@@ -112,15 +112,10 @@ void VoxelProcessor::processBeam(const BeamData& beam)
   // voxels — correctly marking them as observed/free — but the hit-recording loop
   // below gates on p.bound and will not count the endpoint as a hit.
   double beam_weight = 1.0;
-  if (N == 0) {
-    if (farthest.bound == 0) {
-      beam_weight = 1.0;
-    } else {
-      return;  // silently fail
-    }
-  } else {
+  if (N > 1) {
     beam_weight = (weighting_method_ == "equal") ? 1.0 / N : 1.0;
   }
+
   Eigen::Vector3d cs = beam.beam_origin, ce = farthest_pos;
   if (bounds_.clipRay(cs, ce, 1e-10)) {
     Eigen::Vector3d vs = (cs - bounds_.min_bound_) / voxel_width_;
@@ -128,7 +123,7 @@ void VoxelProcessor::processBeam(const BeamData& beam)
     current_ray_vox_start_   = vs;
     current_ray_vox_dir_     = (ve - vs).normalized();
     current_ray_world_start_ = beam.beam_origin;
-    current_ray_unbound_ = (farthest.bound == 0);
+    current_ray_unbound_ = (farthest.bound == 0 and N <= 1);
     walkGrid(vs, ve, RayType::OBSERVED, beam_weight);
   }
 
@@ -148,9 +143,9 @@ void VoxelProcessor::processBeam(const BeamData& beam)
     if (p.bound == 0) continue;  // unbound (miss) ray: traversed as observed, never a hit
     Eigen::Vector3d curr(p.x, p.y, p.z);
     Eigen::Vector3d vox_coord_filled = (curr - bounds_.min_bound_) / voxel_width_;
-    int64_t ix = static_cast<int64_t>(vox_coord_filled.x());
-    int64_t iy = static_cast<int64_t>(vox_coord_filled.y());
-    int64_t iz = static_cast<int64_t>(vox_coord_filled.z());
+    int64_t ix = static_cast<int64_t>(std::floor(vox_coord_filled.x()));
+    int64_t iy = static_cast<int64_t>(std::floor(vox_coord_filled.y()));
+    int64_t iz = static_cast<int64_t>(std::floor(vox_coord_filled.z()));
     if (ix >= 0 && ix < voxel_dims_[0] && iy >= 0 && iy < voxel_dims_[1] && iz >= 0 && iz < voxel_dims_[2]) {
       if (flat_array_) {
         VoxelGrid::Voxel& v = flat_array_[ix + iy * flat_dim_x_ + iz * flat_dim_xy_];
@@ -338,7 +333,7 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                         }
                     }
                     if (current_ray_unbound_) {
-                        atomic_fadd(v.num_unbound_rays, static_cast<float>(weight));
+                        atomic_fadd(v.num_unbound_rays, 1.0f);
                         atomic_fadd(v.path_length_unbound, static_cast<float>(length_in_voxel * weight));
                     }
                 } else {

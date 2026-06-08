@@ -330,9 +330,9 @@ static ClassTable buildClassTable(const std::string& cloud_name, const VoxelGrid
         if (isGroundHit(ends[i].x(), ends[i].y(), ends[i].z(), classification,
                         dtm_from_class, dtm, dtm_filter_distance)) continue;
         const Eigen::Vector3d vox = (ends[i] - bounds.min_bound_) / vox_width;
-        const int64_t ix = static_cast<int64_t>(vox.x());
-        const int64_t iy = static_cast<int64_t>(vox.y());
-        const int64_t iz = static_cast<int64_t>(vox.z());
+        const int64_t ix = static_cast<int64_t>(std::floor(vox.x()));
+        const int64_t iy = static_cast<int64_t>(std::floor(vox.y()));
+        const int64_t iz = static_cast<int64_t>(std::floor(vox.z()));
         if (ix < 0 || ix >= dims[0] || iy < 0 || iy >= dims[1] || iz < 0 || iz >= dims[2]) continue;
         class_table[grid.flatIndex(ix, iy, iz)][classification] += 1.0f;
       }
@@ -421,9 +421,9 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
         if (alpha == 0) continue;
 
         const Eigen::Vector3d vox = (ends[i] - bounds.min_bound_) / vox_width;
-        const int64_t ix = static_cast<int64_t>(vox.x());
-        const int64_t iy = static_cast<int64_t>(vox.y());
-        const int64_t iz = static_cast<int64_t>(vox.z());
+        const int64_t ix = static_cast<int64_t>(std::floor(vox.x()));
+        const int64_t iy = static_cast<int64_t>(std::floor(vox.y()));
+        const int64_t iz = static_cast<int64_t>(std::floor(vox.z()));
         if (ix < 0 || ix >= dims[0] || iy < 0 || iy >= dims[1] || iz < 0 || iz >= dims[2]) continue;
 
         // ClassTable work (same as buildClassTable): per-voxel standard-classification counts.
