@@ -135,7 +135,7 @@ void VoxelProcessor::processBeam(const BeamData& beam)
     if (ix >= 0 && ix < voxel_dims_[0] && iy >= 0 && iy < voxel_dims_[1] && iz >= 0 && iz < voxel_dims_[2]) {
       if (flat_array_) {
         VoxelGrid::Voxel& v = flat_array_[ix + iy * flat_dim_x_ + iz * flat_dim_xy_];
-        atomic_fadd(v.num_hits, 1.0f);
+        atomic_iadd(v.num_hits, 1);
         if (calc_beam_metrics_) {
           double dist = p.distance_to_sensor;
           double r = tan_half_divergence_ * dist + 0.5 * beam_diameter_;
@@ -144,7 +144,7 @@ void VoxelProcessor::processBeam(const BeamData& beam)
       } else {
         VoxelCoord coord = {ix, iy, iz};
         VoxelGrid::Voxel& v = sparse_voxels_[coord];
-        v.num_hits += 1.0f;
+        v.num_hits += 1;
         if (calc_beam_metrics_) {
           double dist = p.distance_to_sensor;
           double r = tan_half_divergence_ * dist + 0.5 * beam_diameter_;
@@ -239,7 +239,7 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                 // Direct atomic writes into the shared flat array — no per-thread map.
                 VoxelGrid::Voxel& v = flat_array_[p.x() + p.y() * flat_dim_x_ + p.z() * flat_dim_xy_];
                 if (type == RayType::OBSERVED) {
-                    atomic_fadd(v.num_beams_observed, 1.0f);
+                    atomic_iadd(v.num_beams_observed, 1);
                     atomic_fadd(v.num_beams_weighted, static_cast<float>(weight));
                     atomic_fadd(v.path_length_observed, static_cast<float>(length_in_voxel * weight));
                     atomic_fadd(v.sum_of_angles, static_cast<float>(zenith_angle * weight));
@@ -283,7 +283,7 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                 VoxelCoord coord = {p.x(), p.y(), p.z()};
                 VoxelGrid::Voxel& v = sparse_voxels_[coord];
                 if (type == RayType::OBSERVED) {
-                    v.num_beams_observed += 1.0f;
+                    v.num_beams_observed += 1;
                     v.num_beams_weighted += static_cast<float>(weight);
                     v.path_length_observed += static_cast<float>(length_in_voxel * weight);
 

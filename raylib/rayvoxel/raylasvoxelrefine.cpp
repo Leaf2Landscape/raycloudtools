@@ -77,10 +77,10 @@ void applyNeighbourPriors(VoxelGrid& grid, int min_rays_for_density)
     for (int64_t i = 1; i < dimX - 1; ++i) {
       const int64_t flat_idx = i + j * dimX + k * dimX * dimY;
       const VoxelGrid::Voxel& read_voxel = read_voxels[flat_idx];
-      if (read_voxel.num_hits == 0.0f && read_voxel.num_beams_weighted == 0.0f) continue;
+      if (read_voxel.num_hits == 0 && read_voxel.num_beams_weighted == 0.0f) continue;
 
       bool was_undersampled = (read_voxel.num_beams_weighted < static_cast<float>(min_rays_for_density));
-      if (read_voxel.num_hits > 0.0f) {
+      if (read_voxel.num_hits > 0) {
         num_hit_voxels++;
         if (was_undersampled) num_hit_voxels_unsatisfied++;
       }
@@ -138,7 +138,7 @@ void applyNeighbourPriors(VoxelGrid& grid, int min_rays_for_density)
       VoxelGrid::Voxel& center_voxel = grid.sparse_voxels_.at(coord);
 
       bool was_undersampled = (read_voxel.num_beams_weighted < static_cast<float>(min_rays_for_density));
-      if (read_voxel.num_hits > 0.0f) {
+      if (read_voxel.num_hits > 0) {
         num_hit_voxels++;
         if (was_undersampled) num_hit_voxels_unsatisfied++;
       }

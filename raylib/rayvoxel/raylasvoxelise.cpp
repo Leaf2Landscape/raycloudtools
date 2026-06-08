@@ -123,7 +123,7 @@ void VoxelGrid::absorbMap(VoxelProcessor::Map&& m)
 
 VoxelGrid::VoxelState VoxelGrid::getVoxelState(int64_t i, int64_t j, int64_t k) const {
     const Voxel& v = getVoxel(i, j, k);
-    if (v.num_hits > 0.0f) return VoxelState::FILLED;
+    if (v.num_hits > 0) return VoxelState::FILLED;
     if (v.num_beams_weighted > 0.0f) return VoxelState::EMPTY;
     if (v.num_rays_occluded > 0.0f) return VoxelState::OCCLUDED;
     return VoxelState::UNOBSERVED;

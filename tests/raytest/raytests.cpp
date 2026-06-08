@@ -602,7 +602,7 @@ namespace raytest
       total_path_length_observed += kv.second.path_length_observed;
       total_unbound_rays += kv.second.num_unbound_rays;
       total_path_length_unbound += kv.second.path_length_unbound;
-      if (kv.second.num_hits == 1.0f) ++hit_voxels;
+      if (kv.second.num_hits == 1) ++hit_voxels;
     }
     EXPECT_EQ(hit_voxels, 1) << "exactly one (endpoint) voxel should register a hit";
     EXPECT_EQ(total_hits, 1.0f) << "a single bound return is exactly one hit";
@@ -679,7 +679,7 @@ namespace raytest
   {
     ray::VoxelGrid::Voxel v{};
     v.num_beams_weighted = 1.0f;
-    v.num_hits = 1.0f;
+    v.num_hits = 1;
     v.path_length_observed = 1.0f;
     EXPECT_EQ(v.pad_g0_5(), 0.0);
   }
@@ -689,7 +689,7 @@ namespace raytest
   {
     ray::VoxelGrid::Voxel v{};
     v.num_beams_weighted = 10.0f;
-    v.num_hits = 0.0f;
+    v.num_hits = 0;
     v.path_length_observed = 5.0f;
     EXPECT_EQ(v.pad_g0_5(), 0.0);
   }
@@ -699,7 +699,7 @@ namespace raytest
   {
     ray::VoxelGrid::Voxel v{};
     v.num_beams_weighted = 4.0f;
-    v.num_hits = 2.0f;
+    v.num_hits = 2;
     v.path_length_observed = 3.0f;
     EXPECT_NEAR(v.pad_g0_5(), 1.0, 1e-6);
   }
@@ -709,7 +709,7 @@ namespace raytest
   {
     ray::VoxelGrid::Voxel v{};
     v.num_beams_weighted = 10.0f;
-    v.num_hits = 1.0f;
+    v.num_hits = 1;
     v.path_length_observed = 2.0f;
     EXPECT_NEAR(v.pad_g0_5(), 0.9, 1e-6);
   }

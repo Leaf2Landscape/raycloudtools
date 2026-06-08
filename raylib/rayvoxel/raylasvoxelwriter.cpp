@@ -241,7 +241,7 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
         data.z = bmin.z() + vox_w * (static_cast<double>(ck) + 0.5);
         data.state = grid.getVoxelState(ci, cj, ck);
         data.num_hits = v.num_hits;
-        data.num_beams_observed = static_cast<int>(v.num_beams_observed);
+        data.num_beams_observed = v.num_beams_observed;
         data.num_beams_weighted = v.num_beams_weighted;
         data.path_length_observed = v.path_length_observed;
         data.num_rays_occluded = v.num_rays_occluded;
@@ -369,7 +369,7 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
         const int64_t dimX = dims[0], dimY = dims[1];
         for (int64_t flat_idx = 0; flat_idx < total; ++flat_idx) {
             const VoxelGrid::Voxel& v = grid.voxelAt(flat_idx);
-            if (v.num_hits == 0.0f && v.num_beams_weighted == 0.0f && v.num_rays_occluded == 0.0f) continue;
+            if (v.num_hits == 0 && v.num_beams_weighted == 0.0f && v.num_rays_occluded == 0.0f) continue;
             const int64_t ci = flat_idx % dimX;
             const int64_t cj = (flat_idx / dimX) % dimY;
             const int64_t ck = flat_idx / (dimX * dimY);
@@ -442,7 +442,7 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
     v_data.j = j - padding;
     v_data.k = k - padding;
     v_data.variables.push_back(std::to_string(static_cast<int>(state)));
-    v_data.variables.push_back(std::to_string(static_cast<int>(data ? data->num_hits : 0.0f)));
+    v_data.variables.push_back(std::to_string(data ? data->num_hits : 0));
     v_data.variables.push_back(std::to_string(data ? data->num_beams_observed : 0));
     v_data.variables.push_back(std::to_string(data ? data->pad_g0_5 : 0.0));
     v_data.variables.push_back(std::to_string(data ? data->path_length_observed : 0.0f));

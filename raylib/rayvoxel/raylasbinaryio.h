@@ -30,7 +30,7 @@ namespace ray
   }
 
   static constexpr uint32_t kShardMagic   = 0x564F584C; // "VOXL"
-  static constexpr uint16_t kShardVersion = 4;          // v4: + num_beams_observed; v4.1(compat): num_rays_observed renamed num_beams_weighted
+  static constexpr uint16_t kShardVersion = 5;          // v5: num_hits + num_beams_observed changed float -> int32_t
 
   /// @brief Writes shard-file header. Call once at the start of each shard.
   inline bool writeShardHeader(std::ofstream& out) {

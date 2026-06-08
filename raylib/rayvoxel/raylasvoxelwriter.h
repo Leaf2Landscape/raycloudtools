@@ -31,8 +31,8 @@ namespace ray
     // Base Metrics from VoxelGrid::Voxel
     int dominant_class = -1;
     int absolute_class = -1;
-    float num_hits = 0.0f;
-    int num_beams_observed = 0;
+    int32_t num_hits = 0;
+    int32_t num_beams_observed = 0;
     float num_beams_weighted = 0.0f;
     float path_length_observed = 0.0f;
     float num_rays_occluded = 0.0f;

@@ -91,8 +91,8 @@ namespace ray
     ///        separate post-traversal pass and held in a ClassTable.
     struct Voxel
     {
-      float num_hits = 0.0f;              // Sum of hit events (unweighted).
-      float num_beams_observed = 0.0f;    // Count of beams traversing this voxel (1 per beam, regardless of N returns).
+      int32_t num_hits = 0;               // Count of echo returns landing in this voxel (nbEchos).
+      int32_t num_beams_observed = 0;     // Count of beams traversing this voxel (nbSampling).
       float num_beams_weighted = 0.0f;     // Weighted beam traversal sum (beam_weight per traversal); used for attenuation.
       float path_length_observed = 0.0f;  // Sum of path lengths of observed rays (weighted).
       float num_rays_occluded = 0.0f;     // Sum of occluded rays passing through (unweighted).
@@ -218,8 +218,8 @@ namespace ray
   inline VoxelGrid::Voxel VoxelGrid::Voxel::operator*(double scale) const
   {
     Voxel v;
-    v.num_hits = static_cast<float>(num_hits * scale);
-    v.num_beams_observed = static_cast<float>(num_beams_observed * scale);
+    v.num_hits = static_cast<int32_t>(num_hits * scale);
+    v.num_beams_observed = static_cast<int32_t>(num_beams_observed * scale);
     v.num_beams_weighted = static_cast<float>(num_beams_weighted * scale);
     v.path_length_observed = static_cast<float>(path_length_observed * scale);
     v.num_rays_occluded = static_cast<float>(num_rays_occluded * scale);

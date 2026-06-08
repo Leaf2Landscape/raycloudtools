@@ -34,6 +34,12 @@ namespace ray
                                           __ATOMIC_RELAXED, __ATOMIC_RELAXED));
   }
 
+  // Relaxed atomic integer add — maps to a single lock-add instruction on x86-64.
+  static inline void atomic_iadd(int32_t& dest, int32_t delta) noexcept
+  {
+    __atomic_fetch_add(&dest, delta, __ATOMIC_RELAXED);
+  }
+
   // Relaxed atomic bitwise-OR for uint64 — maps to a single lock-or instruction.
   static inline void atomic_or_u64(uint64_t& dest, uint64_t bits) noexcept
   {
