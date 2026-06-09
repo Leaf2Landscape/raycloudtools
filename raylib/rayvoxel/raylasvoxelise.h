@@ -95,6 +95,7 @@ namespace ray
       int32_t num_beams = 0;     // Count of beams traversing this voxel (nbSampling).
       float num_beams_weighted = 0.0f;    // Weighted beam traversal sum: Σ beam_weight per traversal; used for attenuation.
       float path_length_raw = 0.0f;  // Unweighted path length sum: Σ segment_length across all observed traversals.
+      float path_length_sq_raw = 0.0f;  // Unweighted sum of squared path lengths: Σ segment_length²; used for sdLength.
       float path_length = 0.0f;  // Weighted path length sum: Σ (segment_length × beam_weight); used for PAD.
       float free_path_length = 0.0f;// Stage 1 free-path: Σ (seg_weight × free_path); free_path = entry→hit for hits, full chord for miss/unbound.
       float effective_free_path_length = 0.0f;  // Stage 3: Σ(seg_w × eff(free_path)), eff(z)=−ln(1−λ₁z)/λ₁
@@ -106,10 +107,11 @@ namespace ray
       float sum_of_laser_distances = 0.0f;// Weighted sum of distances from sensor to voxel center.
       float bs_entering = 0.0f;           // Stage 2 (beam metrics): Σ (seg_weight × π·r²) for all traversals.
       float bs_intercepted = 0.0f;        // Stage 2 (beam metrics): Σ (seg_weight × π·r²) for hit traversals.
+      float bs_potential = 0.0f;          // Stage 2 (beam metrics): Σ (seg_weight × π·r²) for exiting (non-hit) traversals.
       float bs_free_path = 0.0f;          // Stage 2 (beam metrics): Σ (seg_weight × π·r² × free_path); beam-area-weighted free-path.
       float bs_effective_free_path = 0.0f;  // Stage 3: Σ(π·r² × seg_w × eff(free_path))
-      float sum_hit_delta  = 0.0f;        // PPL: weight*full_δ for terminal (hit) rays.
-      float sum_miss_delta = 0.0f;        // PPL: weight*full_δ for traversing rays.
+      float sum_hit_delta  = 0.0f;        // PPL: unweighted full_chord for hit voxels (from hit-recording loop).
+      float sum_miss_delta = 0.0f;        // PPL: unweighted full_chord for traversing (miss) voxels (mechanism 1).
       float num_unbound_rays = 0.0f;    // weighted count of unbound (miss) rays traversing this voxel
       float path_length_unbound = 0.0f; // weighted sum of clipped path lengths for unbound rays
       int32_t num_miss_rays = 0;        // count of bound rays that traverse this voxel without hitting it
@@ -204,6 +206,7 @@ namespace ray
     num_beams += other.num_beams;
     num_beams_weighted += other.num_beams_weighted;
     path_length_raw += other.path_length_raw;
+    path_length_sq_raw += other.path_length_sq_raw;
     path_length += other.path_length;
     free_path_length += other.free_path_length;
     effective_free_path_length += other.effective_free_path_length;
@@ -215,6 +218,7 @@ namespace ray
     sum_of_laser_distances += other.sum_of_laser_distances;
     bs_entering += other.bs_entering;
     bs_intercepted += other.bs_intercepted;
+    bs_potential += other.bs_potential;
     bs_free_path += other.bs_free_path;
     bs_effective_free_path += other.bs_effective_free_path;
     sum_hit_delta += other.sum_hit_delta;
@@ -234,6 +238,7 @@ namespace ray
     v.num_beams = static_cast<int32_t>(num_beams * scale);
     v.num_beams_weighted = static_cast<float>(num_beams_weighted * scale);
     v.path_length_raw = static_cast<float>(path_length_raw * scale);
+    v.path_length_sq_raw = static_cast<float>(path_length_sq_raw * scale);
     v.path_length = static_cast<float>(path_length * scale);
     v.free_path_length = static_cast<float>(free_path_length * scale);
     v.effective_free_path_length = static_cast<float>(effective_free_path_length * scale);
@@ -245,6 +250,7 @@ namespace ray
     v.sum_of_laser_distances = static_cast<float>(sum_of_laser_distances * scale);
     v.bs_entering = static_cast<float>(bs_entering * scale);
     v.bs_intercepted = static_cast<float>(bs_intercepted * scale);
+    v.bs_potential = static_cast<float>(bs_potential * scale);
     v.bs_free_path = static_cast<float>(bs_free_path * scale);
     v.bs_effective_free_path = static_cast<float>(bs_effective_free_path * scale);
     v.sum_hit_delta = static_cast<float>(sum_hit_delta * scale);

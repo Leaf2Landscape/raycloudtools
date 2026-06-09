@@ -239,6 +239,7 @@ void VoxelProcessor::processBeam(const BeamData& beam)
       if (flat_array_) {
         VoxelGrid::Voxel& v = flat_array_[ix + iy * flat_dim_x_ + iz * flat_dim_xy_];
         atomic_iadd(v.num_hits, 1);
+        atomic_fadd(v.sum_hit_delta, static_cast<float>(full_transit));
         if (excess > 1e-12) {
           atomic_fadd(v.free_path_length, -static_cast<float>(hit_weight * excess));
           atomic_fadd(v.effective_free_path_length, static_cast<float>(eff_delta * hit_weight));
@@ -257,6 +258,7 @@ void VoxelProcessor::processBeam(const BeamData& beam)
         VoxelCoord coord = {ix, iy, iz};
         VoxelGrid::Voxel& v = sparse_voxels_[coord];
         v.num_hits += 1;
+        v.sum_hit_delta += static_cast<float>(full_transit);
         if (excess > 1e-12) {
           v.free_path_length -= static_cast<float>(hit_weight * excess);
           v.effective_free_path_length += static_cast<float>(eff_delta * hit_weight);
@@ -368,6 +370,7 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                         // Mechanism 1: unweighted counts from the single full-ray walk.
                         atomic_iadd(v.num_beams, 1);
                         atomic_fadd(v.path_length_raw, static_cast<float>(length_in_voxel));
+                        atomic_fadd(v.path_length_sq_raw, static_cast<float>(length_in_voxel * length_in_voxel));
                         if (subvoxel_split_ > 0) {
                             Eigen::Vector3d ls = (current_ray_vox_start_ + current_ray_vox_dir_ * in_length  - p.cast<double>()) * subvoxel_split_;
                             Eigen::Vector3d le = (current_ray_vox_start_ + current_ray_vox_dir_ * end_length - p.cast<double>()) * subvoxel_split_;
@@ -377,6 +380,8 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                         }
                         if (end_length >= out_length && !current_ray_unbound_) {
                             atomic_iadd(v.num_miss_rays, 1);
+                            double full_delta = (out_length - in_length) * voxel_width_;
+                            atomic_fadd(v.sum_miss_delta, static_cast<float>(full_delta));
                         }
                     } else {
                         // Mechanism 2: weighted metrics from the segmented walks.
@@ -394,13 +399,8 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                             atomic_fadd(v.bs_entering, static_cast<float>(kPi * beam_radius * beam_radius * weight));
                             atomic_fadd(v.bs_free_path, static_cast<float>(kPi * beam_radius * beam_radius * weight * length_in_voxel));
                             atomic_fadd(v.bs_effective_free_path, static_cast<float>(kPi * beam_radius * beam_radius * weight * effFreePath(length_in_voxel, lambda1_)));
-                        }
-                        {
-                            double full_delta = (out_length - in_length) * voxel_width_;
-                            if (end_length < out_length) {
-                                atomic_fadd(v.sum_hit_delta,  static_cast<float>(weight * full_delta));
-                            } else {
-                                atomic_fadd(v.sum_miss_delta, static_cast<float>(weight * full_delta));
+                            if (end_length >= out_length) {
+                                atomic_fadd(v.bs_potential, static_cast<float>(kPi * beam_radius * beam_radius * weight));
                             }
                         }
                         if (current_ray_unbound_) {
@@ -424,6 +424,7 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                         // Mechanism 1: unweighted counts from the single full-ray walk.
                         v.num_beams += 1;
                         v.path_length_raw += static_cast<float>(length_in_voxel);
+                        v.path_length_sq_raw += static_cast<float>(length_in_voxel * length_in_voxel);
                         if (subvoxel_split_ > 0) {
                             Eigen::Vector3d ls = (current_ray_vox_start_ + current_ray_vox_dir_ * in_length  - p.cast<double>()) * subvoxel_split_;
                             Eigen::Vector3d le = (current_ray_vox_start_ + current_ray_vox_dir_ * end_length - p.cast<double>()) * subvoxel_split_;
@@ -431,6 +432,8 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                         }
                         if (end_length >= out_length && !current_ray_unbound_) {
                             v.num_miss_rays += 1;
+                            double full_delta = (out_length - in_length) * voxel_width_;
+                            v.sum_miss_delta += static_cast<float>(full_delta);
                         }
                     } else {
                         // Mechanism 2: weighted metrics from the segmented walks.
@@ -448,13 +451,8 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                             v.bs_entering += static_cast<float>(kPi * beam_radius * beam_radius * weight);
                             v.bs_free_path += static_cast<float>(kPi * beam_radius * beam_radius * weight * length_in_voxel);
                             v.bs_effective_free_path += static_cast<float>(kPi * beam_radius * beam_radius * weight * effFreePath(length_in_voxel, lambda1_));
-                        }
-                        {
-                            double full_delta = (out_length - in_length) * voxel_width_;
-                            if (end_length < out_length) {
-                                v.sum_hit_delta  += static_cast<float>(weight * full_delta);
-                            } else {
-                                v.sum_miss_delta += static_cast<float>(weight * full_delta);
+                            if (end_length >= out_length) {
+                                v.bs_potential += static_cast<float>(kPi * beam_radius * beam_radius * weight);
                             }
                         }
                         if (current_ray_unbound_) {

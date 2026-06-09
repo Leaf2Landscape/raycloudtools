@@ -175,7 +175,7 @@ double computeLambda(const VoxelGrid::Voxel& v, const std::string& method)
     }
     if (method == "ppl") {
         double n      = static_cast<double>(v.num_hits);
-        double m      = std::max(0.0, static_cast<double>(v.num_beams_weighted) - n);
+        double m      = static_cast<double>(std::max(0, v.num_beams - static_cast<int32_t>(v.num_hits)));
         double dbar_n = (n > eps) ? static_cast<double>(v.sum_hit_delta)  / n : 0.0;
         double dbar_m = (m > eps) ? static_cast<double>(v.sum_miss_delta) / m : 0.0;
         if (n < eps || dbar_n < eps) {
@@ -358,10 +358,11 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
         // they are lost in out-of-core (OOC) mode and read back as 0.
         data.bs_entering    = v.bs_entering;
         data.bs_intercepted = v.bs_intercepted;
+        data.bs_potential   = v.bs_potential;
         data.transmittance  = v.transmittance();
         data.bs_free_path    = v.bs_free_path;
         data.lMeanTotal     = (v.num_beams > 0)
-                              ? static_cast<double>(v.path_length) / v.num_beams
+                              ? static_cast<double>(v.path_length_raw) / v.num_beams
                               : 0.0;
         data.lMeanFreeTotal = (v.num_beams > 0)
                               ? static_cast<double>(v.free_path_length) / v.num_beams
@@ -369,8 +370,10 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
         data.lMeanEffectiveFreeTotal = (v.num_beams > 0)
                               ? static_cast<double>(v.effective_free_path_length) / v.num_beams
                               : 0.0;
-        // sd_length: needs sum_path_sq accumulator — not yet tracked.
-        // bs_potential: needs occluded beam cross-section — not yet tracked.
+        data.sd_length = (v.num_beams > 1)
+                         ? std::sqrt(std::max(0.0, static_cast<double>(v.path_length_sq_raw) / v.num_beams
+                                              - data.lMeanTotal * data.lMeanTotal))
+                         : 0.0;
         {
             const double fpl = computeLambda(v, "fpl");
             const double fpl_bias = (v.num_beams > 1 && data.lMeanTotal > 0.0)
@@ -474,7 +477,7 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
     v_data.variables.push_back(std::to_string(data ? data->num_hits : 0));
     v_data.variables.push_back(std::to_string(data ? data->num_beams : 0));
     v_data.variables.push_back(std::to_string(data ? data->pad_g0_5 : 0.0));
-    v_data.variables.push_back(std::to_string(data ? data->path_length : 0.0f));
+    v_data.variables.push_back(std::to_string(data ? data->path_length_raw : 0.0f));
     v_data.variables.push_back(std::to_string(data ? data->lMeanTotal : 0.0));
     v_data.variables.push_back(std::to_string(data ? data->lMeanFreeTotal : 0.0));
     v_data.variables.push_back(std::to_string(data ? data->lMeanEffectiveFreeTotal : 0.0));

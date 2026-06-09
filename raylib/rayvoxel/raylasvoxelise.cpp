@@ -156,9 +156,14 @@ double VoxelGrid::Voxel::pad_g0_5() const
 
 double VoxelGrid::Voxel::transmittance() const
 {
-  if (bs_entering < 1e-10) return 1.0;
-  double transmitted = bs_entering - bs_intercepted;
-  return std::max(0.0, transmitted / bs_entering);
+  const double eps = 1e-10;
+  if (bs_free_path > eps)
+    return std::exp(-static_cast<double>(bs_intercepted) / static_cast<double>(bs_free_path));
+  if (bs_entering > eps) {
+    double transmitted = bs_entering - bs_intercepted;
+    return std::max(0.0, transmitted / static_cast<double>(bs_entering));
+  }
+  return 1.0;
 }
 
 // ==================================================================================

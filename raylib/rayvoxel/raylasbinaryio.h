@@ -30,7 +30,7 @@ namespace ray
   }
 
   static constexpr uint32_t kShardMagic   = 0x564F584C; // "VOXL"
-  static constexpr uint16_t kShardVersion = 7;          // v7: removed num_hits_weighted; per-echo weighting
+  static constexpr uint16_t kShardVersion = 8;          // v8: path_length_sq_raw, bs_potential, sum_hit/miss_delta
 
   /// @brief Writes shard-file header. Call once at the start of each shard.
   inline bool writeShardHeader(std::ofstream& out) {
@@ -62,6 +62,7 @@ namespace ray
     writeBinary(out, voxel.num_beams);
     writeBinary(out, voxel.num_beams_weighted);
     writeBinary(out, voxel.path_length_raw);
+    writeBinary(out, voxel.path_length_sq_raw);
     writeBinary(out, voxel.path_length);
     writeBinary(out, voxel.num_rays_occluded);
     writeBinary(out, voxel.path_length_occluded);
@@ -71,6 +72,9 @@ namespace ray
     writeBinary(out, voxel.sum_of_laser_distances);
     writeBinary(out, voxel.bs_entering);
     writeBinary(out, voxel.bs_intercepted);
+    writeBinary(out, voxel.bs_potential);
+    writeBinary(out, voxel.sum_hit_delta);
+    writeBinary(out, voxel.sum_miss_delta);
     writeBinary(out, voxel.num_unbound_rays);
     writeBinary(out, voxel.path_length_unbound);
     writeBinary(out, voxel.subvoxel_bitmap);
@@ -89,6 +93,7 @@ namespace ray
     readBinary(in, voxel.num_beams);
     readBinary(in, voxel.num_beams_weighted);
     readBinary(in, voxel.path_length_raw);
+    readBinary(in, voxel.path_length_sq_raw);
     readBinary(in, voxel.path_length);
     readBinary(in, voxel.num_rays_occluded);
     readBinary(in, voxel.path_length_occluded);
@@ -98,6 +103,9 @@ namespace ray
     readBinary(in, voxel.sum_of_laser_distances);
     readBinary(in, voxel.bs_entering);
     readBinary(in, voxel.bs_intercepted);
+    readBinary(in, voxel.bs_potential);
+    readBinary(in, voxel.sum_hit_delta);
+    readBinary(in, voxel.sum_miss_delta);
     readBinary(in, voxel.num_unbound_rays);
     readBinary(in, voxel.path_length_unbound);
     readBinary(in, voxel.subvoxel_bitmap);
