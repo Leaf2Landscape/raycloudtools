@@ -14,6 +14,7 @@
 
 #include "raylib/rayvoxel/raylasvoxelise.h" // For Voxel, VoxelCoord, etc.
 #include "raylib/rayvoxel/raylasatomic.h"   // For atomic_fadd / atomic_or_u64
+#include "raylib/rayvoxel/raylasvoxelweight.h" // For WeightMethod
 #include "raylib/raycuboid.h"
 #include "raylib/rayvoxel/raylasheightfield.h" // For HeightField
 #include <array>
@@ -33,6 +34,7 @@ namespace ray
     double gps_time = 0.0;
     int32_t beam_id = -1;
     uint8_t bound = 1;  ///< 1 = bound (real return), 0 = unbound (miss / floating far end)
+    uint8_t intensity = 0;  ///< per-point intensity (alpha channel); 0 for unbound rays
   };
 
   constexpr uint8_t kMaxReturnsPerBeam = 16;
@@ -99,7 +101,8 @@ namespace ray
     enum class RayType { OBSERVED, OCCLUDED };
 
     /// @brief The core Amanatides & Woo voxel traversal algorithm.
-    void walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vector3d &vox_end, RayType type, double weight);
+    void walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vector3d &vox_end, RayType type, double weight,
+                  bool weighted_only = false);
 
     /// @brief Amanatides & Woo traversal over a local N*N*N subvoxel grid.
     void walkSubGrid(const Eigen::Vector3d& local_start, const Eigen::Vector3d& local_end, int split, uint64_t& bitmap);
@@ -108,7 +111,7 @@ namespace ray
     const Cuboid& bounds_;
     double voxel_width_;
     const Eigen::Matrix<int64_t, 3, 1> voxel_dims_;
-    const std::string& weighting_method_;
+    WeightMethod weight_method_;
     bool use_occlusion_rays_;
     bool use_flat_top_;
     const std::vector<double>* peaks_; // Pointer to the main grid's peaks vector

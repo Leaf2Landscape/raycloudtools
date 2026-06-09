@@ -190,6 +190,7 @@ PointData makePointData(const Eigen::Vector3d& start, const Eigen::Vector3d& end
   pd.z                 = end.z();
   pd.gps_time          = gps_time;
   pd.beam_id           = beam_id;
+  pd.intensity         = alpha;                       // per-point intensity (alpha channel)
   pd.bound             = (alpha > 0) ? 1 : 0;         // alpha==0 is an unbound (miss) ray
   const size_t base    = index * stride;
   if (passthrough.size() >= base + stride) {

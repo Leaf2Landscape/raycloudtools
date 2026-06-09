@@ -12,6 +12,7 @@
 #include "raylib/rayutils.h"
 #include "raylib/rayvoxel/raylasvoxelise.h"
 #include "raylib/rayvoxel/raylasvoxelconfig.h"
+#include "raylib/rayvoxel/raylasvoxelweight.h"
 
 #include <algorithm>
 #include <iostream>
@@ -41,7 +42,7 @@ void usage()
   std::cout << "  --grid_bounds_max <x,y,z>       Maximum bounds (corner) of the voxel grid. (Default: auto-detect)" << std::endl;
   std::cout << "  --voxel_size <val>              Voxel size (in metres). Default: 0.1." << std::endl;
   std::cout << "  --output_format <format>        Primary output format (text, netcdf, amapvox). Default: amapvox." << std::endl;
-  std::cout << "  --weighting_method <method>     Method for weighting ray contributions ('equal', 'full'). Default: equal." << std::endl;
+  std::cout << "  --weighting_method <method>     Per-echo weighting (equal|full|first|relative|strongest). Default: equal." << std::endl;
   std::cout << "  --occlusion, -o                 Enable occlusion mapping (traces rays beyond last hits)." << std::endl << std::endl;
   std::cout << "Output Content Control:" << std::endl;
   std::cout << "  --write_empty, -e               Primary output includes all observed voxels (empty and filled)." << std::endl;
@@ -175,6 +176,12 @@ int main_function(int argc, char *argv[])
   // --- Validate Arguments ---
   if (cloud_file.name().empty()) {
       std::cerr << "Error: An input cloud file must be specified." << std::endl; usage();
+  }
+  // Validate --weighting_method early (the library parses it again internally).
+  try {
+      (void)ray::parseWeightMethod(weighting_method_val.text());
+  } catch (const std::invalid_argument& e) {
+      std::cerr << "Error: " << e.what() << std::endl; usage();
   }
   if (grid_bounds_min.isSet() != grid_bounds_max.isSet()) {
       std::cerr << "Error: You must specify both --grid_bounds_min and --grid_bounds_max, or neither." << std::endl; usage();

@@ -92,7 +92,6 @@ namespace ray
     struct Voxel
     {
       int32_t num_hits = 0;               // Count of echo returns landing in this voxel (nbEchos).
-      float num_hits_weighted = 0.0f;     // Weighted hit count: Σ beam_weight per hit endpoint; used for PPL m term.
       int32_t num_beams_observed = 0;     // Count of beams traversing this voxel (nbSampling).
       float num_beams_weighted = 0.0f;    // Weighted beam traversal sum: Σ beam_weight per traversal; used for attenuation.
       float path_length_observed = 0.0f;  // Unweighted path length sum: Σ segment_length across all observed traversals.
@@ -199,7 +198,6 @@ namespace ray
   inline void VoxelGrid::Voxel::operator+=(const VoxelGrid::Voxel &other)
   {
     num_hits += other.num_hits;
-    num_hits_weighted += other.num_hits_weighted;
     num_beams_observed += other.num_beams_observed;
     num_beams_weighted += other.num_beams_weighted;
     path_length_observed += other.path_length_observed;
@@ -227,7 +225,6 @@ namespace ray
     // NOTE: scaling int32_t fields by a fractional scale then truncating is only used
     // for neighbour-prior interpolation (non-critical path). Low counts may round to 0.
     v.num_hits = static_cast<int32_t>(num_hits * scale);
-    v.num_hits_weighted = static_cast<float>(num_hits_weighted * scale);
     v.num_beams_observed = static_cast<int32_t>(num_beams_observed * scale);
     v.num_beams_weighted = static_cast<float>(num_beams_weighted * scale);
     v.path_length_observed = static_cast<float>(path_length_observed * scale);
