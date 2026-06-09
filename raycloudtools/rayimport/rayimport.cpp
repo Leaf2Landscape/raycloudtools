@@ -6,7 +6,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <unordered_map>
 
 #include "raylib/raycloud.h"
@@ -15,9 +17,230 @@
 #include "raylib/raysysinfo.h"
 #include "raylib/rayparse.h"
 #include "raylib/rayply.h"
+#include "raylib/rayutils.h"
 
 #include "raylib/rayriegl.h"
 #include "raylib/raytrajectory.h"
+
+namespace
+{
+// Collect the comma-separated tokens of one --filters value, reading from a file if the value
+// names an openable file, otherwise treating the value itself as the inline list.
+void appendFilterTokens(const std::string &value, std::vector<std::string> &tokens)
+{
+  std::ifstream file(value);
+  if (file.is_open())
+  {
+    std::string line;
+    while (std::getline(file, line))
+    {
+      std::stringstream ss(line);
+      std::string tok;
+      while (std::getline(ss, tok, ','))
+        if (!tok.empty())
+          tokens.push_back(tok);
+    }
+  }
+  else
+  {
+    std::stringstream ss(value);
+    std::string tok;
+    while (std::getline(ss, tok, ','))
+      if (!tok.empty())
+        tokens.push_back(tok);
+  }
+}
+
+std::vector<ray::FieldFilter> parseFilterArgs(int argc, char *argv[])
+{
+  std::vector<std::string> tokens;
+  for (int i = 1; i < argc; i++)
+  {
+    if ((std::strcmp(argv[i], "--filters") == 0 || std::strcmp(argv[i], "-f") == 0) && i + 1 < argc)
+    {
+      appendFilterTokens(argv[i + 1], tokens);
+      ++i;
+    }
+  }
+
+  std::vector<ray::FieldFilter> filters;
+  if (tokens.size() % 3 != 0)
+  {
+    std::cout << "warning: --filters expects groups of 3 (field,min,max); dropping "
+              << (tokens.size() % 3) << " leftover token(s)" << std::endl;
+  }
+  const size_t groups = tokens.size() / 3;
+  for (size_t g = 0; g < groups; g++)
+  {
+    const std::string &name = tokens[g * 3 + 0];
+    char *end_min = nullptr;
+    char *end_max = nullptr;
+    const double min_val = std::strtod(tokens[g * 3 + 1].c_str(), &end_min);
+    const double max_val = std::strtod(tokens[g * 3 + 2].c_str(), &end_max);
+    if (end_min == tokens[g * 3 + 1].c_str() || end_max == tokens[g * 3 + 2].c_str())
+    {
+      std::cout << "warning: --filters could not parse min/max for field '" << name << "'; skipping"
+                << std::endl;
+      continue;
+    }
+    ray::FieldFilter f;
+    f.name = name;
+    f.min_val = min_val;
+    f.max_val = max_val;
+    filters.push_back(f);
+  }
+  return filters;
+}
+
+std::vector<char *> stripFilterArgs(int argc, char *argv[])
+{
+  std::vector<char *> out;
+  out.reserve(argc);
+  for (int i = 0; i < argc; i++)
+  {
+    if (i > 0 && (std::strcmp(argv[i], "--filters") == 0 || std::strcmp(argv[i], "-f") == 0))
+    {
+      ++i;  // also skip the following value
+      continue;
+    }
+    out.push_back(argv[i]);
+  }
+  return out;
+}
+
+void resolveFiltersLas(std::vector<ray::FieldFilter> &filters, const std::vector<uint8_t> &extra_bytes_vlr,
+                       uint16_t /*orig_extra_size*/)
+{
+  struct StdField
+  {
+    const char *name;
+    int offset;
+    int size;
+    bool is_signed;
+    bool is_float;
+    double scale;
+  };
+  static const StdField kStdFields[] = {
+    { "classification", 2, 1, false, false, 1.0 },
+    { "user_data", 3, 1, false, false, 1.0 },
+    { "scan_angle", 4, 2, true, false, 0.006 },
+    { "point_source_id", 6, 2, false, false, 1.0 },
+    { "intensity", 8, 2, false, false, 1.0 },
+  };
+  // Mirror of kDecodeExtraTypeSize in raylasdecode.h: LAS EXTRA_BYTES data_type -> byte size.
+  static const uint16_t kExtraTypeSize[11] = { 0, 1, 1, 2, 2, 4, 4, 8, 8, 4, 8 };
+
+  for (ray::FieldFilter &f : filters)
+  {
+    bool matched = false;
+    for (const StdField &sf : kStdFields)
+    {
+      if (f.name == sf.name)
+      {
+        f.pass_offset = sf.offset;
+        f.pass_size = sf.size;
+        f.is_signed = sf.is_signed;
+        f.is_float = sf.is_float;
+        f.scale = sf.scale;
+        f.resolved = true;
+        matched = true;
+        break;
+      }
+    }
+    if (matched)
+      continue;
+
+    int byte_offset = 10;  // sensor extras follow the 10-byte standard passthrough block
+    const size_t num_attrs = extra_bytes_vlr.size() / 192;
+    for (size_t a = 0; a < num_attrs; a++)
+    {
+      const uint8_t *rec = extra_bytes_vlr.data() + a * 192;
+      const uint8_t dtype = rec[2];
+      const uint16_t attr_size = (dtype > 0 && dtype <= 10) ? kExtraTypeSize[dtype] : 0;
+      if (attr_size == 0)
+        continue;
+      char attr_name[33] = {};
+      std::memcpy(attr_name, rec + 4, 32);
+      if (f.name == attr_name)
+      {
+        f.pass_offset = byte_offset;
+        f.pass_size = attr_size;
+        f.is_signed = (dtype == 2 || dtype == 4 || dtype == 6 || dtype == 8 || dtype == 9 || dtype == 10);
+        f.is_float = (dtype == 9 || dtype == 10);
+        f.scale = 1.0;
+        f.resolved = true;
+        matched = true;
+        break;
+      }
+      byte_offset += attr_size;
+    }
+    if (!matched)
+      std::cout << "Filter field '" << f.name << "' not found in input — skipping" << std::endl;
+  }
+}
+
+double readPassthroughField(const uint8_t *p, int byte_offset, int byte_size, bool is_signed, bool is_float)
+{
+  const uint8_t *src = p + byte_offset;
+  if (is_float)
+  {
+    if (byte_size == 4)
+    {
+      float v;
+      std::memcpy(&v, src, 4);
+      return static_cast<double>(v);
+    }
+    double v;
+    std::memcpy(&v, src, 8);
+    return v;
+  }
+  if (is_signed)
+  {
+    if (byte_size == 1)
+    {
+      int8_t v;
+      std::memcpy(&v, src, 1);
+      return static_cast<double>(v);
+    }
+    if (byte_size == 2)
+    {
+      int16_t v;
+      std::memcpy(&v, src, 2);
+      return static_cast<double>(v);
+    }
+    if (byte_size == 4)
+    {
+      int32_t v;
+      std::memcpy(&v, src, 4);
+      return static_cast<double>(v);
+    }
+    int64_t v;
+    std::memcpy(&v, src, 8);
+    return static_cast<double>(v);
+  }
+  if (byte_size == 1)
+  {
+    uint8_t v;
+    std::memcpy(&v, src, 1);
+    return static_cast<double>(v);
+  }
+  if (byte_size == 2)
+  {
+    uint16_t v;
+    std::memcpy(&v, src, 2);
+    return static_cast<double>(v);
+  }
+  if (byte_size == 4)
+  {
+    uint32_t v;
+    std::memcpy(&v, src, 4);
+    return static_cast<double>(v);
+  }
+  uint64_t v;
+  std::memcpy(&v, src, 8);
+  return static_cast<double>(v);
+}
+}  // namespace
 
 void usage(int exit_code = 1)
 {
@@ -34,6 +257,12 @@ void usage(int exit_code = 1)
   std::cout << "                                                              0 sets all to full intensity (bounded rays)." << std::endl;
   std::cout << "                                        --remove_start_pos  - translate so first point is at 0,0,0" << std::endl;
   std::cout << "                                        --beam_id           - assign a per-pulse beam_id extra attribute" << std::endl;
+  std::cout << "                                        --filters/-f \"field,min,max[,field2,min2,max2,...]\"" << std::endl;
+  std::cout << "                                                            - keep only LAS/LAZ points whose field is in [min,max]." << std::endl;
+  std::cout << "                                                              Groups of 3 comma-separated values, or a path to a text" << std::endl;
+  std::cout << "                                                              file (one field,min,max per line). Standard fields:" << std::endl;
+  std::cout << "                                                              intensity, classification, scan_angle (degrees)," << std::endl;
+  std::cout << "                                                              user_data, point_source_id. Sensor extra fields by VLR name." << std::endl;
   std::cout << "rayimport pointcloudfile unbound transformfile - load unbound data (pulses that missed) from RIEGL .rxp file" << std::endl;
   std::cout << "                                               transformfile is a text file containing a 4x4 transformation matrix" << std::endl;
   std::cout << "The output is a _raycloud.las/.laz file (preserving .laz if the input is .laz)." << std::endl;
@@ -53,13 +282,16 @@ int rayImport(int argc, char *argv[])
   ray::OptionalFlagArgument beam_id_opt("beam_id", 'b');
   ray::OptionalFlagArgument transform_flag("transform", 't');
   ray::FileArgument cloud_file, trajectory_file, transform_file;
+  std::vector<ray::FieldFilter> filters = parseFilterArgs(argc, argv);
+  std::vector<char *> filt_argv = stripFilterArgs(argc, argv);
+  int filt_argc = static_cast<int>(filt_argv.size());
   bool standard_format =
-    ray::parseCommandLine(argc, argv, { &cloud_file, &trajectory_file }, { &max_intensity_option, &remove, &beam_id_opt, &transform_flag });
+    ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &trajectory_file }, { &max_intensity_option, &remove, &beam_id_opt, &transform_flag });
   bool position_format =
-    ray::parseCommandLine(argc, argv, { &cloud_file, &position }, { &max_intensity_option, &remove, &beam_id_opt });
+    ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &position }, { &max_intensity_option, &remove, &beam_id_opt });
   bool ray_format =
-    ray::parseCommandLine(argc, argv, { &cloud_file, &ray_text, &ray_vec }, { &max_intensity_option, &remove, &beam_id_opt });
-  bool unbound_format = ray::parseCommandLine(argc, argv, { &cloud_file, &unbound_text, &transform_file }, { &remove, &beam_id_opt });
+    ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &ray_text, &ray_vec }, { &max_intensity_option, &remove, &beam_id_opt });
+  bool unbound_format = ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &unbound_text, &transform_file }, { &remove, &beam_id_opt });
   if (!standard_format && !position_format && !ray_format && !unbound_format)
     usage();
 
@@ -146,10 +378,11 @@ int rayImport(int argc, char *argv[])
   // can register and preserve them before opening the output file.
   std::vector<uint8_t> input_extra_bytes_vlr;
   bool input_has_rgb = false;
+  uint16_t orig_extra = 0;
   if (in_ext == "laz" || in_ext == "las")
   {
-    uint16_t orig_extra = 0;
     ray::readLasExtraBytesVlr(cloud_file.name(), orig_extra, input_extra_bytes_vlr, nullptr, &input_has_rgb);
+    resolveFiltersLas(filters, input_extra_bytes_vlr, orig_extra);
   }
 
   // Pre-scan: build a global GPS-time -> beam_id map so that all returns of one pulse
@@ -329,6 +562,53 @@ int rayImport(int argc, char *argv[])
         }
       }
     }
+    const size_t pass_stride = 10u + orig_extra;
+    if (!filters.empty() && !chunk_pass.empty())
+    {
+      std::vector<size_t> keep;
+      keep.reserve(ends.size());
+      for (size_t i = 0; i < ends.size(); i++)
+      {
+        bool accept = true;
+        for (const auto &f : filters)
+        {
+          if (!f.resolved)
+            continue;
+          double val = readPassthroughField(chunk_pass.data() + i * pass_stride, f.pass_offset, f.pass_size,
+                                            f.is_signed, f.is_float);
+          val *= f.scale;
+          if (val < f.min_val || val > f.max_val)
+          {
+            accept = false;
+            break;
+          }
+        }
+        if (accept)
+          keep.push_back(i);
+      }
+      if (keep.size() < ends.size())
+      {
+        auto compact_vec = [&keep](auto &vec) {
+          std::remove_reference_t<decltype(vec)> tmp;
+          tmp.reserve(keep.size());
+          for (size_t idx : keep)
+            tmp.push_back(std::move(vec[idx]));
+          vec = std::move(tmp);
+        };
+        compact_vec(starts);
+        compact_vec(ends);
+        compact_vec(times);
+        compact_vec(colours);
+        if (!chunk_beam_ids.empty())
+          compact_vec(chunk_beam_ids);
+        std::vector<uint8_t> tmp_pass;
+        tmp_pass.reserve(keep.size() * pass_stride);
+        for (size_t idx : keep)
+          tmp_pass.insert(tmp_pass.end(), chunk_pass.begin() + idx * pass_stride,
+                          chunk_pass.begin() + idx * pass_stride + pass_stride);
+        chunk_pass = std::move(tmp_pass);
+      }
+    }
     if (!writer.writeChunk(starts, ends, times, colours, chunk_pass, chunk_beam_ids))
       usage();
   };
@@ -342,6 +622,8 @@ int rayImport(int argc, char *argv[])
 
   if (!unbound_format)
     std::cout << "max_intensity: " << maximum_intensity << std::endl;
+  if (!filters.empty() && in_ext != "las" && in_ext != "laz")
+    std::cout << "warning: --filters is only supported for LAS/LAZ input; skipping filters" << std::endl;
   Eigen::Vector3d *offset = remove.isSet() ? &start_pos : nullptr;
   if (cloud_file.nameExt() == "ply")
   {

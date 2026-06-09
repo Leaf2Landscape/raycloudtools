@@ -266,6 +266,19 @@ struct RGBA
   static RGBA leaves(){ return RGBA(60,102,44, 255); }
 };
 
+struct RAYLIB_EXPORT FieldFilter
+{
+  std::string name;
+  double      min_val;
+  double      max_val;
+  bool        resolved    = false;
+  int         pass_offset = -1;  // byte offset into per-point passthrough slice
+  int         pass_size   = 0;   // 1/2/4/8
+  bool        is_signed   = false;
+  bool        is_float    = false;
+  double      scale       = 1.0; // scan_angle uses 0.006 (converts to degrees)
+};
+
 /// Converts a value from 0 to 1 into a RGBA structure
 inline Eigen::Vector3d redGreenBlueGradient(double val)
 {
