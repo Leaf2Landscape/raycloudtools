@@ -276,7 +276,8 @@ struct RAYLIB_EXPORT FieldFilter
   int         pass_size   = 0;   // 1/2/4/8
   bool        is_signed   = false;
   bool        is_float    = false;
-  double      scale       = 1.0; // scan_angle uses 0.006 (converts to degrees)
+  double      scale       = 1.0;   // scan_angle uses 0.006 (converts to degrees)
+  double      offset      = 0.0;   // VLR offset: actual = raw * scale + offset
 };
 
 /// Converts a value from 0 to 1 into a RGBA structure

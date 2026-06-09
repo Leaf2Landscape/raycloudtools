@@ -167,7 +167,11 @@ void resolveFiltersLas(std::vector<ray::FieldFilter> &filters, const std::vector
         f.pass_size = attr_size;
         f.is_signed = (dtype == 2 || dtype == 4 || dtype == 6 || dtype == 8 || dtype == 9 || dtype == 10);
         f.is_float = (dtype == 9 || dtype == 10);
-        f.scale = 1.0;
+        // LAS EXTRA_BYTES VLR: options bit 3 = scale relevant, bit 4 = offset relevant.
+        // scale at bytes 112-119 (first double), offset at bytes 136-143 (first double).
+        const uint8_t opts = rec[3];
+        f.scale  = (opts & 0x08u) ? *reinterpret_cast<const double *>(rec + 112) : 1.0;
+        f.offset = (opts & 0x10u) ? *reinterpret_cast<const double *>(rec + 136) : 0.0;
         f.resolved = true;
         matched = true;
         break;
@@ -576,7 +580,7 @@ int rayImport(int argc, char *argv[])
             continue;
           double val = readPassthroughField(chunk_pass.data() + i * pass_stride, f.pass_offset, f.pass_size,
                                             f.is_signed, f.is_float);
-          val *= f.scale;
+          val = val * f.scale + f.offset;
           if (val < f.min_val || val > f.max_val)
           {
             accept = false;
