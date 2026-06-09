@@ -25,6 +25,8 @@ WeightMethod parseWeightMethod(const std::string& s)
                               "'. Must be equal, full, first, relative, or strongest.");
 }
 
+static inline int effectiveNumReturns(uint8_t n) { return n <= 1 ? 1 : static_cast<int>(n); }
+
 void computeEchoWeights(WeightMethod method,
                         const PointData* const* sorted, int N,
                         float* echo_w)
@@ -36,7 +38,7 @@ void computeEchoWeights(WeightMethod method,
     case WeightMethod::kEqual:
     {
       for (int k = 0; k < N; ++k)
-        echo_w[k] = 1.0f / static_cast<float>(sorted[k]->number_of_returns);
+        echo_w[k] = 1.0f / static_cast<float>(effectiveNumReturns(sorted[k]->number_of_returns));
       break;
     }
     case WeightMethod::kFull:
@@ -59,7 +61,7 @@ void computeEchoWeights(WeightMethod method,
       {
         // Fallback to kEqual when the intensity sum is degenerate.
         for (int k = 0; k < N; ++k)
-          echo_w[k] = 1.0f / static_cast<float>(sorted[k]->number_of_returns);
+          echo_w[k] = 1.0f / static_cast<float>(effectiveNumReturns(sorted[k]->number_of_returns));
       }
       else
       {
