@@ -382,9 +382,16 @@ int rayCombine(int argc, char *argv[])
           }
         if (!found)
         {
-          std::cerr << "Unknown tiebreak field: '" << tok.name << "'" << std::endl;
+          std::cerr << "Unknown tiebreak field: '" << tok.name << "' (field names are case-sensitive)" << std::endl;
           std::cerr << "  built-in: reflectance, range, time" << std::endl;
           std::cerr << "  fixed LAS: return_number, number_of_returns, classification, user_data, scan_angle, point_source_id" << std::endl;
+          if (!union_attrs.empty())
+          {
+            std::cerr << "  sensor extra-byte fields found in input files:";
+            for (const auto &ua : union_attrs)
+              std::cerr << " " << ua.name;
+            std::cerr << std::endl;
+          }
           usage();
         }
       }
