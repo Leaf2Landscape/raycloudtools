@@ -174,7 +174,7 @@ double computeLambda(const VoxelGrid::Voxel& v, const std::string& method)
         return 0.0;
     }
     if (method == "ppl") {
-        double n      = static_cast<double>(v.num_hits_weighted);
+        double n      = static_cast<double>(v.num_hits);
         double m      = std::max(0.0, static_cast<double>(v.num_beams_weighted) - n);
         double dbar_n = (n > eps) ? static_cast<double>(v.sum_hit_delta)  / n : 0.0;
         double dbar_m = (m > eps) ? static_cast<double>(v.sum_miss_delta) / m : 0.0;
@@ -241,7 +241,6 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
         data.z = bmin.z() + vox_w * (static_cast<double>(ck) + 0.5);
         data.state = grid.getVoxelState(ci, cj, ck);
         data.num_hits = v.num_hits;
-        data.num_hits_weighted = v.num_hits_weighted;
         data.num_beams_observed = v.num_beams_observed;
         data.num_beams_weighted = v.num_beams_weighted;
         data.path_length_observed = v.path_length_observed;
@@ -544,7 +543,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
     return false;
   }
   outfile << std::fixed << std::setprecision(6);
-  std::string header = "i j k x y z voxel_state pointclass absolute_pointclass num_hits num_hits_weighted num_beams_observed num_beams_weighted path_length_observed path_length_weighted "
+  std::string header = "i j k x y z voxel_state pointclass absolute_pointclass num_hits num_beams_observed num_beams_weighted path_length_observed path_length_weighted "
                        "num_rays_occluded path_length_occluded pad_g0.5 surface_area voxel_size "
                        "mean_zenith_angle_rad mean_azimuth_rad azimuth_concentration mean_laser_dist"
                        " num_unbound_rays path_length_unbound num_miss_rays";
@@ -580,7 +579,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
     outfile << (data.i - padding) << " " << (data.j - padding) << " " << (data.k - padding) << " "
             << data.x << " " << data.y << " " << data.z << " "
             << static_cast<int>(data.state) << " " << data.dominant_class << " " << data.absolute_class << " "
-            << data.num_hits << " " << data.num_hits_weighted << " " << data.num_beams_observed << " " << data.num_beams_weighted << " " << data.path_length_observed << " " << data.path_length_weighted << " "
+            << data.num_hits << " " << data.num_beams_observed << " " << data.num_beams_weighted << " " << data.path_length_observed << " " << data.path_length_weighted << " "
             << data.num_rays_occluded << " " << data.path_length_occluded << " "
             << data.pad_g0_5 << " " << data.surface_area << " " << grid.getVoxelWidth() << " "
             << data.mean_zenith_angle_rad << " " << data.mean_azimuth_rad << " " << data.azimuth_concentration << " " << data.mean_laser_dist

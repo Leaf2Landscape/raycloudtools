@@ -70,6 +70,7 @@ set(PUBLIC_HEADERS
   rayvoxel/raylasvoxelprocessor.h
   rayvoxel/raylasvoxelrefine.h
   rayvoxel/raylasvoxelwriter.h
+  rayvoxel/raylasvoxelweight.h
   rayvoxel/raylasbailey.h
 )
 
@@ -131,6 +132,7 @@ set(SOURCES
   rayvoxel/raylasvoxelprocessor.cpp
   rayvoxel/raylasvoxelrefine.cpp
   rayvoxel/raylasvoxelwriter.cpp
+  rayvoxel/raylasvoxelweight.cpp
   rayvoxel/raylasbailey.cpp
 )
 
