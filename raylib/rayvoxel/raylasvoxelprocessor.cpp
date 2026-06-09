@@ -378,8 +378,8 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                             walkSubGrid(ls, le, subvoxel_split_, bits);
                             if (bits) atomic_or_u64(v.subvoxel_bitmap, bits);
                         }
-                        if (end_length >= out_length && !current_ray_unbound_) {
-                            atomic_iadd(v.num_miss_rays, 1);
+                        if (end_length >= out_length) {
+                            if (!current_ray_unbound_) atomic_iadd(v.num_miss_rays, 1);
                             double full_delta = (out_length - in_length) * voxel_width_;
                             atomic_fadd(v.sum_miss_delta, static_cast<float>(full_delta));
                         }
@@ -430,8 +430,8 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                             Eigen::Vector3d le = (current_ray_vox_start_ + current_ray_vox_dir_ * end_length - p.cast<double>()) * subvoxel_split_;
                             walkSubGrid(ls, le, subvoxel_split_, v.subvoxel_bitmap);
                         }
-                        if (end_length >= out_length && !current_ray_unbound_) {
-                            v.num_miss_rays += 1;
+                        if (end_length >= out_length) {
+                            if (!current_ray_unbound_) v.num_miss_rays += 1;
                             double full_delta = (out_length - in_length) * voxel_width_;
                             v.sum_miss_delta += static_cast<float>(full_delta);
                         }
