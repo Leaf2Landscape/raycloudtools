@@ -224,6 +224,10 @@ int main_function(int argc, char *argv[])
       std::cerr << "Error: --attenuation_method bailey requires both --leaf_classes and --wood_classes." << std::endl;
       return 1;
   }
+  if (attenuation_method_val.text() == "bailey" && (leaf_classes_val.text().empty() || wood_classes_val.text().empty())) {
+      std::cerr << "Error: --attenuation_method bailey requires both --leaf_classes and --wood_classes." << std::endl;
+      return 1;
+  }
 
   // --- Populate Parameters Struct ---
   // All command-line arguments are now consolidated into a single

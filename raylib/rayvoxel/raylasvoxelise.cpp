@@ -507,7 +507,6 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
   const int n_tx = std::max(1, (int)std::ceil((maxx - minx) / tile_sz));
   const int n_ty = std::max(1, (int)std::ceil((maxy - miny) / tile_sz));
   const int n_tiles = n_tx * n_ty;
-
   std::unordered_map<int64_t, std::vector<double>> all_hist, leaf_hist, wood_hist, beam_hist;
   std::unordered_map<int64_t, float> leaf_hit_count, wood_hit_count;
   std::unordered_map<int64_t, TriangleHistograms> triangle_histograms;
