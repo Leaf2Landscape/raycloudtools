@@ -130,6 +130,28 @@ void resolveFiltersLas(std::vector<ray::FieldFilter> &filters, const std::vector
   // Mirror of kDecodeExtraTypeSize in raylasdecode.h: LAS EXTRA_BYTES data_type -> byte size.
   static const uint16_t kExtraTypeSize[11] = { 0, 1, 1, 2, 2, 4, 4, 8, 8, 4, 8 };
 
+  // Build the full list of filterable field names for use in not-found messages.
+  std::vector<std::string> available;
+  for (const StdField &sf : kStdFields)
+    available.push_back(sf.name);
+  const size_t num_attrs = extra_bytes_vlr.size() / 192;
+  for (size_t a = 0; a < num_attrs; a++)
+  {
+    const uint8_t *rec = extra_bytes_vlr.data() + a * 192;
+    const uint8_t dtype = rec[2];
+    if (dtype == 0 || dtype > 10)
+      continue;
+    char attr_name[33] = {};
+    std::memcpy(attr_name, rec + 4, 32);
+    available.push_back(attr_name);
+  }
+  std::string available_str;
+  for (size_t i = 0; i < available.size(); i++)
+  {
+    if (i) available_str += ", ";
+    available_str += available[i];
+  }
+
   for (ray::FieldFilter &f : filters)
   {
     bool matched = false;
@@ -151,7 +173,6 @@ void resolveFiltersLas(std::vector<ray::FieldFilter> &filters, const std::vector
       continue;
 
     int byte_offset = 10;  // sensor extras follow the 10-byte standard passthrough block
-    const size_t num_attrs = extra_bytes_vlr.size() / 192;
     for (size_t a = 0; a < num_attrs; a++)
     {
       const uint8_t *rec = extra_bytes_vlr.data() + a * 192;
@@ -175,7 +196,8 @@ void resolveFiltersLas(std::vector<ray::FieldFilter> &filters, const std::vector
       byte_offset += attr_size;
     }
     if (!matched)
-      std::cout << "Filter field '" << f.name << "' not found in input — skipping" << std::endl;
+      std::cout << "Filter field '" << f.name << "' not found in input (field names are case-sensitive). "
+                << "Available fields: " << available_str << std::endl;
   }
 }
 
