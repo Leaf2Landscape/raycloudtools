@@ -554,7 +554,10 @@ bool readLas(const std::string &file_name,
       {
         const uint32_t laz_chunk_size = lazf.lazVlr().chunk_size;
         const int laz_format = lazhdr.point_format_id;
-        const int laz_eb_count = static_cast<int>(ctx.extra_bytes_total);
+        // Use the actual total extra bytes per point, not just valid-dtype attrs.
+        // Files with dtype>10 or dtype=0 attributes have more extra bytes than extra_bytes_total.
+        const int laz_eb_count = static_cast<int>(ctx.point_record_length)
+                                 - static_cast<int>(lasBaseRecordSize(ctx.format));
         const uint32_t pt_offset = lazhdr.point_offset;
 
         std::vector<LazChunk> chunks;

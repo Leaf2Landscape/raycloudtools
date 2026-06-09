@@ -282,7 +282,6 @@ int rayImport(int argc, char *argv[])
   ray::OptionalFlagArgument beam_id_opt("beam_id", 'b');
   ray::OptionalFlagArgument transform_flag("transform", 't');
   ray::FileArgument cloud_file, trajectory_file, transform_file;
-  // NOTE: --filters is not yet functional; parsing is stubbed here for future implementation.
   std::vector<ray::FieldFilter> filters = parseFilterArgs(argc, argv);
   std::vector<char *> filt_argv = stripFilterArgs(argc, argv);
   int filt_argc = static_cast<int>(filt_argv.size());

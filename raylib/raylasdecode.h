@@ -275,13 +275,22 @@ inline void decodePointRecord(const laszip_point_struct *point, const DecodeCont
     // Original intensity (uint16 LE) — preserved so the output keeps the sensor value.
     passthrough_out->push_back(static_cast<uint8_t>(point->intensity & 0xFFu));
     passthrough_out->push_back(static_cast<uint8_t>(point->intensity >> 8));
-    // Append original sensor extra bytes (after skipping our raycloud-owned attributes).
-    if (ctx.local_orig_extra > 0 && point->num_extra_bytes >= ctx.local_skip_size + ctx.local_orig_extra)
-      passthrough_out->insert(passthrough_out->end(),
-                              point->extra_bytes + ctx.local_skip_size,
-                              point->extra_bytes + ctx.local_skip_size + ctx.local_orig_extra);
-    else if (ctx.local_orig_extra > 0)
-      passthrough_out->insert(passthrough_out->end(), ctx.local_orig_extra, 0);
+    // Append original sensor extra bytes. For files that contain unrecognised (dtype>10 or dtype=0)
+    // extra attributes before the valid-dtype sensor attributes, the sensor bytes are not at
+    // local_skip_size but further into the extra-bytes block. extra_bytes_offset encodes the true
+    // file position; subtracting the base record size gives the offset within extra_bytes[].
+    {
+      const uint16_t base = lasBaseRecordSize(ctx.format & 0x7Fu);
+      const uint16_t orig_start = (base > 0 && ctx.extra_bytes_offset >= base)
+                                    ? static_cast<uint16_t>(ctx.extra_bytes_offset - base) + ctx.local_skip_size
+                                    : ctx.local_skip_size;
+      if (ctx.local_orig_extra > 0 && point->num_extra_bytes >= orig_start + ctx.local_orig_extra)
+        passthrough_out->insert(passthrough_out->end(),
+                                point->extra_bytes + orig_start,
+                                point->extra_bytes + orig_start + ctx.local_orig_extra);
+      else if (ctx.local_orig_extra > 0)
+        passthrough_out->insert(passthrough_out->end(), ctx.local_orig_extra, 0);
+    }
   }
 
   if (ctx.using_colour)
