@@ -38,6 +38,8 @@ void usage(int exit_code = 1)
   std::cout << "raycombine basecloud min raycloud1 raycloud2 20 rays - 3-way merge, choses the changed geometry (from basecloud) at any differences. " << std::endl;
   std::cout << "                                                       For merge conflicts it uses the specified merge type." << std::endl;
   std::cout << "        --output raycloud_combined.ply               - optionally specify the output file name." << std::endl;
+  std::cout << "        --dedup 0.02                                 - 'all' mode only: deduplicate to one point per 0.02 m voxel cell (metres; first-seen wins)." << std::endl;
+  std::cout << "        --dedup 0.02 --tiebreak \">reflectance,<range\" - 'all' mode only: keep the best point per voxel by field priority ('>' prefers higher, '<' prefers lower)." << std::endl;
   // clang-format on
   exit(exit_code);
 }
@@ -54,16 +56,23 @@ int rayCombine(int argc, char *argv[])
   ray::FileArgument base_cloud(false), cloud_1(false), cloud_2(false), output_file(false);
   ray::OptionalKeyValueArgument output("output", 'o', &output_file);
 
+  // 'all' mode voxel deduplication. --dedup is the voxel width in metres; --tiebreak (requires
+  // --dedup) selects the best point per voxel by a comma-separated field-priority spec.
+  ray::DoubleArgument dedup_width(0.0, 1e10);
+  ray::StringArgument tiebreak_spec;
+  ray::OptionalKeyValueArgument dedup_option("dedup", '\0', &dedup_width);
+  ray::OptionalKeyValueArgument tiebreak_option("tiebreak", '\0', &tiebreak_spec);
+
   // three-way merge option
   bool standard_format = ray::parseCommandLine(argc, argv, { &merge_type, &cloud_files, &num_rays, &rays_text }, { &output });
-  bool concatenate_all = ray::parseCommandLine(argc, argv, { &all_text, &cloud_files }, { &output });
+  bool concatenate_all = ray::parseCommandLine(argc, argv, { &all_text, &cloud_files }, { &output, &dedup_option, &tiebreak_option });
   bool threeway = ray::parseCommandLine(
     argc, argv, { &base_cloud, &merge_type, &cloud_1, &cloud_2, &num_rays, &rays_text }, { &output });
   bool threeway_concatenate =
     ray::parseCommandLine(argc, argv, { &base_cloud, &all_text, &cloud_1, &cloud_2 }, { &output });
   if (!standard_format && !concatenate_all && !threeway && !threeway_concatenate)
   {
-    concatenate_all = ray::parseCommandLine(argc, argv, { &cloud_files }, { &output }); // a bit more ambiguous, so only try if the other formats failed
+    concatenate_all = ray::parseCommandLine(argc, argv, { &cloud_files }, { &output, &dedup_option, &tiebreak_option }); // a bit more ambiguous, so only try if the other formats failed
     if (!concatenate_all)
     {
       usage();
@@ -296,6 +305,21 @@ int rayCombine(int argc, char *argv[])
           if (r.src_off != r.dst_off) { needs_remap[f] = true; break; }
     }
 
+    // Voxel deduplication ('all' mode only). When --dedup is set, points sharing a voxel cell are
+    // collapsed to the first-seen point, streaming across all input files. The set persists across
+    // every chunk and every file below, so it is the cross-file streaming dedup state.
+    if (tiebreak_option.isSet() && !dedup_option.isSet())
+    {
+      std::cerr << "--tiebreak requires --dedup" << std::endl;
+      usage();
+    }
+    if (dedup_option.isSet() && tiebreak_option.isSet())
+    {
+      std::cerr << "--tiebreak requires --dedup implementation phase 2" << std::endl;
+      usage();
+    }
+    std::set<Eigen::Vector3i, ray::Vector3iLess> dedup_vox_set;
+
     ray::CloudWriter writer;
     if (!writer.begin(combined_file, union_vlr, /*with_beam_id=*/false,
                       /*with_tree_id=*/union_has_labels, /*with_stem_id=*/union_has_labels,
@@ -372,6 +396,52 @@ int rayCombine(int argc, char *argv[])
           }
         }
         label_cursor += n_pts;
+
+        // Streaming first-wins voxel dedup: keep only points whose voxel cell has not yet been
+        // seen across all chunks/files. Compact every parallel array (geometry, passthrough,
+        // labels) by the kept indices so they stay aligned.
+        if (dedup_option.isSet())
+        {
+          const double w = dedup_width.value();
+          const bool have_pass   = !chunk_pass.empty();
+          const bool have_labels = !chunk_tree_ids.empty();
+          size_t keep = 0;
+          for (size_t j = 0; j < n_pts; ++j)
+          {
+            const Eigen::Vector3i key(static_cast<int>(std::floor(ends[j][0] / w)),
+                                      static_cast<int>(std::floor(ends[j][1] / w)),
+                                      static_cast<int>(std::floor(ends[j][2] / w)));
+            if (!dedup_vox_set.insert(key).second)
+              continue;
+            if (keep != j)
+            {
+              starts[keep]  = starts[j];
+              ends[keep]    = ends[j];
+              times[keep]   = times[j];
+              colours[keep] = colours[j];
+              if (have_pass)
+                std::memcpy(chunk_pass.data() + keep * writer_pass_stride,
+                            chunk_pass.data() + j * writer_pass_stride, writer_pass_stride);
+              if (have_labels)
+              {
+                chunk_tree_ids[keep] = chunk_tree_ids[j];
+                chunk_stem_ids[keep] = chunk_stem_ids[j];
+              }
+            }
+            ++keep;
+          }
+          starts.resize(keep);
+          ends.resize(keep);
+          times.resize(keep);
+          colours.resize(keep);
+          if (have_pass)
+            chunk_pass.resize(keep * writer_pass_stride);
+          if (have_labels)
+          {
+            chunk_tree_ids.resize(keep);
+            chunk_stem_ids.resize(keep);
+          }
+        }
 
         writer.writeChunk(starts, ends, times, colours, chunk_pass, {}, chunk_tree_ids, chunk_stem_ids);
       };
