@@ -38,6 +38,29 @@ bool RAYLIB_EXPORT decimateRaysSpatial(const std::string &file_name, double vox_
 bool RAYLIB_EXPORT decimateAngular(const std::string &file_name, double radius_per_length);
 
 
+/// Field a tiebreak comparison reads when picking the best point per voxel for @c deduplicateVoxel.
+enum class TiebreakKind { Reflectance, Range, Time, ExtraByte };
+
+/// One resolved tiebreak criterion: which field to read, the sort direction, and (for ExtraByte)
+/// how to decode the value out of the per-point passthrough slice.
+struct RAYLIB_EXPORT ResolvedTiebreaker
+{
+  TiebreakKind kind;
+  bool ascending;        ///< true = prefer lower value, false = prefer higher value
+  uint16_t byte_offset = 0;  ///< within the sensor-extras slice (after the 10-byte fixed prefix)
+  uint8_t byte_size = 0;
+  uint8_t dtype = 0;     ///< LAS extra-byte type code (same table as raycombine.cpp's parseSensorAttrs)
+};
+
+/// @brief best-wins voxel dedup post-step over an already-combined ray cloud file.
+/// Two passes over @c file_name: pass 1 finds the global winner point per @c vox_width voxel cell
+/// by comparing @c spec fields in priority order; pass 2 emits only the winners. The result is
+/// written to a temp file and renamed over @c file_name in place. Handles PLY input (no passthrough)
+/// gracefully. Returns false on read/write failure.
+bool RAYLIB_EXPORT deduplicateVoxel(const std::string &file_name, double vox_width,
+                                    const std::vector<ResolvedTiebreaker> &spec);
+
+
 struct Subsampler
 {
   inline bool operator()(const Eigen::Vector3i &p, const Eigen::Vector3i &/*target*/, double /*in_length*/, double /*out_length*/, double /*max_length*/)

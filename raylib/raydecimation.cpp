@@ -4,6 +4,8 @@
 //
 // Author: Thomas Lowe
 #include "raydecimation.h"
+#include <cstdio>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -404,6 +406,207 @@ bool decimateAngular(const std::string &file_name, double radius_per_length)
   if (!readWithPassthrough(file_name, ext, finalise, &passthrough_buf))
     return false;
   writer.end();
+  return true;
+}
+
+namespace
+{
+// Decode one extra-byte sensor value from a passthrough slice into a double, using the LAS
+// extra-byte type code (same table as raycombine.cpp's parseSensorAttrs). @c ptr points at the
+// start of this point's passthrough record; the value lives at the 10-byte fixed prefix + offset.
+double decodeExtraByte(const uint8_t *ptr, const ResolvedTiebreaker &tb)
+{
+  const uint8_t *p = ptr + 10 + tb.byte_offset;
+  switch (tb.dtype)
+  {
+  case 1: { uint8_t v;  std::memcpy(&v, p, sizeof(v)); return static_cast<double>(v); }
+  case 2: { int8_t v;   std::memcpy(&v, p, sizeof(v)); return static_cast<double>(v); }
+  case 3: { uint16_t v; std::memcpy(&v, p, sizeof(v)); return static_cast<double>(v); }
+  case 4: { int16_t v;  std::memcpy(&v, p, sizeof(v)); return static_cast<double>(v); }
+  case 5: { uint32_t v; std::memcpy(&v, p, sizeof(v)); return static_cast<double>(v); }
+  case 6: { int32_t v;  std::memcpy(&v, p, sizeof(v)); return static_cast<double>(v); }
+  case 7: { uint64_t v; std::memcpy(&v, p, sizeof(v)); return static_cast<double>(v); }
+  case 8: { int64_t v;  std::memcpy(&v, p, sizeof(v)); return static_cast<double>(v); }
+  case 9: { float v;    std::memcpy(&v, p, sizeof(v)); return static_cast<double>(v); }
+  case 10:{ double v;   std::memcpy(&v, p, sizeof(v)); return v; }
+  default: return 0.0;
+  }
+}
+
+// Resolve the field values for one point in spec order. @c chunk_pass may be empty (PLY, or no
+// sensor extras), in which case ExtraByte criteria resolve to 0.
+void resolveValues(const std::vector<ResolvedTiebreaker> &spec, const Eigen::Vector3d &start,
+                   const Eigen::Vector3d &end, double time, const RGBA &colour,
+                   const uint8_t *pass_ptr, std::vector<double> &out)
+{
+  out.resize(spec.size());
+  for (size_t s = 0; s < spec.size(); ++s)
+  {
+    switch (spec[s].kind)
+    {
+    case TiebreakKind::Reflectance: out[s] = static_cast<double>(colour.alpha); break;
+    case TiebreakKind::Range:       out[s] = (end - start).norm(); break;
+    case TiebreakKind::Time:        out[s] = time; break;
+    case TiebreakKind::ExtraByte:   out[s] = pass_ptr ? decodeExtraByte(pass_ptr, spec[s]) : 0.0; break;
+    }
+  }
+}
+
+// Lexicographic comparison of candidate values against the current winner. Returns true iff
+// @c cand should replace @c best under @c spec (first differing field with the wrong order loses).
+bool beats(const std::vector<ResolvedTiebreaker> &spec, const std::vector<double> &cand,
+           const std::vector<double> &best)
+{
+  for (size_t s = 0; s < spec.size(); ++s)
+  {
+    if (cand[s] == best[s])
+      continue;
+    const bool cand_lower = cand[s] < best[s];
+    return spec[s].ascending ? cand_lower : !cand_lower;
+  }
+  return false;  // equal across all criteria: keep the existing (earlier) winner
+}
+
+Eigen::Vector3i voxelKey(const Eigen::Vector3d &end, double vox_width)
+{
+  return Eigen::Vector3i(static_cast<int>(std::floor(end[0] / vox_width)),
+                         static_cast<int>(std::floor(end[1] / vox_width)),
+                         static_cast<int>(std::floor(end[2] / vox_width)));
+}
+}  // namespace
+
+bool deduplicateVoxel(const std::string &file_name, double vox_width,
+                      const std::vector<ResolvedTiebreaker> &spec)
+{
+  const std::string ext = getFileNameExtension(file_name);
+
+  const bool is_las = (ext == "las" || ext == "laz");
+
+  // Inspect the combined file's schema so the rewritten file preserves all of its columns:
+  // sensor extra-bytes (passthrough), tree_id/stem_id labels, and native RGB.
+  uint16_t pass_stride = 10;
+  std::vector<uint8_t> extra_bytes_vlr;
+  bool has_rgb = false;
+  if (is_las)
+  {
+    uint16_t orig_extra = 0;
+    readLasExtraBytesVlr(file_name, orig_extra, extra_bytes_vlr, nullptr, &has_rgb);
+    pass_stride = static_cast<uint16_t>(10 + orig_extra);
+  }
+
+  // Per-chunk buffers shared by both passes. readLas appends tree_id/stem_id and passthrough across
+  // chunks; the callbacks clear them each chunk, so each callback sees only its own chunk's slice.
+  std::vector<uint8_t> passthrough_buf;
+  std::vector<int32_t> tree_ids_buf, stem_ids_buf;
+  // tree_id/stem_id are only populated by readLas when the file declares them; detect presence by
+  // whether the first pass yielded any labels.
+  bool has_tree_ids = false, has_stem_ids = false;
+
+  // Drive @c apply over the file with labels + passthrough for LAS/LAZ, or plain Cloud::read for PLY.
+  auto readAll = [&](std::function<void(std::vector<Eigen::Vector3d> &, std::vector<Eigen::Vector3d> &,
+                                        std::vector<double> &, std::vector<RGBA> &)> apply) -> bool
+  {
+    if (is_las)
+    {
+      size_t num_bounded;
+      return readLas(file_name, apply, num_bounded, 1.0, nullptr, computeReadChunkSize(),
+                     &tree_ids_buf, &passthrough_buf, nullptr, nullptr, &stem_ids_buf);
+    }
+    return Cloud::read(file_name, apply);
+  };
+
+  // Pass 1: find the global winner point index per voxel cell.
+  std::map<Eigen::Vector3i, int64_t, ray::Vector3iLess> winners;
+  std::map<Eigen::Vector3i, std::vector<double>, ray::Vector3iLess> winner_vals;
+  int64_t index = -1;
+  std::vector<double> vals;
+  auto find_winners = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
+                          std::vector<double> &times, std::vector<ray::RGBA> &colours)
+  {
+    const size_t n_pts = ends.size();
+    const bool have_pass = passthrough_buf.size() >= n_pts * pass_stride;
+    if (!tree_ids_buf.empty()) has_tree_ids = true;
+    if (!stem_ids_buf.empty()) has_stem_ids = true;
+    for (size_t i = 0; i < n_pts; ++i)
+    {
+      ++index;
+      const uint8_t *pass_ptr = have_pass ? passthrough_buf.data() + i * pass_stride : nullptr;
+      resolveValues(spec, starts[i], ends[i], times[i], colours[i], pass_ptr, vals);
+      const Eigen::Vector3i key = voxelKey(ends[i], vox_width);
+      auto found = winners.find(key);
+      if (found == winners.end())
+      {
+        winners.insert({ key, index });
+        winner_vals.insert({ key, vals });
+      }
+      else if (beats(spec, vals, winner_vals[key]))
+      {
+        found->second   = index;
+        winner_vals[key] = vals;
+      }
+    }
+    passthrough_buf.clear();
+    tree_ids_buf.clear();
+    stem_ids_buf.clear();
+  };
+  if (!readAll(find_winners))
+    return false;
+  winner_vals.clear();
+
+  // Pass 2: stream again, emitting only the winning point per voxel, preserving every column.
+  // Keep the original extension on the temp file so CloudWriter infers the same format (LAS vs PLY).
+  const std::string tmp_file = getFileNameStub(file_name) + "_dedup_tmp." + ext;
+  ray::CloudWriter writer;
+  if (!writer.begin(tmp_file, extra_bytes_vlr, /*with_beam_id=*/false,
+                    /*with_tree_id=*/has_tree_ids, /*with_stem_id=*/has_stem_ids, /*with_rgb=*/has_rgb))
+    return false;
+
+  index = -1;
+  auto emit_winners = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
+                          std::vector<double> &times, std::vector<ray::RGBA> &colours)
+  {
+    const size_t n_pts = ends.size();
+    const bool have_pass   = passthrough_buf.size() >= n_pts * pass_stride;
+    const bool have_tree   = tree_ids_buf.size() >= n_pts;
+    const bool have_stem   = stem_ids_buf.size() >= n_pts;
+    std::vector<Eigen::Vector3d> out_starts, out_ends;
+    std::vector<double> out_times;
+    std::vector<ray::RGBA> out_colours;
+    std::vector<uint8_t> chunk_pass;
+    std::vector<int32_t> chunk_tree, chunk_stem;
+    for (size_t i = 0; i < n_pts; ++i)
+    {
+      ++index;
+      const Eigen::Vector3i key = voxelKey(ends[i], vox_width);
+      auto found = winners.find(key);
+      if (found == winners.end() || found->second != index)
+        continue;
+      out_starts.push_back(starts[i]);
+      out_ends.push_back(ends[i]);
+      out_times.push_back(times[i]);
+      out_colours.push_back(colours[i]);
+      if (have_pass)
+      {
+        const uint8_t *src = passthrough_buf.data() + i * pass_stride;
+        chunk_pass.insert(chunk_pass.end(), src, src + pass_stride);
+      }
+      if (have_tree) chunk_tree.push_back(tree_ids_buf[i]);
+      if (have_stem) chunk_stem.push_back(stem_ids_buf[i]);
+    }
+    passthrough_buf.clear();
+    tree_ids_buf.clear();
+    stem_ids_buf.clear();
+    writer.writeChunk(out_starts, out_ends, out_times, out_colours, chunk_pass, {}, chunk_tree, chunk_stem);
+  };
+  if (!readAll(emit_winners))
+    return false;
+  writer.end();
+
+  if (std::rename(tmp_file.c_str(), file_name.c_str()) != 0)
+  {
+    std::cerr << "Error: could not replace " << file_name << " with deduplicated output" << std::endl;
+    return false;
+  }
   return true;
 }
 }  // namespace ray
