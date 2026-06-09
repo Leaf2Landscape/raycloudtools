@@ -62,6 +62,63 @@ inline std::vector<std::string> split(const std::string &s, char delim)
   return result;
 }
 
+/// Read all whitespace-separated numeric values from a file, skipping empty lines and '%'-prefixed comments.
+inline std::vector<double> readNumericFile(const std::string &file)
+{
+  std::vector<double> vals;
+  std::ifstream ifs(file);
+  std::string line;
+  while (std::getline(ifs, line))
+  {
+    if (line.empty() || line[0] == '%')
+      continue;
+    std::stringstream ss(line);
+    double v;
+    while (ss >> v)
+      vals.push_back(v);
+  }
+  return vals;
+}
+
+/// Returns true if the file contains exactly 4x4 numeric values and the first column is NOT monotonically
+/// increasing (i.e. it looks like a rigid transform matrix rather than a 4-point trajectory).
+/// If looks_ambiguous is non-null it is set to true when the file is 4x4 but the first column IS monotonic.
+inline bool looksLikeTransformMatrix(const std::string &file, bool *looks_ambiguous = nullptr)
+{
+  if (looks_ambiguous)
+    *looks_ambiguous = false;
+  std::ifstream ifs(file);
+  if (!ifs.is_open())
+    return false;
+  std::vector<std::vector<double>> rows;
+  std::string line;
+  while (std::getline(ifs, line))
+  {
+    if (line.empty() || line[0] == '%')
+      continue;
+    std::stringstream ss(line);
+    std::vector<double> vals;
+    double v;
+    while (ss >> v)
+      vals.push_back(v);
+    if (!vals.empty())
+      rows.push_back(std::move(vals));
+  }
+  if (rows.size() != 4)
+    return false;
+  for (const auto &r : rows)
+    if (r.size() != 4)
+      return false;
+  bool monotonic = rows[1][0] > rows[0][0] && rows[2][0] > rows[1][0] && rows[3][0] > rows[2][0];
+  if (monotonic)
+  {
+    if (looks_ambiguous)
+      *looks_ambiguous = true;
+    return false;
+  }
+  return true;
+}
+
 template <class T>
 inline const T maxVector(const T &a, const T &b)
 {

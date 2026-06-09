@@ -26,6 +26,8 @@ void usage(int exit_code = 1)
   std::cout << "usage:" << std::endl;
   std::cout << "rayimport pointcloudfile trajectoryfile  - pointcloudfile can be a .laz, .las, .ply or .rxp file" << std::endl;
   std::cout << "                                           trajectoryfile is a text file using 'time x y z' format per line" << std::endl;
+  std::cout << "                                           trajectoryfile may instead be a 4x4 transform matrix" << std::endl;
+  std::cout << "                                           (16 values over 4 lines); auto-detected, or force with --transform/-t" << std::endl;
   std::cout << "rayimport pointcloudfile 0,0,0           - use 0,0,0 as the sensor location" << std::endl;
   std::cout << "rayimport pointcloudfile ray 0,0,-10     - use 0,0,-10 as the constant ray vector from start to point" << std::endl;
   std::cout << "                                          --max_intensity 100 - specify maximum intensity value (default: 65535 for .las/.laz, 100 otherwise)." << std::endl;
@@ -39,6 +41,7 @@ void usage(int exit_code = 1)
   exit(exit_code);
 }
 
+
 int rayImport(int argc, char *argv[])
 {
   ray::DoubleArgument max_intensity(0.0, 1e8, 100.0);
@@ -48,9 +51,10 @@ int rayImport(int argc, char *argv[])
   ray::OptionalKeyValueArgument max_intensity_option("max_intensity", 'm', &max_intensity);
   ray::OptionalFlagArgument remove("remove_start_pos", 'r');
   ray::OptionalFlagArgument beam_id_opt("beam_id", 'b');
+  ray::OptionalFlagArgument transform_flag("transform", 't');
   ray::FileArgument cloud_file, trajectory_file, transform_file;
   bool standard_format =
-    ray::parseCommandLine(argc, argv, { &cloud_file, &trajectory_file }, { &max_intensity_option, &remove, &beam_id_opt });
+    ray::parseCommandLine(argc, argv, { &cloud_file, &trajectory_file }, { &max_intensity_option, &remove, &beam_id_opt, &transform_flag });
   bool position_format =
     ray::parseCommandLine(argc, argv, { &cloud_file, &position }, { &max_intensity_option, &remove, &beam_id_opt });
   bool ray_format =
@@ -71,34 +75,65 @@ int rayImport(int argc, char *argv[])
 
   // init transformation
   std::vector<double> transformation;
+  Eigen::Matrix4d transform_matrix = Eigen::Matrix4d::Identity();
+  bool transform_format = false;
   // load the trajectory first, it should fit into main memory
 
   ray::Trajectory trajectory;
   if (standard_format)
   {
     const std::string traj_end = traj_file.substr(traj_file.size() - 4);
-    // allow the trajectory file to be in multiple different formats
-    if (traj_end == ".ply" || traj_end == ".las" || traj_end == ".laz")
+    const bool is_cloud_traj = (traj_end == ".ply" || traj_end == ".las" || traj_end == ".laz");
+
+    bool ambiguous = false;
+    if (!is_cloud_traj)
     {
-      std::vector<Eigen::Vector3d> starts;
-      std::vector<Eigen::Vector3d> ends;
-      std::vector<double> times;
-      std::vector<ray::RGBA> colours;
-      if (traj_end == ".ply")
-      {
-        if (!ray::readPly(traj_file, starts, ends, times, colours, false))
-          return false;
-      }
-      else
-      {
-        if (!ray::readLas(traj_file, ends, times, colours, maximum_intensity))
-          return false;
-      }
-      trajectory.points() = std::move(ends);
-      trajectory.times() = std::move(times);
+      if (transform_flag.isSet())
+        transform_format = true;
+      else if (ray::looksLikeTransformMatrix(traj_file, &ambiguous))
+        transform_format = true;
     }
-    else if (!trajectory.load(traj_file))
-      usage();
+
+    if (transform_format)
+    {
+      std::cout << "parsing " << traj_file << " as transform matrix" << std::endl;
+      const auto vals = ray::readNumericFile(traj_file);
+      if (vals.size() != 16)
+        usage();
+      for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++)
+          transform_matrix(r, c) = vals[r * 4 + c];
+    }
+    else
+    {
+      if (ambiguous)
+        std::cout << "warning: " << traj_file
+                  << " is 4x4 but its first column is monotonically increasing; "
+                     "parsing as trajectory (pass --transform to force matrix)" << std::endl;
+      std::cout << "parsing " << traj_file << " as trajectory" << std::endl;
+
+      if (is_cloud_traj)
+      {
+        std::vector<Eigen::Vector3d> starts;
+        std::vector<Eigen::Vector3d> ends;
+        std::vector<double> times;
+        std::vector<ray::RGBA> colours;
+        if (traj_end == ".ply")
+        {
+          if (!ray::readPly(traj_file, starts, ends, times, colours, false))
+            return false;
+        }
+        else
+        {
+          if (!ray::readLas(traj_file, ends, times, colours, maximum_intensity))
+            return false;
+        }
+        trajectory.points() = std::move(ends);
+        trajectory.times() = std::move(times);
+      }
+      else if (!trajectory.load(traj_file))
+        usage();
+    }
   }
 
   std::string save_file = cloud_file.nameStub() + "_raycloud";
@@ -178,6 +213,19 @@ int rayImport(int argc, char *argv[])
     // unbound data: starts are already set correctly by readRXP with the transformation applied
     else if (unbound_format)
     {
+    }
+    // a 4x4 rigid transform: move points from scanner frame to world frame
+    else if (transform_format)
+    {
+      // sensor origin = translation column; points transformed from scanner to world frame
+      const Eigen::Matrix3d R = transform_matrix.block<3, 3>(0, 0);
+      const Eigen::Vector3d t = transform_matrix.block<3, 1>(0, 3);
+      starts.resize(ends.size());
+      for (size_t i = 0; i < ends.size(); i++)
+      {
+        ends[i]   = R * ends[i] + t;
+        starts[i] = t;
+      }
     }
     // otherwise, a trajectory has been passed in
     else
@@ -287,26 +335,9 @@ int rayImport(int argc, char *argv[])
 
   if (unbound_format)
   {
-    std::ifstream inputFile(trans_file);
-
-    if (inputFile.is_open())
-    {
-      std::string line;
-      while (std::getline(inputFile, line))
-      {
-        std::stringstream ss(line);
-        double number;
-        while (ss >> number)
-        {
-          transformation.push_back(number);
-        }
-      }
-      inputFile.close();
-    }
-    else
-    {
+    transformation = ray::readNumericFile(trans_file);
+    if (transformation.empty())
       usage();
-    }
   }
 
   if (!unbound_format)
@@ -341,7 +372,7 @@ int rayImport(int argc, char *argv[])
     std::cout << "Error converting unknown type: " << cloud_file.name() << std::endl;
     usage();
   }
-  if (standard_format)
+  if (standard_format && !transform_format)
   {
     const float grace_period = 30.0;
     if (trajectory.times()[0] < min_time - grace_period)

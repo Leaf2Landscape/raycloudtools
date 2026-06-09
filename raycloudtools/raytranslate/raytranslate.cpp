@@ -23,13 +23,16 @@ void usage(int exit_code = 1)
   std::cout << "                      0,0,1,24.3 - optional 4th component translates time" << std::endl;
   std::cout << "                      subtract ground_mesh.ply  - translate vertically to remove ground_mesh heights" << std::endl;
   std::cout << "                      add ground_mesh.ply- translate vertically to add ground_mesh heights" << std::endl;
+  std::cout << "                      transformfile - apply a 4x4 rigid transform matrix to all rays" << std::endl;
+  std::cout << "                                     transformfile is a text file containing 16 values over 4 lines" << std::endl;
   // clang-format on
   exit(exit_code);
 }
 
+
 int rayTranslate(int argc, char *argv[])
 {
-  ray::FileArgument cloud_file, ground_file;
+  ray::FileArgument cloud_file, ground_file, transform_file;
   ray::TextArgument subtract("subtract"), add("add");
   ray::Vector3dArgument translation3;
   ray::Vector4dArgument translation4;
@@ -38,11 +41,14 @@ int rayTranslate(int argc, char *argv[])
   bool vec4_format = ray::parseCommandLine(argc, argv, { &cloud_file, &translation4 });
   bool ground_subtract_format = ray::parseCommandLine(argc, argv, { &cloud_file, &subtract, &ground_file });
   bool ground_add_format = ray::parseCommandLine(argc, argv, { &cloud_file, &add, &ground_file });
-  if (!vec3_format && !vec4_format && !ground_subtract_format && !ground_add_format)
+  bool transform_format = ray::parseCommandLine(argc, argv, { &cloud_file, &transform_file });
+  if (!vec3_format && !vec4_format && !ground_subtract_format && !ground_add_format && !transform_format)
     usage();
 
   Eigen::Vector3d translation(0, 0, 0);
   double time_delta = 0.0;
+  Eigen::Matrix3d transform_R = Eigen::Matrix3d::Identity();
+  Eigen::Vector3d transform_t = Eigen::Vector3d::Zero();
   ray::Mesh ground_mesh;
   ray::Cloud::Info info;
   Eigen::Vector3d min_bound;
@@ -60,6 +66,21 @@ int rayTranslate(int argc, char *argv[])
   {
     translation = translation4.value().head<3>();
     time_delta = translation4.value()[3];
+  }
+  else if (transform_format)
+  {
+    const auto vals = ray::readNumericFile(transform_file.name());
+    if (vals.size() != 16)
+    {
+      std::cerr << "Error: " << transform_file.name() << " must contain exactly 16 values (4x4 matrix)" << std::endl;
+      usage();
+    }
+    Eigen::Matrix4d mat;
+    for (int r = 0; r < 4; r++)
+      for (int c = 0; c < 4; c++)
+        mat(r, c) = vals[r * 4 + c];
+    transform_R = mat.block<3, 3>(0, 0);
+    transform_t = mat.block<3, 1>(0, 3);
   }
   else
   {
@@ -182,6 +203,11 @@ int rayTranslate(int argc, char *argv[])
         start[2] += height;
         end[2] += height;        
       }
+    }
+    else if (transform_format)
+    {
+      start = transform_R * start + transform_t;
+      end   = transform_R * end   + transform_t;
     }
     else
     {
