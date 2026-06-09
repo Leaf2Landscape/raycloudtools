@@ -73,6 +73,7 @@ void usage()
   std::cout << "  --knn_normal <N>                Number of nearest neighbours used for per-point normal estimation. Default: 10." << std::endl;
   std::cout << "  --triangle_lmax <m>             Max triangle edge length for Bailey facets (only used with --attenuation_method bailey). Default: 0.05." << std::endl;
   std::cout << "  --iad_tile_size <m>             XY tile size (m) for the tiled parallel KNN normal/IAD pass. Default: 3.0. Smaller tiles use less memory; see also --threads." << std::endl;
+  std::cout << "  --average_leaf_area <m2>        Mean single-leaf area (m²) for Stage 3 effective free path. Default: 0.005." << std::endl;
   exit(1);
 }
 
@@ -155,6 +156,8 @@ int main_function(int argc, char *argv[])
   OptionalKeyValueArgument triangle_lmax("triangle_lmax", '\0', &triangle_lmax_val);
   DoubleArgument iad_tile_size_val(1.0, 1000.0, 3.0);
   OptionalKeyValueArgument iad_tile_size("iad_tile_size", '\0', &iad_tile_size_val);
+  DoubleArgument average_leaf_area_val(0.0, 100.0, 0.005);
+  OptionalKeyValueArgument average_leaf_area("average_leaf_area", '\0', &average_leaf_area_val);
 
   // --- Parse Command Line ---
   std::vector<FixedArgument *> fixed_args = { &cloud_file };
@@ -167,7 +170,7 @@ int main_function(int argc, char *argv[])
       &veg_metrics, &leaf_classes, &wood_classes, &lad, &lad_params,
       &beam_metrics, &laser_spec, &beam_params, &subvoxel_split,
       &inclination_dist, &no_inclination_dist, &output_iad, &n_iad_bins, &attenuation_method, &knn_normal,
-      &triangle_lmax, &iad_tile_size };
+      &triangle_lmax, &iad_tile_size, &average_leaf_area };
 
   if (!parseCommandLine(argc, argv, fixed_args, optional_args)) {
     usage();
@@ -284,6 +287,7 @@ int main_function(int argc, char *argv[])
   params.reserve_size = static_cast<size_t>(reserve_size_val.value());
   params.triangle_lmax     = triangle_lmax_val.value();
   params.iad_tile_size = iad_tile_size_val.value();
+  params.average_leaf_area = average_leaf_area_val.value();
   if (any_bailey) params.calc_inclination_dist = true;  // ensures KNN matrix exists
 
   // DTM parameters

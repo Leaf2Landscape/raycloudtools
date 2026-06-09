@@ -47,6 +47,11 @@ namespace ray
     return in.good() && magic == kShardMagic && version == kShardVersion;
   }
 
+  // NOTE: the free-path family of accumulators — free_path_length, bs_free_path, and the
+  // Stage 3 effective variants effective_free_path_length / bs_effective_free_path — are
+  // intentionally omitted from shard (de)serialization. They are only used for in-memory
+  // metric output and are not reconstructable from per-shard partial sums, so in OOC mode
+  // they read back as 0. Adding them would require bumping kShardVersion.
   /// @brief Serializes a Voxel and its VoxelCoord to a binary output stream.
   inline bool writeVoxelData(std::ofstream& out, const VoxelCoord& coord, const VoxelGrid::Voxel& voxel)
   {
@@ -54,10 +59,10 @@ namespace ray
     writeBinary(out, coord.y);
     writeBinary(out, coord.z);
     writeBinary(out, voxel.num_hits);
-    writeBinary(out, voxel.num_beams_observed);
+    writeBinary(out, voxel.num_beams);
     writeBinary(out, voxel.num_beams_weighted);
-    writeBinary(out, voxel.path_length_observed);
-    writeBinary(out, voxel.path_length_weighted);
+    writeBinary(out, voxel.path_length_raw);
+    writeBinary(out, voxel.path_length);
     writeBinary(out, voxel.num_rays_occluded);
     writeBinary(out, voxel.path_length_occluded);
     writeBinary(out, voxel.sum_of_angles);
@@ -81,10 +86,10 @@ namespace ray
     if (!in.good()) return false;
 
     readBinary(in, voxel.num_hits);
-    readBinary(in, voxel.num_beams_observed);
+    readBinary(in, voxel.num_beams);
     readBinary(in, voxel.num_beams_weighted);
-    readBinary(in, voxel.path_length_observed);
-    readBinary(in, voxel.path_length_weighted);
+    readBinary(in, voxel.path_length_raw);
+    readBinary(in, voxel.path_length);
     readBinary(in, voxel.num_rays_occluded);
     readBinary(in, voxel.path_length_occluded);
     readBinary(in, voxel.sum_of_angles);

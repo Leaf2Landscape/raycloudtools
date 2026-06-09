@@ -70,6 +70,7 @@ namespace ray
 
     double triangle_lmax     = 0.05;   // max triangle edge length (metres)
     double iad_tile_size = 3.0;   // XY tile edge (m) for tiled parallel KNN in the IAD pass
+    double average_leaf_area = 0.005;  // mean single-leaf area (m²) for Stage 3 effective free path λ₁
 
     bool calc_beam_metrics = false;
     std::string laser_spec_name;

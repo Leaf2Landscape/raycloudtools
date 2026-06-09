@@ -32,10 +32,10 @@ namespace ray
     int dominant_class = -1;
     int absolute_class = -1;
     int32_t num_hits = 0;
-    int32_t num_beams_observed = 0;
+    int32_t num_beams = 0;
     float num_beams_weighted = 0.0f;
-    float path_length_observed = 0.0f;
-    float path_length_weighted = 0.0f;
+    float path_length_raw = 0.0f;
+    float path_length = 0.0f;
     float num_rays_occluded = 0.0f;
     float path_length_occluded = 0.0f;
     float num_unbound_rays = 0.0f;
@@ -65,8 +65,10 @@ namespace ray
     double transmittance = 1.0;
     float bs_entering = 0.0f;       // raw beam-sample accumulator (AMAPVox bsEntering)
     float bs_intercepted = 0.0f;    // raw beam-sample accumulator (AMAPVox bsIntercepted)
-    float sum_bs_path = 0.0f;       // beam-area-weighted clipped path (AMAPVox weightedFreepathLength)
+    float bs_free_path = 0.0f;       // beam-area-weighted clipped path (AMAPVox weightedFreepathLength)
     double lMeanTotal = 0.0;        // lgTotal / nbSampling (AMAPVox lMeanTotal)
+    double lMeanFreeTotal = 0.0;    // mean free-path length: sum_free_path_weighted / num_beams_weighted
+    double lMeanEffectiveFreeTotal = 0.0;  // Stage 3 mean effective free-path: effective_free_path_length / num_beams
     double sd_length = 0.0;         // SD of per-beam path lengths (not yet tracked; always 0)
     double bs_potential = 0.0;      // potential beam cross-section (not yet tracked; always 0)
     double attenuation_fpl_biased = 0.0;

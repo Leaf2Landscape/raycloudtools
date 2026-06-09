@@ -92,19 +92,22 @@ namespace ray
     struct Voxel
     {
       int32_t num_hits = 0;               // Count of echo returns landing in this voxel (nbEchos).
-      int32_t num_beams_observed = 0;     // Count of beams traversing this voxel (nbSampling).
+      int32_t num_beams = 0;     // Count of beams traversing this voxel (nbSampling).
       float num_beams_weighted = 0.0f;    // Weighted beam traversal sum: Σ beam_weight per traversal; used for attenuation.
-      float path_length_observed = 0.0f;  // Unweighted path length sum: Σ segment_length across all observed traversals.
-      float path_length_weighted = 0.0f;  // Weighted path length sum: Σ (segment_length × beam_weight); used for PAD.
+      float path_length_raw = 0.0f;  // Unweighted path length sum: Σ segment_length across all observed traversals.
+      float path_length = 0.0f;  // Weighted path length sum: Σ (segment_length × beam_weight); used for PAD.
+      float free_path_length = 0.0f;// Stage 1 free-path: Σ (seg_weight × free_path); free_path = entry→hit for hits, full chord for miss/unbound.
+      float effective_free_path_length = 0.0f;  // Stage 3: Σ(seg_w × eff(free_path)), eff(z)=−ln(1−λ₁z)/λ₁
       float num_rays_occluded = 0.0f;     // Sum of occluded rays passing through (unweighted).
       float path_length_occluded = 0.0f;  // Sum of path lengths of occluded rays (unweighted).
       float sum_of_angles = 0.0f;         // Weighted sum of zenith angles of rays passing through.
       float sum_sin_azimuth = 0.0f;       // Weighted sum of sin(azimuth) of rays passing through.
       float sum_cos_azimuth = 0.0f;       // Weighted sum of cos(azimuth) of rays passing through.
       float sum_of_laser_distances = 0.0f;// Weighted sum of distances from sensor to voxel center.
-      float bs_entering = 0.0f;           // Weighted sum of entering beam cross-sectional area.
-      float bs_intercepted = 0.0f;        // Weighted sum of intercepted beam cross-sectional area.
-      float sum_bs_path    = 0.0f;        // FPL: beam-section-weighted clipped path length (all observed).
+      float bs_entering = 0.0f;           // Stage 2 (beam metrics): Σ (seg_weight × π·r²) for all traversals.
+      float bs_intercepted = 0.0f;        // Stage 2 (beam metrics): Σ (seg_weight × π·r²) for hit traversals.
+      float bs_free_path = 0.0f;          // Stage 2 (beam metrics): Σ (seg_weight × π·r² × free_path); beam-area-weighted free-path.
+      float bs_effective_free_path = 0.0f;  // Stage 3: Σ(π·r² × seg_w × eff(free_path))
       float sum_hit_delta  = 0.0f;        // PPL: weight*full_δ for terminal (hit) rays.
       float sum_miss_delta = 0.0f;        // PPL: weight*full_δ for traversing rays.
       float num_unbound_rays = 0.0f;    // weighted count of unbound (miss) rays traversing this voxel
@@ -198,10 +201,12 @@ namespace ray
   inline void VoxelGrid::Voxel::operator+=(const VoxelGrid::Voxel &other)
   {
     num_hits += other.num_hits;
-    num_beams_observed += other.num_beams_observed;
+    num_beams += other.num_beams;
     num_beams_weighted += other.num_beams_weighted;
-    path_length_observed += other.path_length_observed;
-    path_length_weighted += other.path_length_weighted;
+    path_length_raw += other.path_length_raw;
+    path_length += other.path_length;
+    free_path_length += other.free_path_length;
+    effective_free_path_length += other.effective_free_path_length;
     num_rays_occluded += other.num_rays_occluded;
     path_length_occluded += other.path_length_occluded;
     sum_of_angles += other.sum_of_angles;
@@ -210,7 +215,8 @@ namespace ray
     sum_of_laser_distances += other.sum_of_laser_distances;
     bs_entering += other.bs_entering;
     bs_intercepted += other.bs_intercepted;
-    sum_bs_path += other.sum_bs_path;
+    bs_free_path += other.bs_free_path;
+    bs_effective_free_path += other.bs_effective_free_path;
     sum_hit_delta += other.sum_hit_delta;
     sum_miss_delta += other.sum_miss_delta;
     num_unbound_rays += other.num_unbound_rays;
@@ -225,10 +231,12 @@ namespace ray
     // NOTE: scaling int32_t fields by a fractional scale then truncating is only used
     // for neighbour-prior interpolation (non-critical path). Low counts may round to 0.
     v.num_hits = static_cast<int32_t>(num_hits * scale);
-    v.num_beams_observed = static_cast<int32_t>(num_beams_observed * scale);
+    v.num_beams = static_cast<int32_t>(num_beams * scale);
     v.num_beams_weighted = static_cast<float>(num_beams_weighted * scale);
-    v.path_length_observed = static_cast<float>(path_length_observed * scale);
-    v.path_length_weighted = static_cast<float>(path_length_weighted * scale);
+    v.path_length_raw = static_cast<float>(path_length_raw * scale);
+    v.path_length = static_cast<float>(path_length * scale);
+    v.free_path_length = static_cast<float>(free_path_length * scale);
+    v.effective_free_path_length = static_cast<float>(effective_free_path_length * scale);
     v.num_rays_occluded = static_cast<float>(num_rays_occluded * scale);
     v.path_length_occluded = static_cast<float>(path_length_occluded * scale);
     v.sum_of_angles = static_cast<float>(sum_of_angles * scale);
@@ -237,7 +245,8 @@ namespace ray
     v.sum_of_laser_distances = static_cast<float>(sum_of_laser_distances * scale);
     v.bs_entering = static_cast<float>(bs_entering * scale);
     v.bs_intercepted = static_cast<float>(bs_intercepted * scale);
-    v.sum_bs_path = static_cast<float>(sum_bs_path * scale);
+    v.bs_free_path = static_cast<float>(bs_free_path * scale);
+    v.bs_effective_free_path = static_cast<float>(bs_effective_free_path * scale);
     v.sum_hit_delta = static_cast<float>(sum_hit_delta * scale);
     v.sum_miss_delta = static_cast<float>(sum_miss_delta * scale);
     v.num_unbound_rays = static_cast<float>(num_unbound_rays * scale);

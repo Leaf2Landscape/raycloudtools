@@ -151,7 +151,7 @@ double VoxelGrid::Voxel::pad_g0_5() const
   // Bias-corrected MLE assuming spherical LAD (G=0.5): PAD = 2*(N-1)/N * H / L_obs.
   const double eps = 1e-10;
   if (num_beams_weighted < 2.0f) return 0.0;
-  return 2.0 * (num_beams_weighted - 1.0f) * num_hits / (eps + num_beams_weighted * path_length_weighted);
+  return 2.0 * (num_beams_weighted - 1.0f) * num_hits / (eps + num_beams_weighted * path_length);
 }
 
 double VoxelGrid::Voxel::transmittance() const
@@ -841,7 +841,7 @@ public:
   virtual bool execute(const std::string& cloud_name, VoxelGrid& grid,
                        const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
                        bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-                       const HeightField* dtm, int dtm_from_class, double dtm_filter_distance) = 0;
+                       const HeightField* dtm, int dtm_from_class, double dtm_filter_distance, double lambda1 = 0.0) = 0;
 };
 
 // --- In-Memory Strategy (Options 1 & 2) ---
@@ -851,7 +851,7 @@ public:
   bool execute(const std::string& cloud_name, VoxelGrid& grid,
                const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
                bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-               const HeightField* dtm, int dtm_from_class, double dtm_filter_distance) override;
+               const HeightField* dtm, int dtm_from_class, double dtm_filter_distance, double lambda1 = 0.0) override;
 private:
   size_t num_threads_;
 };
@@ -863,13 +863,13 @@ public:
   bool execute(const std::string& cloud_name, VoxelGrid& grid,
                const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
                bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-               const HeightField* dtm, int dtm_from_class, double dtm_filter_distance) override;
+               const HeightField* dtm, int dtm_from_class, double dtm_filter_distance, double lambda1 = 0.0) override;
 private:
   bool createShards(const std::string& cloud_name, VoxelGrid& grid,
                     const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
                     bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
                     const HeightField* dtm, int dtm_from_class, double dtm_filter_distance,
-                    std::vector<std::string>& out_shard_paths);
+                    std::vector<std::string>& out_shard_paths, double lambda1 = 0.0);
 
   bool mergeShards(const std::vector<std::string>& shard_paths, VoxelGrid& grid);
 
@@ -881,7 +881,7 @@ private:
 bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
                                 const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
                                 bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-                                const HeightField* dtm, int dtm_from_class, double dtm_filter_distance)
+                                const HeightField* dtm, int dtm_from_class, double dtm_filter_distance, double lambda1)
 {
   // Determine the final number of threads to use
   size_t resolved_threads = num_threads_;
@@ -935,7 +935,7 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
     auto worker_task = [&](size_t thread_idx) {
       VoxelProcessor processor(grid.getBounds(), grid.getVoxelWidth(), weighting_method, use_occlusion,
                                apply_flat_top, peaks_ptr, calc_beam_metrics, beam_diameter,
-                               tan_half_divergence, subvoxel_split, dtm);
+                               tan_half_divergence, subvoxel_split, dtm, lambda1);
       if (use_flat)
         processor.setFlatTarget(flat_ptr, flat_dimX, flat_dimXY);
       BeamBatch batch;
@@ -1032,7 +1032,7 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
     std::cout << "Processing point cloud using 1 thread (in-memory)..." << std::endl;
     VoxelProcessor processor(grid.getBounds(), grid.getVoxelWidth(), weighting_method, use_occlusion,
                              apply_flat_top, peaks_ptr, calc_beam_metrics, beam_diameter,
-                             tan_half_divergence, subvoxel_split, dtm);
+                             tan_half_divergence, subvoxel_split, dtm, lambda1);
     if (grid.isFlat())
       processor.setFlatTarget(grid.flat_voxels_.data(),
                               grid.voxel_dims_[0],
@@ -1209,13 +1209,13 @@ public:
 bool OutOfCoreStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
                                 const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
                                 bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-                                const HeightField* dtm, int dtm_from_class, double dtm_filter_distance) {
+                                const HeightField* dtm, int dtm_from_class, double dtm_filter_distance, double lambda1) {
     std::vector<std::string> shard_paths;
     std::cout << "Starting out-of-core processing..." << std::endl;
 
     if (!createShards(cloud_name, grid, weighting_method, use_occlusion, apply_flat_top,
                       calc_beam_metrics, beam_diameter, beam_divergence, subvoxel_split, dtm,
-                      dtm_from_class, dtm_filter_distance, shard_paths)) {
+                      dtm_from_class, dtm_filter_distance, shard_paths, lambda1)) {
         std::cerr << "Error: Failed during sharding phase." << std::endl;
         return false;
     }
@@ -1250,7 +1250,7 @@ bool OutOfCoreStrategy::createShards(const std::string& cloud_name, VoxelGrid& g
                                      const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
                                      bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
                                      const HeightField* dtm, int dtm_from_class, double dtm_filter_distance,
-                                     std::vector<std::string>& out_shard_paths) {
+                                     std::vector<std::string>& out_shard_paths, double lambda1) {
     std::cout << "Phase 1: Processing points and writing to temporary shards..." << std::endl;
 
     size_t resolved_threads = num_threads_ == 0 ? std::thread::hardware_concurrency() : num_threads_;
@@ -1279,7 +1279,7 @@ bool OutOfCoreStrategy::createShards(const std::string& cloud_name, VoxelGrid& g
     auto worker_task = [&](int thread_id) {
       VoxelProcessor processor(grid.getBounds(), grid.getVoxelWidth(), weighting_method, use_occlusion,
                                apply_flat_top, peaks_ptr, calc_beam_metrics, beam_diameter,
-                               tan_half_divergence, subvoxel_split, dtm);
+                               tan_half_divergence, subvoxel_split, dtm, lambda1);
       BeamData beam;
 
       while(beam_queue.pop(beam)) {
@@ -1455,6 +1455,12 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
     double beam_diameter = 0.0;
     double beam_divergence = 0.0;
 
+    // Stage 3 effective free path coefficient λ₁ = 0.25·avg_leaf_area / voxel_size³.
+    // Computed once; threaded to every VoxelProcessor. Zero disables the correction (eff(z)=z).
+    const double lambda1 = (params.average_leaf_area > 0.0 && params.voxel_size > 0.0)
+        ? 0.25 * params.average_leaf_area / (params.voxel_size * params.voxel_size * params.voxel_size)
+        : 0.0;
+
     if (params.calc_beam_metrics) {
         if (!params.laser_spec_name.empty()) {
             LaserSpecManager spec_manager;
@@ -1588,7 +1594,7 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
 
     bool processing_success = strategy->execute(params.cloud_name, grid, params.weighting_method, params.use_occlusion, params.apply_flat_top,
                                                  params.calc_beam_metrics, beam_diameter, beam_divergence, params.subvoxel_split, dtm_ptr.get(),
-                                                 params.dtm_from_class, params.dtm_filter_distance);
+                                                 params.dtm_from_class, params.dtm_filter_distance, lambda1);
 
     if (!processing_success) {
       return false; // Strategy failed, exit early.

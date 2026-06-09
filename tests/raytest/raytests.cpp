@@ -552,7 +552,7 @@ namespace raytest
     float total_path_length_unbound = 0.0f;
     for (const auto& kv : m)
     {
-      total_hits     += kv.second.num_hits;
+      total_hits     += static_cast<float>(kv.second.num_hits);
       total_observed += kv.second.num_beams_weighted;
       total_unbound_rays += kv.second.num_unbound_rays;
       total_path_length_unbound += kv.second.path_length_unbound;
@@ -598,8 +598,8 @@ namespace raytest
     int   hit_voxels = 0;
     for (const auto& kv : m)
     {
-      total_hits += kv.second.num_hits;
-      total_path_length_weighted += kv.second.path_length_weighted;
+      total_hits += static_cast<float>(kv.second.num_hits);
+      total_path_length_weighted += kv.second.path_length;
       total_unbound_rays += kv.second.num_unbound_rays;
       total_path_length_unbound += kv.second.path_length_unbound;
       if (kv.second.num_hits == 1) ++hit_voxels;
@@ -680,7 +680,7 @@ namespace raytest
     ray::VoxelGrid::Voxel v{};
     v.num_beams_weighted = 1.0f;
     v.num_hits = 1;
-    v.path_length_weighted =1.0f;
+    v.path_length =1.0f;
     EXPECT_EQ(v.pad_g0_5(), 0.0);
   }
 
@@ -690,7 +690,7 @@ namespace raytest
     ray::VoxelGrid::Voxel v{};
     v.num_beams_weighted = 10.0f;
     v.num_hits = 0;
-    v.path_length_weighted =5.0f;
+    v.path_length =5.0f;
     EXPECT_EQ(v.pad_g0_5(), 0.0);
   }
 
@@ -700,7 +700,7 @@ namespace raytest
     ray::VoxelGrid::Voxel v{};
     v.num_beams_weighted = 4.0f;
     v.num_hits = 2;
-    v.path_length_weighted =3.0f;
+    v.path_length =3.0f;
     EXPECT_NEAR(v.pad_g0_5(), 1.0, 1e-6);
   }
 
@@ -710,7 +710,7 @@ namespace raytest
     ray::VoxelGrid::Voxel v{};
     v.num_beams_weighted = 10.0f;
     v.num_hits = 1;
-    v.path_length_weighted =2.0f;
+    v.path_length =2.0f;
     EXPECT_NEAR(v.pad_g0_5(), 0.9, 1e-6);
   }
 

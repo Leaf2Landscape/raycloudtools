@@ -59,7 +59,7 @@ namespace ray
     VoxelProcessor(const Cuboid& grid_bounds, double voxel_width, const std::string& weighting_method,
                    bool use_occlusion_rays, bool use_flat_top, const std::vector<double>* peaks,
                    bool calc_beam_metrics, double beam_diameter, double tan_half_divergence, int subvoxel_split,
-                   const HeightField* dtm);
+                   const HeightField* dtm, double lambda1 = 0.0);
 
     /// @brief Processes a whole beam (all returns of a single pulse), tracing the
     ///        consecutive sensor->R0->R1->... segments with corrected per-segment
@@ -121,6 +121,7 @@ namespace ray
     int subvoxel_split_;
     int64_t row_stride_;
     const HeightField* dtm_; // Pointer to the DTM for ground clipping
+    double lambda1_ = 0.0;   // Stage 3 effective free path coefficient: λ₁ = 0.25·avg_leaf_area / voxel_size³
 
     // --- Per-ray state ---
     Eigen::Vector3d current_ray_vox_start_;
