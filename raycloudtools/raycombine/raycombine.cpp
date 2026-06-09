@@ -11,6 +11,7 @@
 #include "raylib/rayprogressthread.h"
 #include "raylib/raythreads.h"
 #include "raylib/raycloudwriter.h"
+#include "raylib/raydecimation.h"
 #include "raylib/raylaz.h"
 #include "raylib/raysysinfo.h"
 
@@ -38,8 +39,41 @@ void usage(int exit_code = 1)
   std::cout << "raycombine basecloud min raycloud1 raycloud2 20 rays - 3-way merge, choses the changed geometry (from basecloud) at any differences. " << std::endl;
   std::cout << "                                                       For merge conflicts it uses the specified merge type." << std::endl;
   std::cout << "        --output raycloud_combined.ply               - optionally specify the output file name." << std::endl;
+  std::cout << "        --dedup 0.02                                 - 'all' mode only: deduplicate to one point per 0.02 m voxel cell (metres; first-seen wins)." << std::endl;
+  std::cout << "        --dedup 0.02 --tiebreak \">reflectance,<range\" - 'all' mode only: keep the best point per voxel by field priority ('>' prefers higher, '<' prefers lower)." << std::endl;
   // clang-format on
   exit(exit_code);
+}
+
+// One parsed --tiebreak token: a field name and its preferred sort direction.
+struct TiebreakToken
+{
+  std::string name;
+  bool ascending;  ///< '<' prefers lower (ascending), '>' prefers higher
+};
+
+// Parse a --tiebreak spec like ">reflectance,<range" into ordered tokens. Each comma-separated
+// token must start with '>' or '<'; anything malformed (empty token, missing/invalid prefix,
+// empty name) is a hard error that prints usage and exits.
+std::vector<TiebreakToken> parseTiebreakTokens(const std::string &spec)
+{
+  std::vector<TiebreakToken> tokens;
+  size_t start = 0;
+  while (start <= spec.size())
+  {
+    const size_t comma = spec.find(',', start);
+    const std::string tok = spec.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+    if (tok.size() < 2 || (tok[0] != '>' && tok[0] != '<'))
+    {
+      std::cerr << "Malformed --tiebreak token: '" << tok << "' (expected '>name' or '<name')" << std::endl;
+      usage();
+    }
+    tokens.push_back({ tok.substr(1), tok[0] == '<' });
+    if (comma == std::string::npos)
+      break;
+    start = comma + 1;
+  }
+  return tokens;
 }
 
 // Combines multiple clouds together
@@ -54,16 +88,23 @@ int rayCombine(int argc, char *argv[])
   ray::FileArgument base_cloud(false), cloud_1(false), cloud_2(false), output_file(false);
   ray::OptionalKeyValueArgument output("output", 'o', &output_file);
 
+  // 'all' mode voxel deduplication. --dedup is the voxel width in metres; --tiebreak (requires
+  // --dedup) selects the best point per voxel by a comma-separated field-priority spec.
+  ray::DoubleArgument dedup_width(0.0, 1e10);
+  ray::StringArgument tiebreak_spec;
+  ray::OptionalKeyValueArgument dedup_option("dedup", '\0', &dedup_width);
+  ray::OptionalKeyValueArgument tiebreak_option("tiebreak", '\0', &tiebreak_spec);
+
   // three-way merge option
   bool standard_format = ray::parseCommandLine(argc, argv, { &merge_type, &cloud_files, &num_rays, &rays_text }, { &output });
-  bool concatenate_all = ray::parseCommandLine(argc, argv, { &all_text, &cloud_files }, { &output });
+  bool concatenate_all = ray::parseCommandLine(argc, argv, { &all_text, &cloud_files }, { &output, &dedup_option, &tiebreak_option });
   bool threeway = ray::parseCommandLine(
     argc, argv, { &base_cloud, &merge_type, &cloud_1, &cloud_2, &num_rays, &rays_text }, { &output });
   bool threeway_concatenate =
     ray::parseCommandLine(argc, argv, { &base_cloud, &all_text, &cloud_1, &cloud_2 }, { &output });
   if (!standard_format && !concatenate_all && !threeway && !threeway_concatenate)
   {
-    concatenate_all = ray::parseCommandLine(argc, argv, { &cloud_files }, { &output }); // a bit more ambiguous, so only try if the other formats failed
+    concatenate_all = ray::parseCommandLine(argc, argv, { &cloud_files }, { &output, &dedup_option, &tiebreak_option }); // a bit more ambiguous, so only try if the other formats failed
     if (!concatenate_all)
     {
       usage();
@@ -296,6 +337,44 @@ int rayCombine(int argc, char *argv[])
           if (r.src_off != r.dst_off) { needs_remap[f] = true; break; }
     }
 
+    // Voxel deduplication ('all' mode only). When --dedup is set, points sharing a voxel cell are
+    // collapsed to the first-seen point, streaming across all input files. The set persists across
+    // every chunk and every file below, so it is the cross-file streaming dedup state.
+    if (tiebreak_option.isSet() && !dedup_option.isSet())
+    {
+      std::cerr << "--tiebreak requires --dedup" << std::endl;
+      usage();
+    }
+    std::set<Eigen::Vector3i, ray::Vector3iLess> dedup_vox_set;
+
+    // Resolve --tiebreak tokens against the built-in fields and the union sensor-attr schema.
+    // The resolved spec drives the best-wins post-step (deduplicateVoxel) after the file is written.
+    std::vector<ray::ResolvedTiebreaker> resolved;
+    if (tiebreak_option.isSet())
+    {
+      const std::vector<TiebreakToken> tokens = parseTiebreakTokens(tiebreak_spec.text());
+      for (const auto &tok : tokens)
+      {
+        if (tok.name == "reflectance") { resolved.push_back({ ray::TiebreakKind::Reflectance, tok.ascending, 0, 0, 0 }); continue; }
+        if (tok.name == "range")       { resolved.push_back({ ray::TiebreakKind::Range,       tok.ascending, 0, 0, 0 }); continue; }
+        if (tok.name == "time")        { resolved.push_back({ ray::TiebreakKind::Time,        tok.ascending, 0, 0, 0 }); continue; }
+        bool found = false;
+        for (const auto &ua : union_attrs)
+          if (ua.name == tok.name)
+          {
+            resolved.push_back({ ray::TiebreakKind::ExtraByte, tok.ascending,
+                                 ua.offset, static_cast<uint8_t>(ua.size), ua.record[2] });
+            found = true;
+            break;
+          }
+        if (!found)
+        {
+          std::cerr << "Unknown tiebreak field: " << tok.name << std::endl;
+          usage();
+        }
+      }
+    }
+
     ray::CloudWriter writer;
     if (!writer.begin(combined_file, union_vlr, /*with_beam_id=*/false,
                       /*with_tree_id=*/union_has_labels, /*with_stem_id=*/union_has_labels,
@@ -373,6 +452,53 @@ int rayCombine(int argc, char *argv[])
         }
         label_cursor += n_pts;
 
+        // Streaming first-wins voxel dedup: keep only points whose voxel cell has not yet been
+        // seen across all chunks/files. Compact every parallel array (geometry, passthrough,
+        // labels) by the kept indices so they stay aligned. Skipped when --tiebreak is active:
+        // the best-wins post-step needs every candidate point, so it does the voxel collapse itself.
+        if (dedup_option.isSet() && !tiebreak_option.isSet())
+        {
+          const double w = dedup_width.value();
+          const bool have_pass   = !chunk_pass.empty();
+          const bool have_labels = !chunk_tree_ids.empty();
+          size_t keep = 0;
+          for (size_t j = 0; j < n_pts; ++j)
+          {
+            const Eigen::Vector3i key(static_cast<int>(std::floor(ends[j][0] / w)),
+                                      static_cast<int>(std::floor(ends[j][1] / w)),
+                                      static_cast<int>(std::floor(ends[j][2] / w)));
+            if (!dedup_vox_set.insert(key).second)
+              continue;
+            if (keep != j)
+            {
+              starts[keep]  = starts[j];
+              ends[keep]    = ends[j];
+              times[keep]   = times[j];
+              colours[keep] = colours[j];
+              if (have_pass)
+                std::memcpy(chunk_pass.data() + keep * writer_pass_stride,
+                            chunk_pass.data() + j * writer_pass_stride, writer_pass_stride);
+              if (have_labels)
+              {
+                chunk_tree_ids[keep] = chunk_tree_ids[j];
+                chunk_stem_ids[keep] = chunk_stem_ids[j];
+              }
+            }
+            ++keep;
+          }
+          starts.resize(keep);
+          ends.resize(keep);
+          times.resize(keep);
+          colours.resize(keep);
+          if (have_pass)
+            chunk_pass.resize(keep * writer_pass_stride);
+          if (have_labels)
+          {
+            chunk_tree_ids.resize(keep);
+            chunk_stem_ids.resize(keep);
+          }
+        }
+
         writer.writeChunk(starts, ends, times, colours, chunk_pass, {}, chunk_tree_ids, chunk_stem_ids);
       };
 
@@ -395,6 +521,15 @@ int rayCombine(int argc, char *argv[])
       }
     }
     writer.end();
+
+    // Best-wins post-step: re-resolve each voxel to its highest-priority point per the --tiebreak
+    // spec, rewriting the combined file in place. The streaming first-wins pass above already
+    // collapsed each voxel to one point; this replaces that representative with the spec winner.
+    if (dedup_option.isSet() && !resolved.empty())
+    {
+      if (!ray::deduplicateVoxel(combined_file, dedup_width.value(), resolved))
+        usage();
+    }
     return 0;
   }
 
