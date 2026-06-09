@@ -348,6 +348,7 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
             }
 
             double length_in_voxel = (end_length - in_length) * voxel_width_;
+            double full_chord = (out_length - in_length) * voxel_width_;
 
             if (type == RayType::OCCLUDED && dtm_ && dtm_->isValid()) {
                 Eigen::Vector3d voxel_center_world = bounds_.min_bound_ + (p.cast<double>() + Eigen::Vector3d(0.5, 0.5, 0.5)) * voxel_width_;
@@ -369,8 +370,8 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                     if (!weighted_only) {
                         // Mechanism 1: unweighted counts from the single full-ray walk.
                         atomic_iadd(v.num_beams, 1);
-                        atomic_fadd(v.path_length_raw, static_cast<float>(length_in_voxel));
-                        atomic_fadd(v.path_length_sq_raw, static_cast<float>(length_in_voxel * length_in_voxel));
+                        atomic_fadd(v.path_length_raw, static_cast<float>(full_chord));
+                        atomic_fadd(v.path_length_sq_raw, static_cast<float>(full_chord * full_chord));
                         if (subvoxel_split_ > 0) {
                             Eigen::Vector3d ls = (current_ray_vox_start_ + current_ray_vox_dir_ * in_length  - p.cast<double>()) * subvoxel_split_;
                             Eigen::Vector3d le = (current_ray_vox_start_ + current_ray_vox_dir_ * end_length - p.cast<double>()) * subvoxel_split_;
@@ -378,10 +379,9 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                             walkSubGrid(ls, le, subvoxel_split_, bits);
                             if (bits) atomic_or_u64(v.subvoxel_bitmap, bits);
                         }
-                        if (end_length >= out_length) {
+                        if (end_length >= out_length - 1e-6) {
                             if (!current_ray_unbound_) atomic_iadd(v.num_miss_rays, 1);
-                            double full_delta = (out_length - in_length) * voxel_width_;
-                            atomic_fadd(v.sum_miss_delta, static_cast<float>(full_delta));
+                            atomic_fadd(v.sum_miss_delta, static_cast<float>(full_chord));
                         }
                     } else {
                         // Mechanism 2: weighted metrics from the segmented walks.
@@ -399,7 +399,7 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                             atomic_fadd(v.bs_entering, static_cast<float>(kPi * beam_radius * beam_radius * weight));
                             atomic_fadd(v.bs_free_path, static_cast<float>(kPi * beam_radius * beam_radius * weight * length_in_voxel));
                             atomic_fadd(v.bs_effective_free_path, static_cast<float>(kPi * beam_radius * beam_radius * weight * effFreePath(length_in_voxel, lambda1_)));
-                            if (end_length >= out_length) {
+                            if (end_length >= out_length - 1e-6) {
                                 atomic_fadd(v.bs_potential, static_cast<float>(kPi * beam_radius * beam_radius * weight));
                             }
                         }
@@ -423,17 +423,16 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                     if (!weighted_only) {
                         // Mechanism 1: unweighted counts from the single full-ray walk.
                         v.num_beams += 1;
-                        v.path_length_raw += static_cast<float>(length_in_voxel);
-                        v.path_length_sq_raw += static_cast<float>(length_in_voxel * length_in_voxel);
+                        v.path_length_raw += static_cast<float>(full_chord);
+                        v.path_length_sq_raw += static_cast<float>(full_chord * full_chord);
                         if (subvoxel_split_ > 0) {
                             Eigen::Vector3d ls = (current_ray_vox_start_ + current_ray_vox_dir_ * in_length  - p.cast<double>()) * subvoxel_split_;
                             Eigen::Vector3d le = (current_ray_vox_start_ + current_ray_vox_dir_ * end_length - p.cast<double>()) * subvoxel_split_;
                             walkSubGrid(ls, le, subvoxel_split_, v.subvoxel_bitmap);
                         }
-                        if (end_length >= out_length) {
+                        if (end_length >= out_length - 1e-6) {
                             if (!current_ray_unbound_) v.num_miss_rays += 1;
-                            double full_delta = (out_length - in_length) * voxel_width_;
-                            v.sum_miss_delta += static_cast<float>(full_delta);
+                            v.sum_miss_delta += static_cast<float>(full_chord);
                         }
                     } else {
                         // Mechanism 2: weighted metrics from the segmented walks.
@@ -451,7 +450,7 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                             v.bs_entering += static_cast<float>(kPi * beam_radius * beam_radius * weight);
                             v.bs_free_path += static_cast<float>(kPi * beam_radius * beam_radius * weight * length_in_voxel);
                             v.bs_effective_free_path += static_cast<float>(kPi * beam_radius * beam_radius * weight * effFreePath(length_in_voxel, lambda1_));
-                            if (end_length >= out_length) {
+                            if (end_length >= out_length - 1e-6) {
                                 v.bs_potential += static_cast<float>(kPi * beam_radius * beam_radius * weight);
                             }
                         }
