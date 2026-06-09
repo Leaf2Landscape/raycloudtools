@@ -132,9 +132,10 @@ namespace ray
 
   public:
     /// ram_budget_bytes: if the flat array would exceed this, fall back to sparse map.
+    /// allocate_peaks: only allocate the (x,y) peaks store when flat-top compensation is active.
     VoxelGrid(const Cuboid &grid_bounds, double vox_width,
               size_t ram_budget_bytes = 2ULL * 1024 * 1024 * 1024,
-              size_t sparse_reservation = 0);
+              size_t sparse_reservation = 0, bool allocate_peaks = false);
 
     /// Merge a processor map into the grid (thread-safe via internal mutex).
     void merge(const VoxelProcessor& processor);
@@ -165,6 +166,11 @@ namespace ray
     const Eigen::Matrix<int64_t, 3, 1>& getDimensions() const { return voxel_dims_; }
     double getVoxelWidth() const { return voxel_width_; }
     const std::vector<double>& getPeaks() const { return peaks_; }
+    // True when peaks are held in the flat (x,y) vector; false when stored sparsely or unallocated.
+    bool hasFlatPeaks() const { return !use_sparse_peaks_; }
+    // Peak accessors that dispatch to the flat vector or the sparse map transparently.
+    void setPeak(int64_t xy_idx, double value);
+    double getPeak(int64_t xy_idx) const;
     int64_t getIndex(int64_t i, int64_t j, int64_t k) const;
 
     // Sparse map accessor — valid only when !isFlat().
@@ -180,6 +186,8 @@ namespace ray
     double voxel_width_;
     Eigen::Matrix<int64_t, 3, 1> voxel_dims_;
     std::vector<double> peaks_;
+    bool use_sparse_peaks_ = false;
+    std::unordered_map<int64_t, double> sparse_peaks_;
     std::mutex merge_mutex_;
   };
 

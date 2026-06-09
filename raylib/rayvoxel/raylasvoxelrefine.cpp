@@ -51,9 +51,8 @@ void calculatePeaks(VoxelGrid& grid, const std::string& file_name)
         const Eigen::Vector3d vox_end = (end_pos - grid.getBounds().min_bound_) / grid.getVoxelWidth();
         int64_t ix = static_cast<int64_t>(vox_end.x()), iy = static_cast<int64_t>(vox_end.y());
         if (ix >= 0 && ix < dims[0] && iy >= 0 && iy < dims[1]) {
-          // This internal access pattern is safe because the friend declaration grants it.
           int64_t peak_id = ix + iy * dims[0];
-          grid.peaks_[peak_id] = std::max(grid.peaks_[peak_id], vox_end.z());
+          grid.setPeak(peak_id, std::max(grid.getPeak(peak_id), vox_end.z()));
         }
       }
     }, num_bounded, 255.0, nullptr);

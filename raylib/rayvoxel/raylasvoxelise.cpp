@@ -61,7 +61,7 @@ static const uint16_t kPassthroughStdBytes = 10;
 // ==================================================================================
 
 VoxelGrid::VoxelGrid(const Cuboid &grid_bounds, double vox_width,
-                     size_t ram_budget_bytes, size_t sparse_reservation)
+                     size_t ram_budget_bytes, size_t sparse_reservation, bool allocate_peaks)
     : bounds_(grid_bounds), voxel_width_(vox_width)
 {
   Eigen::Vector3d extent = bounds_.max_bound_ - bounds_.min_bound_;
@@ -73,7 +73,18 @@ VoxelGrid::VoxelGrid(const Cuboid &grid_bounds, double vox_width,
     throw std::runtime_error("VoxelGrid Error: Resulting dimensions on one or more axes are unreasonably large.");
   }
 
-  peaks_.resize(voxel_dims_[0] * voxel_dims_[1], std::numeric_limits<double>::lowest());
+  // Only allocate the (x,y) peaks store when flat-top compensation is requested. When the flat
+  // array would exceed an eighth of the RAM budget, hold peaks sparsely instead of as a flat vector.
+  if (allocate_peaks) {
+    const size_t peaks_bytes = static_cast<size_t>(voxel_dims_[0] * voxel_dims_[1]) * sizeof(double);
+    if (peaks_bytes <= ram_budget_bytes / 8) {
+      peaks_.resize(static_cast<size_t>(voxel_dims_[0] * voxel_dims_[1]),
+                    std::numeric_limits<double>::lowest());
+      use_sparse_peaks_ = false;
+    } else {
+      use_sparse_peaks_ = true;
+    }
+  }
 
   const int64_t total = voxel_dims_[0] * voxel_dims_[1] * voxel_dims_[2];
   const size_t required = static_cast<size_t>(total) * sizeof(Voxel);
@@ -91,6 +102,24 @@ VoxelGrid::VoxelGrid(const Cuboid &grid_bounds, double vox_width,
               << " sparse map (flat would need " << required / (1024 * 1024) << " MB > budget "
               << ram_budget_bytes / (1024 * 1024) << " MB)" << std::endl;
   }
+}
+
+void VoxelGrid::setPeak(int64_t xy_idx, double value)
+{
+  if (!use_sparse_peaks_) {
+    peaks_[xy_idx] = value;
+  } else {
+    sparse_peaks_[xy_idx] = value;
+  }
+}
+
+double VoxelGrid::getPeak(int64_t xy_idx) const
+{
+  if (!use_sparse_peaks_) {
+    return peaks_[xy_idx];
+  }
+  auto it = sparse_peaks_.find(xy_idx);
+  return it != sparse_peaks_.end() ? it->second : std::numeric_limits<double>::lowest();
 }
 
 void VoxelGrid::merge(const VoxelProcessor& processor)
@@ -398,6 +427,17 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
                                   const VoxelizationParameters& params, const HeightField* dtm,
                                   ClassTable& class_table_out, IadTable& iad_table_out)
 {
+  // Compact per-tile point record. Replaces the parallel global positions/leaf_vals/wood_vals/
+  // flat_indices/beam_angles arrays: routing points into per-tile buckets during the readLas pass
+  // bounds peak memory at O(max single-tile point count) rather than O(N_total).
+  struct TilePoint {
+    Eigen::Vector3d pos;
+    int leaf_val;
+    int wood_val;
+    int64_t flat_idx;
+    double beam_angle;  // zenith angle [0, pi/2] of the point's inbound ray
+  };
+
   ClassTable class_table;
   IadTable iad_table;
 
@@ -425,19 +465,33 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
   const ClassFieldSource leaf_src = resolveClassField(leaf_field, extra_bytes_vlr);
   const ClassFieldSource wood_src = resolveClassField(wood_field, extra_bytes_vlr);
 
-  // Collect endpoints, classifications and flat voxel indices (same filtering as buildClassTable).
-  // leaf_vals/wood_vals hold the class value read from each point's resolved field (these may
-  // come from different fields, hence two separate vectors rather than one shared `classes`).
-  std::vector<Eigen::Vector3d> positions;
-  std::vector<int> leaf_vals;
-  std::vector<int> wood_vals;
-  std::vector<int64_t> flat_indices;
-  std::vector<double> beam_angles;  // zenith angle [0, pi/2] of each point's inbound ray
+  const bool any_bailey = std::any_of(params.attenuation_methods.begin(), params.attenuation_methods.end(),
+                                       [](const std::string& m){ return m == "bailey"; });
+
+  // Tile geometry is fixed by the grid bounds, so it can be computed before the readLas pass —
+  // this lets each point be routed straight into its core-tile bucket as it is read.
+  // buf_m must be >= tile so 3x3 neighbour scan covers full buffer.
+  const double buf_m = 1.0;
+  const double tile_sz = std::max(buf_m, params.iad_tile_size);
+  const double minx = bounds.min_bound_.x(), miny = bounds.min_bound_.y();
+  const double maxx = bounds.max_bound_.x(), maxy = bounds.max_bound_.y();
+  const int n_tx = std::max(1, (int)std::ceil((maxx - minx) / tile_sz));
+  const int n_ty = std::max(1, (int)std::ceil((maxy - miny) / tile_sz));
+  const int n_tiles = n_tx * n_ty;
+
+  // Route each bounded hit point into its core-tile bucket. For n_tiles == 1 this is a single
+  // bucket processed by the fast path; otherwise tiles are processed sequentially/in parallel,
+  // each discarding its points before the next is built.
+  std::vector<std::vector<TilePoint>> tile_points(n_tiles);
+  // Owner tile per voxel for the bailey path: the tile of the first point routed into each
+  // flat_idx. Populated inline during routing to avoid a second pass over the points.
+  std::unordered_map<int64_t, int> flat_owner;
 
   size_t num_bounded = 0;
   std::vector<uint8_t> passthrough;
   uint16_t pt_extra = 0;
   size_t global_chunk_start = 0;
+  size_t total_points = 0;
 
   ray::readLas(cloud_name,
     [&](std::vector<Eigen::Vector3d>& starts, std::vector<Eigen::Vector3d>& ends,
@@ -470,16 +524,21 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
         const Eigen::Vector3d dir = ends[i] - starts[i];
         const double len2 = dir.squaredNorm();
         const double bz = (len2 > 1e-12) ? std::acos(std::min(1.0, std::abs(dir.z() / std::sqrt(len2)))) : 0.0;
-        positions.push_back(ends[i]);
-        leaf_vals.push_back(lv);  // preserve sign: -1 means "neither", must not be clamped to 0
-        wood_vals.push_back(wv);
-        flat_indices.push_back(flat_idx);
-        beam_angles.push_back(bz);
+
+        // Route into the point's core tile.
+        const int tx = std::clamp((int)((ends[i].x() - minx) / tile_sz), 0, n_tx - 1);
+        const int ty = std::clamp((int)((ends[i].y() - miny) / tile_sz), 0, n_ty - 1);
+        const int t  = ty * n_tx + tx;
+        tile_points[t].push_back(TilePoint{ ends[i], lv, wv, flat_idx, bz });
+        ++total_points;
+
+        // Owner tile = tile of the first point that maps to this flat_idx (lowest global index).
+        if (any_bailey && flat_owner.find(flat_idx) == flat_owner.end()) flat_owner[flat_idx] = t;
       }
       global_chunk_start += ends.size();
     }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, &pt_extra);
 
-  if (positions.size() < 2) {
+  if (total_points < 2) {
     class_table_out = std::move(class_table);
     iad_table_out = std::move(iad_table);
     return;
@@ -498,57 +557,53 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
     while (std::getline(ss, item, ',')) { try { wood_set.insert(std::stoi(item)); } catch (...) {} }
   }
 
-  const bool any_bailey = std::any_of(params.attenuation_methods.begin(), params.attenuation_methods.end(),
-                                       [](const std::string& m){ return m == "bailey"; });
-
-  size_t resolved_threads = std::thread::hardware_concurrency();
+  size_t resolved_threads = (params.num_threads == 0)
+      ? std::thread::hardware_concurrency()
+      : static_cast<size_t>(params.num_threads);
   if (resolved_threads == 0) resolved_threads = 1;
 
-  // buf_m must be >= tile so 3x3 neighbour scan covers full buffer.
-  const double buf_m = 1.0;
-  const double tile_sz = std::max(buf_m, params.iad_tile_size);
-  const double minx = bounds.min_bound_.x(), miny = bounds.min_bound_.y();
-  const double maxx = bounds.max_bound_.x(), maxy = bounds.max_bound_.y();
-  const int n_tx = std::max(1, (int)std::ceil((maxx - minx) / tile_sz));
-  const int n_ty = std::max(1, (int)std::ceil((maxy - miny) / tile_sz));
-  const int n_tiles = n_tx * n_ty;
   std::unordered_map<int64_t, std::vector<double>> all_hist, leaf_hist, wood_hist, beam_hist;
   std::unordered_map<int64_t, float> leaf_hit_count, wood_hit_count;
   std::unordered_map<int64_t, TriangleHistograms> triangle_histograms;
 
   if (n_tiles == 1) {
-    // Small cloud: global single KD-tree, no tiling overhead.
-    const int K = std::min(params.knn_normal, (int)positions.size() - 1);
-    Eigen::MatrixXd points_p(3, positions.size());
-    for (size_t i = 0; i < positions.size(); ++i) points_p.col(i) = positions[i];
+    // Small cloud: single bucket, global KD-tree, no tiling overhead.
+    const std::vector<TilePoint>& tp = tile_points[0];
+    const int K = std::min(params.knn_normal, (int)tp.size() - 1);
+    Eigen::MatrixXd points_p(3, tp.size());
+    for (size_t i = 0; i < tp.size(); ++i) points_p.col(i) = tp[i].pos;
     std::unique_ptr<Nabo::NNSearchD> nns(Nabo::NNSearchD::createKDTreeLinearHeap(points_p, 3));
-    Eigen::MatrixXi indices(K, (int)positions.size());
-    Eigen::MatrixXd dists2(K, (int)positions.size());
+    Eigen::MatrixXi indices(K, (int)tp.size());
+    Eigen::MatrixXd dists2(K, (int)tp.size());
     nns->knn(points_p, indices, dists2, K, kNearestNeighbourEpsilon, 0);
     nns.reset(nullptr);
 
     if (any_bailey) {
-      std::vector<int> class_labels_int(positions.size(), 0);
-      for (size_t i = 0; i < positions.size(); ++i) {
-        if (leaf_set.count(leaf_vals[i])) class_labels_int[i] = 1;
-        else if (wood_set.count(wood_vals[i])) class_labels_int[i] = -1;
+      std::vector<Eigen::Vector3d> positions(tp.size());
+      std::vector<int64_t> flat_indices(tp.size());
+      std::vector<int> class_labels_int(tp.size(), 0);
+      for (size_t i = 0; i < tp.size(); ++i) {
+        positions[i]    = tp[i].pos;
+        flat_indices[i] = tp[i].flat_idx;
+        if (leaf_set.count(tp[i].leaf_val)) class_labels_int[i] = 1;
+        else if (wood_set.count(tp[i].wood_val)) class_labels_int[i] = -1;
       }
       triangle_histograms = buildTriangleInclinationHistograms(
           positions, indices, flat_indices, class_labels_int, params.n_iad_bins, params.triangle_lmax);
     }
 
-    for (size_t i = 0; i < positions.size(); ++i) {
+    for (size_t i = 0; i < tp.size(); ++i) {
       Eigen::Vector3d centroid(0, 0, 0);
       int num_neighbours = 0;
       for (int j = 0; j < K && indices(j, i) != Nabo::NNSearchD::InvalidIndex; ++j) {
-        centroid += positions[indices(j, i)];
+        centroid += tp[indices(j, i)].pos;
         ++num_neighbours;
       }
       if (num_neighbours < 3) continue;
       centroid /= static_cast<double>(num_neighbours);
       Eigen::Matrix3d scatter = Eigen::Matrix3d::Zero();
       for (int j = 0; j < K && indices(j, i) != Nabo::NNSearchD::InvalidIndex; ++j) {
-        Eigen::Vector3d offset = positions[indices(j, i)] - centroid;
+        Eigen::Vector3d offset = tp[indices(j, i)].pos - centroid;
         scatter += offset * offset.transpose();
       }
       scatter /= static_cast<double>(num_neighbours);
@@ -560,26 +615,26 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
       int bin = static_cast<int>(theta / (kPi / 2.0) * params.n_iad_bins);
       bin = std::clamp(bin, 0, params.n_iad_bins - 1);
 
-      const int64_t flat_idx = flat_indices[i];
+      const int64_t flat_idx = tp[i].flat_idx;
       auto& ah = all_hist[flat_idx];
       if (ah.empty()) ah.assign(params.n_iad_bins, 0.0);
       ah[bin] += 1.0;
 
       {
-        int bbin = static_cast<int>(beam_angles[i] / (kPi / 2.0) * params.n_iad_bins);
+        int bbin = static_cast<int>(tp[i].beam_angle / (kPi / 2.0) * params.n_iad_bins);
         bbin = std::clamp(bbin, 0, params.n_iad_bins - 1);
         auto& bh = beam_hist[flat_idx];
         if (bh.empty()) bh.assign(params.n_iad_bins, 0.0);
         bh[bbin] += 1.0;
       }
 
-      if (leaf_set.count(leaf_vals[i])) {
+      if (leaf_set.count(tp[i].leaf_val)) {
         leaf_hit_count[flat_idx] += 1.0f;
         auto& lh = leaf_hist[flat_idx];
         if (lh.empty()) lh.assign(params.n_iad_bins, 0.0);
         lh[bin] += 1.0;
       }
-      if (wood_set.count(wood_vals[i])) {
+      if (wood_set.count(tp[i].wood_val)) {
         wood_hit_count[flat_idx] += 1.0f;
         auto& wh = wood_hist[flat_idx];
         if (wh.empty()) wh.assign(params.n_iad_bins, 0.0);
@@ -587,28 +642,8 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
       }
     }
   } else {
-  // Large cloud: tiled parallel KNN.
-  // Bucket each point by its core tile.
-  std::vector<std::vector<size_t>> core_points(n_tiles);
-  std::vector<int> pt_tile(positions.size());
-  for (size_t i = 0; i < positions.size(); ++i) {
-    int tx = std::clamp((int)((positions[i].x() - minx) / tile_sz), 0, n_tx - 1);
-    int ty = std::clamp((int)((positions[i].y() - miny) / tile_sz), 0, n_ty - 1);
-    int t  = ty * n_tx + tx;
-    pt_tile[i] = t;
-    core_points[t].push_back(i);
-  }
-
-  // For bailey: each voxel's triangle histogram is owned by a single tile to avoid
-  // double-counting (TriangleHistograms holds area-weighted means, not summable counts).
-  // Owner tile = tile of the lowest global point index that maps to that flat_idx.
-  std::unordered_map<int64_t, int> flat_owner;
-  if (any_bailey) {
-    for (size_t i = 0; i < positions.size(); ++i) {
-      auto it = flat_owner.find(flat_indices[i]);
-      if (it == flat_owner.end()) flat_owner[flat_indices[i]] = pt_tile[i];
-    }
-  }
+  // Large cloud: tiled parallel KNN. Points are already bucketed by core tile in tile_points
+  // (filled during the readLas pass), and flat_owner was populated inline during routing.
 
   std::vector<TileResult> results(resolved_threads);
   std::atomic<int> next_tile(0);
@@ -617,7 +652,7 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
     TileResult& tr = results[w];
     int t;
     while ((t = next_tile.fetch_add(1)) < n_tiles) {
-      if (core_points[t].empty()) continue;
+      if (tile_points[t].empty()) continue;
 
       const int tx = t % n_tx;
       const int ty = t / n_tx;
@@ -626,17 +661,23 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
       const double cy0 = miny + ty * tile_sz;
       const double cy1 = std::min(maxy, cy0 + tile_sz);
 
-      // Collect buffered point indices from 3x3 tile neighbourhood.
-      std::vector<size_t> buf;
+      // Collect buffered points from the 3x3 tile neighbourhood of the already-bucketed data.
+      // buf_core marks the entries belonging to this tile's own bucket (core points); buffer-only
+      // points from adjacent tiles correct the KNN at tile edges but are not accumulated.
+      std::vector<const TilePoint*> buf;
+      std::vector<char> buf_core;
       for (int dy = -1; dy <= 1; ++dy)
         for (int dx = -1; dx <= 1; ++dx) {
           int nx2 = tx + dx, ny2 = ty + dy;
           if (nx2 < 0 || nx2 >= n_tx || ny2 < 0 || ny2 >= n_ty) continue;
-          for (size_t gi : core_points[ny2 * n_tx + nx2]) {
-            const Eigen::Vector3d& p = positions[gi];
+          const int nt = ny2 * n_tx + nx2;
+          for (const TilePoint& q : tile_points[nt]) {
+            const Eigen::Vector3d& p = q.pos;
             if (p.x() >= cx0 - buf_m && p.x() <= cx1 + buf_m &&
-                p.y() >= cy0 - buf_m && p.y() <= cy1 + buf_m)
-              buf.push_back(gi);
+                p.y() >= cy0 - buf_m && p.y() <= cy1 + buf_m) {
+              buf.push_back(&q);
+              buf_core.push_back(nt == t ? 1 : 0);
+            }
           }
         }
 
@@ -647,7 +688,7 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
 
       // Build tile-local KD-tree over buffered points.
       Eigen::MatrixXd pts(3, Nb);
-      for (size_t c = 0; c < Nb; ++c) pts.col(c) = positions[buf[c]];
+      for (size_t c = 0; c < Nb; ++c) pts.col(c) = buf[c]->pos;
       std::unique_ptr<Nabo::NNSearchD> nns(Nabo::NNSearchD::createKDTreeLinearHeap(pts, 3));
       Eigen::MatrixXi idx(K, Nb);
       Eigen::MatrixXd d2(K, Nb);
@@ -656,19 +697,19 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
 
       // PCA normal estimation — accumulate only for core points.
       for (size_t c = 0; c < Nb; ++c) {
-        if (pt_tile[buf[c]] != t) continue;  // skip buffer-only points
+        if (!buf_core[c]) continue;  // skip buffer-only points
 
         Eigen::Vector3d centroid(0, 0, 0);
         int num_neighbours = 0;
         for (int j = 0; j < K && idx(j, c) != Nabo::NNSearchD::InvalidIndex; ++j) {
-          centroid += positions[buf[idx(j, c)]];
+          centroid += buf[idx(j, c)]->pos;
           ++num_neighbours;
         }
         if (num_neighbours < 3) continue;
         centroid /= static_cast<double>(num_neighbours);
         Eigen::Matrix3d scatter = Eigen::Matrix3d::Zero();
         for (int j = 0; j < K && idx(j, c) != Nabo::NNSearchD::InvalidIndex; ++j) {
-          Eigen::Vector3d offset = positions[buf[idx(j, c)]] - centroid;
+          Eigen::Vector3d offset = buf[idx(j, c)]->pos - centroid;
           scatter += offset * offset.transpose();
         }
         scatter /= static_cast<double>(num_neighbours);
@@ -680,26 +721,26 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
         int bin = static_cast<int>(theta / (kPi / 2.0) * params.n_iad_bins);
         bin = std::clamp(bin, 0, params.n_iad_bins - 1);
 
-        const int64_t flat_idx = flat_indices[buf[c]];
+        const int64_t flat_idx = buf[c]->flat_idx;
         auto& ah = tr.all_hist[flat_idx];
         if (ah.empty()) ah.assign(params.n_iad_bins, 0.0);
         ah[bin] += 1.0;
 
         {
-          int bbin = static_cast<int>(beam_angles[buf[c]] / (kPi / 2.0) * params.n_iad_bins);
+          int bbin = static_cast<int>(buf[c]->beam_angle / (kPi / 2.0) * params.n_iad_bins);
           bbin = std::clamp(bbin, 0, params.n_iad_bins - 1);
           auto& bh = tr.beam_hist[flat_idx];
           if (bh.empty()) bh.assign(params.n_iad_bins, 0.0);
           bh[bbin] += 1.0;
         }
 
-        if (leaf_set.count(leaf_vals[buf[c]])) {
+        if (leaf_set.count(buf[c]->leaf_val)) {
           tr.leaf_hit_count[flat_idx] += 1.0f;
           auto& lh = tr.leaf_hist[flat_idx];
           if (lh.empty()) lh.assign(params.n_iad_bins, 0.0);
           lh[bin] += 1.0;
         }
-        if (wood_set.count(wood_vals[buf[c]])) {
+        if (wood_set.count(buf[c]->wood_val)) {
           tr.wood_hit_count[flat_idx] += 1.0f;
           auto& wh = tr.wood_hist[flat_idx];
           if (wh.empty()) wh.assign(params.n_iad_bins, 0.0);
@@ -714,10 +755,10 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
         std::vector<int64_t> local_flat(Nb);
         std::vector<int> labels(Nb, 0);
         for (size_t c = 0; c < Nb; ++c) {
-          local_pos[c]  = positions[buf[c]];
-          local_flat[c] = flat_indices[buf[c]];
-          if (leaf_set.count(leaf_vals[buf[c]])) labels[c] = 1;
-          else if (wood_set.count(wood_vals[buf[c]])) labels[c] = -1;
+          local_pos[c]  = buf[c]->pos;
+          local_flat[c] = buf[c]->flat_idx;
+          if (leaf_set.count(buf[c]->leaf_val)) labels[c] = 1;
+          else if (wood_set.count(buf[c]->wood_val)) labels[c] = -1;
         }
         auto th = buildTriangleInclinationHistograms(local_pos, idx, local_flat, labels,
                                                      params.n_iad_bins, params.triangle_lmax);
@@ -909,7 +950,8 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
     // --- OPTION 2: Parallel Producer-Consumer Implementation ---
 
     // Scale queue depth to available RAM: use up to 1 GB, minimum 8 batches/thread.
-    const size_t avail_ram    = ray::queryAvailableMemoryBytes();
+    // Apply a 75% margin to the queried figure so the queue, worker maps and grid share one budget.
+    const size_t avail_ram    = ray::queryAvailableMemoryBytes() * 3 / 4;
     const size_t queue_budget = std::min(avail_ram / 20, size_t(1) * 1024 * 1024 * 1024);
     const size_t queue_depth  = std::max(queue_budget / sizeof(BeamBatch),
                                          resolved_threads * 8);
@@ -937,6 +979,14 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
 
     std::vector<VoxelProcessor::Map> worker_maps(use_flat ? 0 : resolved_threads);
 
+    // Sparse-path memory bound: cap each worker's map at avail_ram / (threads * 4) bytes, then
+    // progressively merge into the grid and clear once that many unique voxels accumulate. This
+    // keeps the in-flight per-thread maps small instead of holding N_threads × full_map at once.
+    const size_t voxel_pair_size_approx =
+        sizeof(VoxelCoord) + sizeof(VoxelGrid::Voxel) + sizeof(void*) * 2 + sizeof(std::pair<U8, float>) * 2;
+    const size_t budget_per_worker =
+        std::max<size_t>(1, (avail_ram / (resolved_threads * 4)) / voxel_pair_size_approx);
+
     auto worker_task = [&](size_t thread_idx) {
       VoxelProcessor processor(grid.getBounds(), grid.getVoxelWidth(), weighting_method, use_occlusion,
                                apply_flat_top, peaks_ptr, calc_beam_metrics, beam_diameter,
@@ -945,8 +995,13 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
         processor.setFlatTarget(flat_ptr, flat_dimX, flat_dimXY);
       BeamBatch batch;
       while (beam_queue.pop(batch)) {
-        for (size_t b = 0; b < batch.count; ++b)
+        for (size_t b = 0; b < batch.count; ++b) {
           processor.processBeam(batch.beams[b]);
+          if (!use_flat && processor.size() >= budget_per_worker) {
+            grid.merge(processor);  // thread-safe under the grid's merge_mutex_
+            processor.clear();
+          }
+        }
       }
       if (!use_flat)
         worker_maps[thread_idx] = processor.takeMap();
@@ -1574,7 +1629,8 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
     try {
         const size_t ram_budget_bytes = static_cast<size_t>(params.ram_budget_mb) * 1024ULL * 1024;
         grid_ptr = std::make_unique<VoxelGrid>(processing_bounds, params.voxel_size,
-                                               ram_budget_bytes, final_reserve_size);
+                                               ram_budget_bytes, final_reserve_size,
+                                               params.apply_flat_top);
     } catch (const std::exception& e) {
         std::cerr << "Error during VoxelGrid initialization: " << e.what()
                   << " Not enough memory. Consider using --out_of_core or a larger --voxel_size." << std::endl;
