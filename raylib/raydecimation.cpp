@@ -414,9 +414,16 @@ namespace
 // Decode one extra-byte sensor value from a passthrough slice into a double, using the LAS
 // extra-byte type code (same table as raycombine.cpp's parseSensorAttrs). @c ptr points at the
 // start of this point's passthrough record; the value lives at the 10-byte fixed prefix + offset.
+// Returns NaN when all bytes at the field position are the 0xFF missing-field sentinel written by
+// the combiner for inputs that lack this attribute. NaN propagates into beats() as a universal loser.
 double decodeExtraByte(const uint8_t *ptr, const ResolvedTiebreaker &tb)
 {
   const uint8_t *p = ptr + 10 + tb.byte_offset;
+  bool all_ff = true;
+  for (uint8_t b = 0; b < tb.byte_size; ++b)
+    if (p[b] != 0xFF) { all_ff = false; break; }
+  if (all_ff)
+    return std::numeric_limits<double>::quiet_NaN();
   switch (tb.dtype)
   {
   case 1: { uint8_t v;  std::memcpy(&v, p, sizeof(v)); return static_cast<double>(v); }
@@ -433,12 +440,14 @@ double decodeExtraByte(const uint8_t *ptr, const ResolvedTiebreaker &tb)
   }
 }
 
-// Resolve the field values for one point in spec order. @c chunk_pass may be empty (PLY, or no
-// sensor extras), in which case ExtraByte criteria resolve to 0.
+// Resolve the field values for one point in spec order. When @c pass_ptr is null (no passthrough:
+// PLY input) all criteria return NaN. NaN is also returned by decodeExtraByte when the extra-byte
+// bytes are the 0xFF missing-field sentinel. beats() treats any NaN value as a universal loser.
 void resolveValues(const std::vector<ResolvedTiebreaker> &spec, const Eigen::Vector3d &start,
                    const Eigen::Vector3d &end, double time, const RGBA &colour,
                    const uint8_t *pass_ptr, std::vector<double> &out)
 {
+  static const double kMissing = std::numeric_limits<double>::quiet_NaN();
   out.resize(spec.size());
   for (size_t s = 0; s < spec.size(); ++s)
   {
@@ -447,13 +456,35 @@ void resolveValues(const std::vector<ResolvedTiebreaker> &spec, const Eigen::Vec
     case TiebreakKind::Reflectance: out[s] = static_cast<double>(colour.alpha); break;
     case TiebreakKind::Range:       out[s] = (end - start).norm(); break;
     case TiebreakKind::Time:        out[s] = time; break;
-    case TiebreakKind::ExtraByte:   out[s] = pass_ptr ? decodeExtraByte(pass_ptr, spec[s]) : 0.0; break;
+    case TiebreakKind::ExtraByte:
+      out[s] = pass_ptr ? decodeExtraByte(pass_ptr, spec[s]) : kMissing; break;
+    // Fixed 10-byte LAS passthrough fields (bytes 0-9, always present for LAS/LAZ inputs).
+    case TiebreakKind::ReturnNumber:
+      out[s] = pass_ptr ? static_cast<double>(pass_ptr[0] & 0x0Fu) : kMissing; break;
+    case TiebreakKind::NumberOfReturns:
+      out[s] = pass_ptr ? static_cast<double>((pass_ptr[0] >> 4) & 0x0Fu) : kMissing; break;
+    case TiebreakKind::Classification:
+      out[s] = pass_ptr ? static_cast<double>(pass_ptr[2]) : kMissing; break;
+    case TiebreakKind::UserData:
+      out[s] = pass_ptr ? static_cast<double>(pass_ptr[3]) : kMissing; break;
+    case TiebreakKind::ScanAngle: {
+      if (!pass_ptr) { out[s] = kMissing; break; }
+      int16_t v; std::memcpy(&v, pass_ptr + 4, 2);
+      out[s] = static_cast<double>(v); break;
+    }
+    case TiebreakKind::PointSourceId: {
+      if (!pass_ptr) { out[s] = kMissing; break; }
+      uint16_t v; std::memcpy(&v, pass_ptr + 6, 2);
+      out[s] = static_cast<double>(v); break;
+    }
     }
   }
 }
 
 // Lexicographic comparison of candidate values against the current winner. Returns true iff
 // @c cand should replace @c best under @c spec (first differing field with the wrong order loses).
+// NaN (missing-field sentinel) always loses: a NaN candidate never beats a real best, and a real
+// candidate always beats a NaN best. Two NaN values tie and fall through to the next criterion.
 bool beats(const std::vector<ResolvedTiebreaker> &spec, const std::vector<double> &cand,
            const std::vector<double> &best)
 {
@@ -461,6 +492,11 @@ bool beats(const std::vector<ResolvedTiebreaker> &spec, const std::vector<double
   {
     if (cand[s] == best[s])
       continue;
+    const bool cand_nan = std::isnan(cand[s]);
+    const bool best_nan = std::isnan(best[s]);
+    if (cand_nan && best_nan) continue;
+    if (cand_nan) return false;
+    if (best_nan) return true;
     const bool cand_lower = cand[s] < best[s];
     return spec[s].ascending ? cand_lower : !cand_lower;
   }

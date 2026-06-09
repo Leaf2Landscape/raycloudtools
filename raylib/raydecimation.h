@@ -39,7 +39,15 @@ bool RAYLIB_EXPORT decimateAngular(const std::string &file_name, double radius_p
 
 
 /// Field a tiebreak comparison reads when picking the best point per voxel for @c deduplicateVoxel.
-enum class TiebreakKind { Reflectance, Range, Time, ExtraByte };
+/// Built-ins (Reflectance/Range/Time) are always available. Fixed-prefix fields (ReturnNumber …
+/// PointSourceId) are decoded from the 10-byte LAS passthrough header that is present for any
+/// LAS/LAZ input; they resolve to a direction-aware loser sentinel for PLY inputs.
+/// ExtraByte reads a named sensor-attribute from the extra-bytes section (bytes 10+ of passthrough);
+/// files that don't declare the attribute have those bytes zeroed (sentinel = 0.0).
+enum class TiebreakKind {
+  Reflectance, Range, Time, ExtraByte,
+  ReturnNumber, NumberOfReturns, Classification, UserData, ScanAngle, PointSourceId
+};
 
 /// One resolved tiebreak criterion: which field to read, the sort direction, and (for ExtraByte)
 /// how to decode the value out of the per-point passthrough slice.

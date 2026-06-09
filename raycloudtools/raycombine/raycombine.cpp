@@ -41,6 +41,9 @@ void usage(int exit_code = 1)
   std::cout << "        --output raycloud_combined.ply               - optionally specify the output file name." << std::endl;
   std::cout << "        --dedup 0.02                                 - 'all' mode only: deduplicate to one point per 0.02 m voxel cell (metres; first-seen wins)." << std::endl;
   std::cout << "        --dedup 0.02 --tiebreak \">reflectance,<range\" - 'all' mode only: keep the best point per voxel by field priority ('>' prefers higher, '<' prefers lower)." << std::endl;
+  std::cout << "                    built-in fields: reflectance, range, time" << std::endl;
+  std::cout << "                    fixed LAS fields: return_number, number_of_returns, classification, user_data, scan_angle, point_source_id" << std::endl;
+  std::cout << "                    any named sensor extra-byte field from any input file (files lacking it use 0 as sentinel)." << std::endl;
   // clang-format on
   exit(exit_code);
 }
@@ -355,9 +358,19 @@ int rayCombine(int argc, char *argv[])
       const std::vector<TiebreakToken> tokens = parseTiebreakTokens(tiebreak_spec.text());
       for (const auto &tok : tokens)
       {
-        if (tok.name == "reflectance") { resolved.push_back({ ray::TiebreakKind::Reflectance, tok.ascending, 0, 0, 0 }); continue; }
-        if (tok.name == "range")       { resolved.push_back({ ray::TiebreakKind::Range,       tok.ascending, 0, 0, 0 }); continue; }
-        if (tok.name == "time")        { resolved.push_back({ ray::TiebreakKind::Time,        tok.ascending, 0, 0, 0 }); continue; }
+        // Built-in computed fields.
+        if (tok.name == "reflectance")      { resolved.push_back({ ray::TiebreakKind::Reflectance,      tok.ascending, 0, 0, 0 }); continue; }
+        if (tok.name == "range")            { resolved.push_back({ ray::TiebreakKind::Range,            tok.ascending, 0, 0, 0 }); continue; }
+        if (tok.name == "time")             { resolved.push_back({ ray::TiebreakKind::Time,             tok.ascending, 0, 0, 0 }); continue; }
+        // Fixed LAS passthrough fields (bytes 0-9, present in every LAS/LAZ input).
+        if (tok.name == "return_number")    { resolved.push_back({ ray::TiebreakKind::ReturnNumber,     tok.ascending, 0, 0, 0 }); continue; }
+        if (tok.name == "number_of_returns"){ resolved.push_back({ ray::TiebreakKind::NumberOfReturns,  tok.ascending, 0, 0, 0 }); continue; }
+        if (tok.name == "classification")   { resolved.push_back({ ray::TiebreakKind::Classification,   tok.ascending, 0, 0, 0 }); continue; }
+        if (tok.name == "user_data")        { resolved.push_back({ ray::TiebreakKind::UserData,         tok.ascending, 0, 0, 0 }); continue; }
+        if (tok.name == "scan_angle")       { resolved.push_back({ ray::TiebreakKind::ScanAngle,        tok.ascending, 0, 0, 0 }); continue; }
+        if (tok.name == "point_source_id")  { resolved.push_back({ ray::TiebreakKind::PointSourceId,    tok.ascending, 0, 0, 0 }); continue; }
+        // Named sensor extra-byte fields. Any input that has the field contributes its value;
+        // inputs that lack it have those bytes zeroed (sentinel = 0).
         bool found = false;
         for (const auto &ua : union_attrs)
           if (ua.name == tok.name)
@@ -369,7 +382,9 @@ int rayCombine(int argc, char *argv[])
           }
         if (!found)
         {
-          std::cerr << "Unknown tiebreak field: " << tok.name << std::endl;
+          std::cerr << "Unknown tiebreak field: '" << tok.name << "'" << std::endl;
+          std::cerr << "  built-in: reflectance, range, time" << std::endl;
+          std::cerr << "  fixed LAS: return_number, number_of_returns, classification, user_data, scan_angle, point_source_id" << std::endl;
           usage();
         }
       }
@@ -411,7 +426,8 @@ int rayCombine(int argc, char *argv[])
         passthrough_cursor += chunk_bytes;
 
         // Reformat sensor-extra bytes from this file's VLR layout to the union layout.
-        // Missing attrs keep their 0xFF sentinel; matching attrs are mapped by name.
+        // Missing attrs keep their 0xFF sentinel; decodeExtraByte detects all-0xFF bytes and
+        // returns NaN, which beats() treats as a universal loser in tiebreak comparisons.
         if (needs_remap[i] && !chunk_pass.empty())
         {
           const size_t n = chunk_pass.size() / file_pass_stride;
