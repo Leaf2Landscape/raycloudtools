@@ -265,6 +265,7 @@ void usage(int exit_code = 1)
   std::cout << "                                                              0 sets all to full intensity (bounded rays)." << std::endl;
   std::cout << "                                        --remove_start_pos  - translate so first point is at 0,0,0" << std::endl;
   std::cout << "                                        --beam_id           - assign a per-pulse beam_id extra attribute" << std::endl;
+  std::cout << "                                        --point_source_id/-p {id} - set point_source_id (0-65535) on all output points" << std::endl;
   std::cout << "                                        --filters/-f \"field,min,max[,field2,min2,max2,...]\"" << std::endl;
   std::cout << "                                                            - keep only points whose field is in [min,max]." << std::endl;
   std::cout << "                                                              Groups of 3 comma-separated values, or a path to a text" << std::endl;
@@ -283,10 +284,12 @@ void usage(int exit_code = 1)
 int rayImport(int argc, char *argv[])
 {
   ray::DoubleArgument max_intensity(0.0, 1e8, 100.0);
+  ray::IntArgument pid_val(0, 65535);
   ray::Vector3dArgument position, ray_vec;
   ray::TextArgument ray_text("ray");
   ray::TextArgument unbound_text("unbound");
   ray::OptionalKeyValueArgument max_intensity_option("max_intensity", 'm', &max_intensity);
+  ray::OptionalKeyValueArgument pid_option("point_source_id", 'p', &pid_val);
   ray::OptionalFlagArgument remove("remove_start_pos", 'r');
   ray::OptionalFlagArgument beam_id_opt("beam_id", 'b');
   ray::OptionalFlagArgument transform_flag("transform", 't');
@@ -295,12 +298,12 @@ int rayImport(int argc, char *argv[])
   std::vector<char *> filt_argv = stripFilterArgs(argc, argv);
   int filt_argc = static_cast<int>(filt_argv.size());
   bool standard_format =
-    ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &trajectory_file }, { &max_intensity_option, &remove, &beam_id_opt, &transform_flag });
+    ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &trajectory_file }, { &max_intensity_option, &remove, &beam_id_opt, &transform_flag, &pid_option });
   bool position_format =
-    ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &position }, { &max_intensity_option, &remove, &beam_id_opt });
+    ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &position }, { &max_intensity_option, &remove, &beam_id_opt, &pid_option });
   bool ray_format =
-    ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &ray_text, &ray_vec }, { &max_intensity_option, &remove, &beam_id_opt });
-  bool unbound_format = ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &unbound_text, &transform_file }, { &remove, &beam_id_opt });
+    ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &ray_text, &ray_vec }, { &max_intensity_option, &remove, &beam_id_opt, &pid_option });
+  bool unbound_format = ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &unbound_text, &transform_file }, { &remove, &beam_id_opt, &pid_option });
   if (!standard_format && !position_format && !ray_format && !unbound_format)
     usage();
 
@@ -637,6 +640,17 @@ int rayImport(int argc, char *argv[])
                             chunk_pass.begin() + idx * pass_stride + pass_stride);
           chunk_pass = std::move(tmp_pass);
         }
+      }
+    }
+    if (pid_option.isSet())
+    {
+      const auto pid = static_cast<uint16_t>(pid_val.value());
+      if (chunk_pass.empty())
+        chunk_pass.assign(ends.size() * pass_stride, 0u);
+      for (size_t i = 0; i < ends.size(); i++)
+      {
+        chunk_pass[i * pass_stride + 6] = static_cast<uint8_t>(pid & 0xFFu);
+        chunk_pass[i * pass_stride + 7] = static_cast<uint8_t>(pid >> 8);
       }
     }
     if (!writer.writeChunk(starts, ends, times, colours, chunk_pass, chunk_beam_ids))
