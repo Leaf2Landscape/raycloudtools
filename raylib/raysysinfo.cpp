@@ -102,11 +102,22 @@ size_t queryAvailableMemoryBytes()
   return 512ULL * 1024 * 1024;
 }
 
+size_t computeAvailableThreads()
+{
+  if (const char *s = std::getenv("OMP_NUM_THREADS"))
+  {
+    try { size_t n = std::stoull(s); if (n > 0) return n; } catch (...) {}
+  }
+  if (const char *s = std::getenv("SLURM_CPUS_PER_TASK"))
+  {
+    try { size_t n = std::stoull(s); if (n > 0) return n; } catch (...) {}
+  }
+  return static_cast<size_t>(std::thread::hardware_concurrency());
+}
+
 size_t computeReadChunkSize(size_t num_threads)
 {
-  const size_t resolved = (num_threads == 0)
-      ? static_cast<size_t>(std::thread::hardware_concurrency())
-      : num_threads;
+  const size_t resolved = (num_threads == 0) ? computeAvailableThreads() : num_threads;
   // kBeamBatchSize = 32 (matches raylasvoxelise.cpp constant)
   constexpr size_t kBatchMultiplier = 32 * 4;
   const size_t scaled = resolved * kBatchMultiplier;

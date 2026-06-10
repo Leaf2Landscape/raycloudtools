@@ -17,7 +17,13 @@ namespace ray
 // Falls back to 512 MB when no source is available.
 size_t RAYLIB_EXPORT queryAvailableMemoryBytes();
 
-// Compute a readLas chunk size scaled to the thread count (0 = hardware_concurrency).
+// Return the number of threads available for parallel work. Priority order:
+// OMP_NUM_THREADS env var, SLURM_CPUS_PER_TASK env var, hardware_concurrency().
+// Use this instead of hardware_concurrency() in container/HPC environments where
+// the visible CPU count exceeds the allocation (e.g. Apptainer on SLURM).
+size_t RAYLIB_EXPORT computeAvailableThreads();
+
+// Compute a readLas chunk size scaled to the thread count (0 = computeAvailableThreads).
 // Clamped to a floor of 4M and a ceiling of 16M points.
 size_t RAYLIB_EXPORT computeReadChunkSize(size_t num_threads = 0);
 }  // namespace ray

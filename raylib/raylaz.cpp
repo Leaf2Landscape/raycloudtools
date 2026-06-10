@@ -17,6 +17,9 @@
 #include "rayunused.h"
 
 #if RAYLIB_WITH_LAS
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #include <laszip/laszip_api.h>
 #ifdef _WIN32
 #include <windows.h>
@@ -446,6 +449,13 @@ bool readLas(const std::string &file_name,
     }
     reader.join();
   };
+
+  // Clamp OMP threads to the allocation visible to this process. Without this, hardware_concurrency
+  // inside a container (e.g. Apptainer on SLURM) returns the full node count rather than the
+  // allocated core count, causing severe oversubscription.
+#ifdef _OPENMP
+  omp_set_num_threads(static_cast<int>(computeAvailableThreads()));
+#endif
 
   // Fast path: for uncompressed LAS with a fixed-layout record we know how to decode, mmap the file
   // and decode all records in parallel, then drive @c apply in the same chunk windows as the
