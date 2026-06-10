@@ -179,7 +179,11 @@ void resolveFiltersLas(std::vector<ray::FieldFilter> &filters, const std::vector
       byte_offset += attr_size;
     }
     if (!matched)
-      std::cout << "Filter field '" << f.name << "' not found in input — skipping" << std::endl;
+    {
+      const bool is_range_alias = (f.name == "range" || f.name == "Range" || f.name == "min_range" || f.name == "max_range");
+      if (!is_range_alias)
+        std::cout << "Filter field '" << f.name << "' not found in input — skipping" << std::endl;
+    }
   }
 }
 
@@ -262,10 +266,11 @@ void usage(int exit_code = 1)
   std::cout << "                                        --remove_start_pos  - translate so first point is at 0,0,0" << std::endl;
   std::cout << "                                        --beam_id           - assign a per-pulse beam_id extra attribute" << std::endl;
   std::cout << "                                        --filters/-f \"field,min,max[,field2,min2,max2,...]\"" << std::endl;
-  std::cout << "                                                            - keep only LAS/LAZ points whose field is in [min,max]." << std::endl;
+  std::cout << "                                                            - keep only points whose field is in [min,max]." << std::endl;
   std::cout << "                                                              Groups of 3 comma-separated values, or a path to a text" << std::endl;
-  std::cout << "                                                              file (one field,min,max per line). Standard fields:" << std::endl;
-  std::cout << "                                                              intensity, classification, scan_angle (degrees)," << std::endl;
+  std::cout << "                                                              file (one field,min,max per line)." << std::endl;
+  std::cout << "                                                              range/min_range/max_range: computed ray length (all formats)." << std::endl;
+  std::cout << "                                                              LAS/LAZ fields: intensity, classification, scan_angle (degrees)," << std::endl;
   std::cout << "                                                              user_data, point_source_id. Sensor extra fields by VLR name." << std::endl;
   std::cout << "rayimport pointcloudfile unbound transformfile - load unbound data (pulses that missed) from RIEGL .rxp file" << std::endl;
   std::cout << "                                               transformfile is a text file containing a 4x4 transformation matrix" << std::endl;
@@ -388,6 +393,10 @@ int rayImport(int argc, char *argv[])
     ray::readLasExtraBytesVlr(cloud_file.name(), orig_extra, input_extra_bytes_vlr, nullptr, &input_has_rgb);
     resolveFiltersLas(filters, input_extra_bytes_vlr, orig_extra);
   }
+  // Range aliases not resolved by field lookup fall back to computed ray length (pass_offset stays -1).
+  for (auto &f : filters)
+    if (!f.resolved && (f.name == "range" || f.name == "Range" || f.name == "min_range" || f.name == "max_range"))
+      f.resolved = true;
 
   // Pre-scan: build a global GPS-time -> beam_id map so that all returns of one pulse
   // (same timestamp) get the same beam_id regardless of chunk boundaries or spatial sorting.
@@ -567,7 +576,11 @@ int rayImport(int argc, char *argv[])
       }
     }
     const size_t pass_stride = 10u + orig_extra;
-    if (!filters.empty() && !chunk_pass.empty())
+    bool has_active_filter = false;
+    for (const auto &f : filters)
+      if (f.resolved)
+        has_active_filter = true;
+    if (has_active_filter)
     {
       std::vector<size_t> keep;
       keep.reserve(ends.size());
@@ -578,9 +591,19 @@ int rayImport(int argc, char *argv[])
         {
           if (!f.resolved)
             continue;
-          double val = readPassthroughField(chunk_pass.data() + i * pass_stride, f.pass_offset, f.pass_size,
-                                            f.is_signed, f.is_float);
-          val = val * f.scale + f.offset;
+          double val;
+          if ((f.name == "range" || f.name == "Range" || f.name == "min_range" || f.name == "max_range") && f.pass_offset < 0)
+          {
+            val = (ends[i] - starts[i]).norm();
+          }
+          else
+          {
+            if (chunk_pass.empty())
+              continue;
+            val = readPassthroughField(chunk_pass.data() + i * pass_stride, f.pass_offset, f.pass_size,
+                                       f.is_signed, f.is_float);
+            val = val * f.scale + f.offset;
+          }
           if (val < f.min_val || val > f.max_val)
           {
             accept = false;
@@ -605,12 +628,15 @@ int rayImport(int argc, char *argv[])
         compact_vec(colours);
         if (!chunk_beam_ids.empty())
           compact_vec(chunk_beam_ids);
-        std::vector<uint8_t> tmp_pass;
-        tmp_pass.reserve(keep.size() * pass_stride);
-        for (size_t idx : keep)
-          tmp_pass.insert(tmp_pass.end(), chunk_pass.begin() + idx * pass_stride,
-                          chunk_pass.begin() + idx * pass_stride + pass_stride);
-        chunk_pass = std::move(tmp_pass);
+        if (!chunk_pass.empty())
+        {
+          std::vector<uint8_t> tmp_pass;
+          tmp_pass.reserve(keep.size() * pass_stride);
+          for (size_t idx : keep)
+            tmp_pass.insert(tmp_pass.end(), chunk_pass.begin() + idx * pass_stride,
+                            chunk_pass.begin() + idx * pass_stride + pass_stride);
+          chunk_pass = std::move(tmp_pass);
+        }
       }
     }
     if (!writer.writeChunk(starts, ends, times, colours, chunk_pass, chunk_beam_ids))
@@ -626,8 +652,14 @@ int rayImport(int argc, char *argv[])
 
   if (!unbound_format)
     std::cout << "max_intensity: " << maximum_intensity << std::endl;
-  if (!filters.empty() && in_ext != "las" && in_ext != "laz")
-    std::cout << "warning: --filters is only supported for LAS/LAZ input; skipping filters" << std::endl;
+  {
+    bool has_passthrough_filter = false;
+    for (const auto &f : filters)
+      if (f.name != "range" && f.name != "Range" && f.name != "min_range" && f.name != "max_range")
+        has_passthrough_filter = true;
+    if (has_passthrough_filter && in_ext != "las" && in_ext != "laz")
+      std::cout << "warning: --filters field filters are only supported for LAS/LAZ input; skipping non-range filters" << std::endl;
+  }
   Eigen::Vector3d *offset = remove.isSet() ? &start_pos : nullptr;
   if (cloud_file.nameExt() == "ply")
   {
