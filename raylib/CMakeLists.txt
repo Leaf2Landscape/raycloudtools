@@ -53,7 +53,7 @@ set(PUBLIC_HEADERS
   extraction/raytrunks.h
   extraction/rayclusters.h
   extraction/rayleaves.h
-  extraction/rayterrain.h 
+  extraction/rayterrain.h
   extraction/raytrees.h
   extraction/rayforest.h
   extraction/raysegment.h

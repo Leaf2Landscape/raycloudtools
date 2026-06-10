@@ -440,12 +440,15 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
                       user_extent.y() / static_cast<double>(user_dims.y()),
                       user_extent.z() / static_cast<double>(user_dims.z()));
   space.header["res"] = format_vec_string(res);
+  if (params.subvoxel_split > 0)
+    space.header["subvoxel_split"] = std::to_string(params.subvoxel_split);
 
   std::string colnames = "i j k classification nbEchos nbSampling padG0.5 lgTotal lMeanTotal lMeanFreeTotal lMeanEffectiveFreeTotal sdLength"
                          " zenithAngleMean azimuthAngleMean azimuthConcentration distLaser"
                          " bsPotential bsEntering bsIntercepted transmittance"
                          " attenuation_FPL_biasedMLE attenuation_FPL_biasCorrection attenuation_FPL_unbiasedMLE"
                          " weightedEffectiveFreepathLength weightedFreepathLength attenuation_PPL_MLE";
+  if (params.subvoxel_split > 0) colnames += " exploration_rate subvoxel_bitmap";
   if (params.has_leaf) colnames += " ladG0.5";
   if (params.has_wood) colnames += " wadG0.5";
   if (params.calc_inclination_dist) {
@@ -497,6 +500,10 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
     v_data.variables.push_back(std::to_string(data ? data->weighted_effective_fpl : 0.0f));
     v_data.variables.push_back(std::to_string(data ? data->weighted_fpl : 0.0f));
     v_data.variables.push_back(std::to_string(data ? data->attenuation_ppl : 0.0));
+    if (params.subvoxel_split > 0) {
+      v_data.variables.push_back(std::to_string(data ? data->exploration_rate : 0.0));
+      v_data.variables.push_back(std::to_string(data ? data->subvoxel_bitmap : uint64_t(0)));
+    }
     if (params.has_leaf) v_data.variables.push_back(std::to_string(data ? data->lad_g0_5 : 0.0));
     if (params.has_wood) v_data.variables.push_back(std::to_string(data ? data->wad_g0_5 : 0.0));
     if (params.calc_inclination_dist) {
@@ -559,8 +566,9 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
   }
   outfile << std::fixed << std::setprecision(6);
   std::string header = "i j k x y z voxel_state pointclass absolute_pointclass num_hits num_beams num_beams_weighted path_length_raw path_length "
-                       "num_rays_occluded path_length_occluded pad_g0.5 surface_area voxel_size "
-                       "mean_zenith_angle_rad mean_azimuth_rad azimuth_concentration mean_laser_dist"
+                       "num_rays_occluded path_length_occluded pad_g0.5 surface_area voxel_size";
+  if (params.subvoxel_split > 0) header += " subvoxel_split";
+  header += " mean_zenith_angle_rad mean_azimuth_rad azimuth_concentration mean_laser_dist"
                        " num_unbound_rays path_length_unbound num_miss_rays";
   if (params.has_leaf) header += " lad_g0.5";
   if (params.has_leaf) header += " num_hit_leaf";
@@ -596,8 +604,9 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
             << static_cast<int>(data.state) << " " << data.dominant_class << " " << data.absolute_class << " "
             << data.num_hits << " " << data.num_beams << " " << data.num_beams_weighted << " " << data.path_length_raw << " " << data.path_length << " "
             << data.num_rays_occluded << " " << data.path_length_occluded << " "
-            << data.pad_g0_5 << " " << data.surface_area << " " << grid.getVoxelWidth() << " "
-            << data.mean_zenith_angle_rad << " " << data.mean_azimuth_rad << " " << data.azimuth_concentration << " " << data.mean_laser_dist
+            << data.pad_g0_5 << " " << data.surface_area << " " << grid.getVoxelWidth();
+    if (params.subvoxel_split > 0) outfile << " " << params.subvoxel_split;
+    outfile << " " << data.mean_zenith_angle_rad << " " << data.mean_azimuth_rad << " " << data.azimuth_concentration << " " << data.mean_laser_dist
             << " " << data.num_unbound_rays << " " << data.path_length_unbound << " " << data.num_miss_rays;
     if (params.has_leaf) outfile << " " << data.lad_g0_5;
     if (params.has_leaf) outfile << " " << data.num_hit_leaf;
