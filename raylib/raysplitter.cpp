@@ -826,4 +826,65 @@ bool splitColour(const std::string &file_name, const std::string &cloud_name_stu
   return true;
 }
 
+bool splitTree(const std::string &file_name, const std::string &cloud_name_stub)
+{
+  const std::string ext = getFileNameExtension(file_name);
+  if (ext != "las" && ext != "laz")
+  {
+    std::cerr << "Error: --tree requires a LAS/LAZ input file produced by rayextract segment" << std::endl;
+    return false;
+  }
+
+  Cloud cloud;
+  if (!cloud.load(file_name))
+    return false;
+
+  if (cloud.tree_ids.empty())
+  {
+    std::cerr << "Error: cloud has no tree_id attribute. Run rayextract segment first." << std::endl;
+    return false;
+  }
+
+  const bool has_stem = !cloud.stem_ids.empty();
+
+  // Build map from (tree_id, stem_id) -> point indices, skipping unassigned points
+  std::map<std::pair<int32_t, int32_t>, std::vector<size_t>> groups;
+  for (size_t i = 0; i < cloud.ends.size(); i++)
+  {
+    const int32_t tid = cloud.tree_ids[i];
+    const int32_t sid = has_stem ? cloud.stem_ids[i] : 0;
+    groups[{tid, sid}].push_back(i);
+  }
+
+  std::cout << "Splitting into " << groups.size() << " tree files" << std::endl;
+
+  for (const auto &kv : groups)
+  {
+    const int32_t tid = kv.first.first;
+    const int32_t sid = kv.first.second;
+    std::ostringstream name;
+    name << cloud_name_stub << "_" << tid << "_" << sid << "." << ext;
+
+    Cloud out;
+    out.extra_bytes_vlr  = cloud.extra_bytes_vlr;
+    out.extra_bytes_size = cloud.extra_bytes_size;
+    for (size_t i : kv.second)
+    {
+      out.starts.push_back(cloud.starts[i]);
+      out.ends.push_back(cloud.ends[i]);
+      out.times.push_back(cloud.times[i]);
+      out.colours.push_back(cloud.colours[i]);
+      out.tree_ids.push_back(tid);
+      out.stem_ids.push_back(sid);
+      if (!cloud.passthrough.empty())
+      {
+        const uint8_t *src = cloud.passthrough.data() + i * cloud.extra_bytes_size;
+        out.passthrough.insert(out.passthrough.end(), src, src + cloud.extra_bytes_size);
+      }
+    }
+    out.save(name.str());
+  }
+  return true;
+}
+
 }  // namespace ray

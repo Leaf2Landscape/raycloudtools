@@ -50,6 +50,12 @@ bool RAYLIB_EXPORT splitColour(const std::string &file_name, const std::string &
 bool splitCapsule(const std::string &file_name, const std::string &in_name, const std::string &out_name,
                   const Eigen::Vector3d &end1, const Eigen::Vector3d &end2, double radius);
 
+/// Split a segmented LAS/LAZ ray cloud into one file per unique (tree_id, stem_id) pair.
+/// Output files are named @c cloud_name_stub + "_" + tree_id + "_" + stem_id + extension.
+/// Points with tree_id == -1 (unassigned) are skipped.
+/// Input must be a LAS/LAZ file produced by rayextract segment.
+bool RAYLIB_EXPORT splitTree(const std::string &file_name, const std::string &cloud_name_stub);
+
 
 }  // namespace ray
 

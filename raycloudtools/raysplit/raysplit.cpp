@@ -37,6 +37,7 @@ void usage(int exit_code = 1)
   std::cout << "                  grid wx,wy,wz 1        - same as above, but with a 1 metre overlap between cells." << std::endl;
   std::cout << "                  grid wx,wy,wz,wt       - splits into a grid of files, cell width wx,wy,wz and period wt. 0 for unused axes." << std::endl;
   std::cout << "                  capsule 1,2,3 10,11,12 5  - splits within a capsule using start, end and radius" << std::endl;
+  std::cout << "                  tree                   - splits a segmented las/laz into one file per unique tree_id,stem_id pair" << std::endl;
   // clang-format on
   exit(exit_code);
 }
@@ -55,7 +56,7 @@ int raySplit(int argc, char *argv[])
                              { &plane, &time, &colour, &single_colour, &alpha, &raydir, &range, &gap });
   ray::FileArgument mesh_file, tree_file;
   ray::TextArgument distance_text("distance"), time_text("time"), percent_text("%");
-  ray::TextArgument box_text("box"), grid_text("grid"), colour_text("colour"), seg_colour_text("seg_colour"), capsule_text("capsule");
+  ray::TextArgument box_text("box"), grid_text("grid"), colour_text("colour"), seg_colour_text("seg_colour"), capsule_text("capsule"), tree_text("tree");
   ray::DoubleArgument mesh_offset;
   bool standard_format = ray::parseCommandLine(argc, argv, { &cloud_file, &choice });
   bool colour_format = ray::parseCommandLine(argc, argv, { &cloud_file, &colour_text });
@@ -68,8 +69,9 @@ int raySplit(int argc, char *argv[])
   bool mesh_split = ray::parseCommandLine(argc, argv, { &cloud_file, &mesh_file, &distance_text, &mesh_offset });
   bool capsule_split =
     ray::parseCommandLine(argc, argv, { &cloud_file, &capsule_text, &capsule_start, &capsule_end, &capsule_radius });
+  bool tree_split = ray::parseCommandLine(argc, argv, { &cloud_file, &tree_text });
   if (!standard_format && !colour_format && !seg_colour_format && !box_format && !grid_format && !grid_format2 && !grid_format3 &&
-      !mesh_split && !time_percent && !capsule_split)
+      !mesh_split && !time_percent && !capsule_split && !tree_split)
   {
     usage();
   }
@@ -80,8 +82,12 @@ int raySplit(int argc, char *argv[])
   const std::string rc_name = cloud_file.name();  // ray cloud name
   bool res = true;
 
+  if (tree_split)
+  {
+    res = ray::splitTree(rc_name, cloud_file.nameStub());
+  }
   // split the cloud around a capsule shape
-  if (capsule_split)
+  else if (capsule_split)
   {
     res = ray::splitCapsule(rc_name, in_name, out_name, capsule_start.value(), capsule_end.value(), capsule_radius.value());
   }
