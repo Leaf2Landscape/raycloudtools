@@ -391,6 +391,7 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
             int set_bits = popcount(v.subvoxel_bitmap);
             int total_subvoxels = params.subvoxel_split * params.subvoxel_split * params.subvoxel_split;
             data.exploration_rate = (total_subvoxels > 0) ? static_cast<double>(set_bits) / total_subvoxels : 0.0;
+            data.subvoxel_bitmap = v.subvoxel_bitmap;
         }
         return data;
     };
@@ -568,7 +569,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
   if (!params.dtm_file.empty() || params.dtm_from_class >= 0) { header += " distance_from_ground"; }
   if (params.calc_veg_metrics) header += " pad_g_corrected pad_leaf pad_wood";
   if (params.calc_beam_metrics) header += " transmittance bs_entering bs_intercepted";
-  if (params.subvoxel_split > 0) header += " exploration_rate";
+  if (params.subvoxel_split > 0) header += " exploration_rate subvoxel_bitmap";
   if (params.calc_inclination_dist) {
     header += " leaf_g wood_g plant_g";
     if (params.output_iad) {
@@ -611,7 +612,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
     }
     if (params.calc_veg_metrics) outfile << " " << data.pad_g_corrected << " " << data.pad_leaf << " " << data.pad_wood;
     if (params.calc_beam_metrics) outfile << " " << data.transmittance << " " << data.bs_entering << " " << data.bs_intercepted;
-    if (params.subvoxel_split > 0) outfile << " " << data.exploration_rate;
+    if (params.subvoxel_split > 0) outfile << " " << data.exploration_rate << " " << data.subvoxel_bitmap;
     if (params.calc_inclination_dist) {
       outfile << " " << data.leaf_g << " " << data.wood_g << " " << data.plant_g;
       if (params.output_iad) {
@@ -753,6 +754,7 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
     }
     if (params.subvoxel_split > 0) {
       vars["exploration_rate"] = dataFile.addVar("exploration_rate", netCDF::ncDouble, {nPoints});
+      vars["subvoxel_bitmap"] = dataFile.addVar("subvoxel_bitmap", netCDF::ncUint64, {nPoints});
     }
 
     vars["voxel_id"] = dataFile.addVar("voxel_id", netCDF::ncInt, {nClassificationHits});
@@ -762,6 +764,7 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
     std::vector<int> i_data, j_data, k_data, state_data, pclass_data, abs_pclass_data;
     std::vector<float> hits_data, rays_data;
     std::vector<double> pad_data, lad_g05_data, wad_g05_data, sa_data, angle_data, azimuth_data, concentration_data, dist_data, dfg_data, pad_g_data, pad_leaf_data, pad_wood_data, transm_data, explore_data;
+    std::vector<uint64_t> bitmap_data;
     std::vector<int> voxel_id_data;
     std::vector<unsigned char> hit_class_code_data;
     std::vector<float> hit_class_count_data;
@@ -781,7 +784,7 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
         pad_wood_data.reserve(point_count);
     }
     if (params.calc_beam_metrics) { transm_data.reserve(point_count); }
-    if (params.subvoxel_split > 0) { explore_data.reserve(point_count); }
+    if (params.subvoxel_split > 0) { explore_data.reserve(point_count); bitmap_data.reserve(point_count); }
     if (total_classification_hits > 0) {
         voxel_id_data.reserve(total_classification_hits);
         hit_class_code_data.reserve(total_classification_hits);
@@ -836,7 +839,7 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
             pad_wood_data.push_back(data.pad_wood);
         }
         if (params.calc_beam_metrics) { transm_data.push_back(data.transmittance); }
-        if (params.subvoxel_split > 0) { explore_data.push_back(data.exploration_rate); }
+        if (params.subvoxel_split > 0) { explore_data.push_back(data.exploration_rate); bitmap_data.push_back(data.subvoxel_bitmap); }
         if (params.calc_inclination_dist) {
             const int64_t flat_idx = grid.flatIndex(data.i, data.j, data.k);
             auto iit = iad_table.find(flat_idx);
@@ -899,7 +902,7 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
         vars["pad_wood"].putVar(pad_wood_data.data());
     }
     if (params.calc_beam_metrics) { vars["transmittance"].putVar(transm_data.data()); }
-    if (params.subvoxel_split > 0) { vars["exploration_rate"].putVar(explore_data.data()); }
+    if (params.subvoxel_split > 0) { vars["exploration_rate"].putVar(explore_data.data()); vars["subvoxel_bitmap"].putVar(bitmap_data.data()); }
 
     if (total_classification_hits > 0) {
         vars["voxel_id"].putVar(voxel_id_data.data());

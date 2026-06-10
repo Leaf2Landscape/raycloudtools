@@ -78,6 +78,7 @@ namespace ray
     double weighted_effective_fpl = 0.0;
     double attenuation_ppl = 0.0;
     double exploration_rate = 0.0;
+    uint64_t subvoxel_bitmap = 0;
     double leaf_g  = 0.0;
     double wood_g  = 0.0;
     double plant_g = 0.0;
