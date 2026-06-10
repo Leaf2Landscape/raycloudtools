@@ -77,7 +77,7 @@ void usage(int exit_code = 1)
   }
   if (extract_type == "segment" || none)
   {
-    std::cout << "rayextract segment cloud.ply [--ground ground_mesh.ply]" << std::endl;
+    std::cout << "rayextract segment cloud.ply ground_mesh.ply" << std::endl;
     std::cout << "    -> cloud_segmented.las (tree_id, stem_id per point)" << std::endl;
     std::cout << "    -> cloud_seeds.txt (per-stem trunk metadata)" << std::endl;
     std::cout << "                            [all rayextract trees parameters also accepted]" << std::endl;
@@ -102,6 +102,8 @@ void usage(int exit_code = 1)
     std::cout << "                            --leaf_angle 1      - leaf angle distribution set with int value (default: uniform (1))" << std::endl;
     std::cout << "                                                    Options: uniform (1), spherical (2), erectophile (3), plagiophile (4), planophile (5), extremophile (6)" << std::endl;
     std::cout << "                            --stalks            - include stalks to closest branch." << std::endl;
+    std::cout << "                            --rayvoxel file.vox - rayvoxel file providing per-voxel LAD and LIAD; enables bitmap-guided placement when subvoxel_bitmap is present" << std::endl;
+    std::cout << "                            --rayvoxel_method m - LAD column method to use from vox file (default: fpl)" << std::endl;
   }
   if (extract_type == "grid" || none)
   {
@@ -129,7 +131,7 @@ int rayExtract(int argc, char *argv[])
   {
     extract_type = std::string(argv[1]);
   }
-  ray::FileArgument cloud_file, mesh_file, trunks_file, trees_file, leaf_file;
+  ray::FileArgument cloud_file, mesh_file, trunks_file, trees_file, leaf_file, rayvox_file, rayvoxel_method_file;
   ray::TextArgument forest("forest"), trees("trees"), trunks("trunks"), terrain("terrain"), leaves("leaves"),
     grid("grid");
   ray::TextArgument segment_cmd("segment"), reconstruct_cmd("reconstruct");
@@ -170,6 +172,8 @@ int rayExtract(int argc, char *argv[])
   ray::OptionalKeyValueArgument leaf_droop_option("leaf_droop", 'd', &leaf_droop);
   ray::OptionalKeyValueArgument leaf_density_option("leaf_density", 'ld', &leaf_density);
   ray::OptionalKeyValueArgument leaf_angle_option("leaf_angle", 'la', &leaf_angle);
+  ray::OptionalKeyValueArgument rayvoxel_option("rayvoxel", 'rv', &rayvox_file);
+  ray::OptionalKeyValueArgument rayvoxel_method_option("rayvoxel_method", 'rm', &rayvoxel_method_file);
   ray::OptionalKeyValueArgument voxel_size_option("voxel_size", 'vs', &voxel_size);
   ray::OptionalKeyValueArgument grid_bounds_min_option("grid_bounds_min", 'bmin', &grid_bounds_min);
   ray::OptionalKeyValueArgument grid_bounds_max_option("grid_bounds_max", 'bmax', &grid_bounds_max);
@@ -193,14 +197,15 @@ int rayExtract(int argc, char *argv[])
                             &largest_diameter, &save_paths, &verbose });
   bool extract_leaves = ray::parseCommandLine(
     argc, argv, { &leaves, &cloud_file, &trees_file },
-    { &leaf_option, &leaf_area_option, &leaf_droop_option, &leaf_angle_option, &leaf_density_option, &stalks });
+    { &leaf_option, &leaf_area_option, &leaf_droop_option, &leaf_angle_option, &leaf_density_option, &stalks,
+      &rayvoxel_option, &rayvoxel_method_option });
   bool extract_grid = ray::parseCommandLine(
     argc, argv, { &grid, &cloud_file },
     { &voxel_size_option, &grid_bounds_min_option, &grid_bounds_max_option, &write_empty, &write_netcdf, &extended_output, &add_neighbour_priors, &intensity_weight, &verbose });
 
   bool extract_segment = ray::parseCommandLine(
-    argc, argv, { &segment_cmd, &cloud_file },
-    { &groundmesh_option, &max_diameter_option, &distance_limit_option, &height_min_option,
+    argc, argv, { &segment_cmd, &cloud_file, &mesh_file },
+    { &max_diameter_option, &distance_limit_option, &height_min_option,
       &crop_length_option, &girth_height_ratio_option, &gravity_factor_option,
       &segment_branches, &grid_width_option, &global_taper_option,
       &global_taper_factor_option, &use_rays, &alpha_weighted,
@@ -319,14 +324,9 @@ int rayExtract(int argc, char *argv[])
     Eigen::Vector3d offset = cloud.removeStartPos();
 
     ray::Mesh mesh;
-    if (groundmesh_option.isSet())
-    {
-      if (!ray::readPlyMesh(mesh_file.name(), mesh))
-        usage(true);
-      mesh.translate(-offset);
-    }
-    if (!groundmesh_option.isSet())
-      std::cerr << "rayextract segment: no --ground mesh provided; Dijkstra will have no ground seed points." << std::endl;
+    if (!ray::readPlyMesh(mesh_file.name(), mesh))
+      usage(true);
+    mesh.translate(-offset);
 
     ray::TreesParams params;
     if (max_diameter_option.isSet())    params.max_diameter = max_diameter.value();
@@ -441,8 +441,11 @@ int rayExtract(int argc, char *argv[])
   }
   else if (extract_leaves)
   {
+    const std::string vox = rayvoxel_option.isSet() ? rayvox_file.name() : "";
+    const std::string method = rayvoxel_method_option.isSet() ? rayvoxel_method_file.name() : "fpl";
     ray::generateLeaves(cloud_file.nameStub(), trees_file.name(), leaf_file.name(), leaf_area.value(),
-                        leaf_droop.value(), leaf_angle.value(), leaf_density.value(), stalks.isSet());
+                        leaf_droop.value(), leaf_angle.value(), leaf_density.value(), stalks.isSet(),
+                        vox, method);
   }
   else if (extract_grid)
   {
