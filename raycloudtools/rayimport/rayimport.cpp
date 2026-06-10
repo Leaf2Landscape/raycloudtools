@@ -275,6 +275,7 @@ void usage(int exit_code = 1)
   std::cout << "                                                              user_data, point_source_id. Sensor extra fields by VLR name." << std::endl;
   std::cout << "rayimport pointcloudfile unbound transformfile - load unbound data (pulses that missed) from RIEGL .rxp file" << std::endl;
   std::cout << "                                               transformfile is a text file containing a 4x4 transformation matrix" << std::endl;
+  std::cout << "                                        --las_out/-l            - force output to .las even if input is .laz" << std::endl;
   std::cout << "The output is a _raycloud.las/.laz file (preserving .laz if the input is .laz)." << std::endl;
   // clang-format on
   exit(exit_code);
@@ -293,17 +294,18 @@ int rayImport(int argc, char *argv[])
   ray::OptionalFlagArgument remove("remove_start_pos", 'r');
   ray::OptionalFlagArgument beam_id_opt("beam_id", 'b');
   ray::OptionalFlagArgument transform_flag("transform", 't');
+  ray::OptionalFlagArgument las_out("las_out", 'l');
   ray::FileArgument cloud_file, trajectory_file, transform_file;
   std::vector<ray::FieldFilter> filters = parseFilterArgs(argc, argv);
   std::vector<char *> filt_argv = stripFilterArgs(argc, argv);
   int filt_argc = static_cast<int>(filt_argv.size());
   bool standard_format =
-    ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &trajectory_file }, { &max_intensity_option, &remove, &beam_id_opt, &transform_flag, &pid_option });
+    ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &trajectory_file }, { &max_intensity_option, &remove, &beam_id_opt, &transform_flag, &pid_option, &las_out });
   bool position_format =
-    ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &position }, { &max_intensity_option, &remove, &beam_id_opt, &pid_option });
+    ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &position }, { &max_intensity_option, &remove, &beam_id_opt, &pid_option, &las_out });
   bool ray_format =
-    ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &ray_text, &ray_vec }, { &max_intensity_option, &remove, &beam_id_opt, &pid_option });
-  bool unbound_format = ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &unbound_text, &transform_file }, { &remove, &beam_id_opt, &pid_option });
+    ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &ray_text, &ray_vec }, { &max_intensity_option, &remove, &beam_id_opt, &pid_option, &las_out });
+  bool unbound_format = ray::parseCommandLine(filt_argc, filt_argv.data(), { &cloud_file, &unbound_text, &transform_file }, { &remove, &beam_id_opt, &pid_option, &las_out });
   if (!standard_format && !position_format && !ray_format && !unbound_format)
     usage();
 
@@ -382,7 +384,7 @@ int rayImport(int argc, char *argv[])
 
   std::string save_file = cloud_file.nameStub() + "_raycloud";
   const std::string in_ext = cloud_file.nameExt();
-  const std::string save_ext = (in_ext == "laz") ? "laz" : "las";
+  const std::string save_ext = (in_ext == "laz" && !las_out.isSet()) ? "laz" : "las";
   size_t num_bounded = 0;
   uint8_t max_alpha_seen = 0;
 
