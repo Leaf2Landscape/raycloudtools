@@ -76,6 +76,31 @@ if(WITH_LAS)
     set(LASZIP_FOUND FALSE)
     FetchContent_MakeAvailable(lazperf)
     unset(LASZIP_FOUND)
+    # When lazperf is a FetchContent subproject, @CMAKE_SOURCE_DIR@ in its test_main.hpp.in
+    # resolves to our project root, not lazperf's source dir. Overwrite the generated header.
+    file(WRITE "${lazperf_BINARY_DIR}/cpp/test/test_main.hpp"
+      "#include \"gtest/gtest.h\"\n"
+      "\n"
+      "GTEST_API_ int main(int argc, char **argv) {\n"
+      "    testing::InitGoogleTest(&argc, argv);\n"
+      "    return RUN_ALL_TESTS();\n"
+      "}\n"
+      "\n"
+      "std::string testFile(const std::string& filename)\n"
+      "{\n"
+      "    return std::string(\"${lazperf_SOURCE_DIR}/cpp/test/raw-sets/\") + filename;\n"
+      "}\n"
+    )
+    # gtest's internal_utils.cmake sets RUNTIME_OUTPUT_DIRECTORY to ${CMAKE_BINARY_DIR}/bin so
+    # test binaries land in build/bin/ rather than cpp/test/ as originally registered. Patch the
+    # source CMakeLists.txt to use $<TARGET_FILE:...> so re-fetches also get the correct path.
+    file(READ "${lazperf_SOURCE_DIR}/cpp/test/CMakeLists.txt" _lp_test_cmake)
+    string(REPLACE
+      "COMMAND \${PROJECT_BINARY_DIR}/cpp/test/\${_name}"
+      "COMMAND \$<TARGET_FILE:\${_name}>"
+      _lp_test_cmake "${_lp_test_cmake}")
+    file(WRITE "${lazperf_SOURCE_DIR}/cpp/test/CMakeLists.txt" "${_lp_test_cmake}")
+    unset(_lp_test_cmake)
     # laz-perf is a private compile-time dependency of raylaz.cpp; its headers must not leak into
     # raylib's exported (installed) include interface, so expose them only on the build interface.
     set(RAYLAZPERF_INCLUDE "$<BUILD_INTERFACE:${lazperf_SOURCE_DIR}/cpp>")
