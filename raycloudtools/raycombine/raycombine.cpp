@@ -179,98 +179,15 @@ int rayCombine(int argc, char *argv[])
       std::array<uint8_t, 192> record{};  ///< raw 192-byte EXTRA_BYTES VLR record
     };
 
-    // Parse a stripped EXTRA_BYTES VLR payload (as returned by readLasExtraBytesVlr) into
-    // named attributes with cumulative byte offsets.
-    auto parseSensorAttrs = [](const std::vector<uint8_t> &vlr)
-    {
-      constexpr uint16_t kTypeSize[11] = { 0, 1, 1, 2, 2, 4, 4, 8, 8, 4, 8 };
-      std::vector<SensorAttr> result;
-      uint16_t off = 0;
-      const int n = static_cast<int>(vlr.size()) / 192;
-      for (int a = 0; a < n; ++a)
-      {
-        const uint8_t *rec = vlr.data() + a * 192;
-        const uint8_t dtype = rec[2];
-        const uint16_t sz = (dtype > 0 && dtype <= 10) ? kTypeSize[dtype] : 0;
-        if (sz == 0)
-          continue;
-        SensorAttr attr;
-        char name_buf[33] = {};
-        std::memcpy(name_buf, rec + 4, 32);
-        attr.name   = name_buf;
-        attr.size   = sz;
-        attr.offset = off;
-        std::memcpy(attr.record.data(), rec, 192);
-        result.push_back(std::move(attr));
-        off += sz;
-      }
-      return result;
-    };
-
-    // Pre-pass: read the EXTRA_BYTES VLR from every LAS/LAZ input file.
+    // Pre-pass: read the full header from every LAS/LAZ input file. A single readLasHeader call
+    // per file populates the field table, label flags, and RGB flag — no separate VLR parse needed.
     struct FileSchema
     {
-      uint16_t orig_extra = 0;
-      std::vector<SensorAttr> attrs;
+      ray::LasHeader hdr;
+      std::vector<SensorAttr> attrs;  ///< sensor (non-own) extras in VLR order
     };
     const int nfiles = static_cast<int>(cloud_files.files().size());
     std::vector<FileSchema> schemas(nfiles);
-    for (int f = 0; f < nfiles; ++f)
-    {
-      const std::string &fn = cloud_files.files()[f].name();
-      const std::string fe  = ray::getFileNameExtension(fn);
-      if (fe == "las" || fe == "laz")
-      {
-        std::vector<uint8_t> file_vlr;
-        ray::readLasExtraBytesVlr(fn, schemas[f].orig_extra, file_vlr);
-        schemas[f].attrs = parseSensorAttrs(file_vlr);
-      }
-    }
-
-    // Per-file label detection from the EXTRA_BYTES VLR schema (not from point data): a file
-    // carries labels when its VLR declares a "tree_id" and/or "stem_id" attribute. These are
-    // first-class label columns, owned by the ray cloud format, so readLasExtraBytesVlr strips
-    // them from the sensor-extra schema above; we scan the raw VLR names here instead.
-    // tree_id/stem_id are never routed through the sensor-extra union/passthrough path.
-    auto lasDeclaresLabels = [](const std::string &fn) -> bool {
-#if RAYLIB_WITH_LAS
-      laszip_POINTER reader;
-      if (laszip_create(&reader))
-        return false;
-      laszip_BOOL is_compressed;
-      if (laszip_open_reader(reader, fn.c_str(), &is_compressed))
-      {
-        laszip_destroy(reader);
-        return false;
-      }
-      laszip_header_struct *header;
-      laszip_get_header_pointer(reader, &header);
-      bool found = false;
-      for (laszip_U32 v = 0; v < header->number_of_variable_length_records && !found; v++)
-      {
-        auto &vlr = header->vlrs[v];
-        if (strcmp(vlr.user_id, "LASF_Spec") != 0 || vlr.record_id != 4)
-          continue;
-        const int num_attrs = vlr.record_length_after_header / 192;
-        for (int a = 0; a < num_attrs; a++)
-        {
-          char attr_name[33] = {};
-          std::memcpy(attr_name, vlr.data + a * 192 + 4, 32);
-          if (strcmp(attr_name, "tree_id") == 0 || strcmp(attr_name, "stem_id") == 0)
-          {
-            found = true;
-            break;
-          }
-        }
-      }
-      laszip_close_reader(reader);
-      laszip_destroy(reader);
-      return found;
-#else   // RAYLIB_WITH_LAS
-      (void)fn;
-      return false;
-#endif  // RAYLIB_WITH_LAS
-    };
     std::vector<bool> has_labels(nfiles, false);
     bool union_has_labels = false;
     bool union_has_rgb = false;
@@ -279,19 +196,19 @@ int rayCombine(int argc, char *argv[])
       const std::string &fn = cloud_files.files()[f].name();
       const std::string fe  = ray::getFileNameExtension(fn);
       if (fe == "las" || fe == "laz")
+        ray::readLasHeader(fn, schemas[f].hdr);
+      for (const auto &ef : schemas[f].hdr.extras)
       {
-        if (lasDeclaresLabels(fn))
-        {
-          has_labels[f]    = true;
-          union_has_labels = true;
-        }
-        bool file_has_rgb = false;
-        uint16_t dummy_extra = 0;
-        std::vector<uint8_t> dummy_vlr;
-        ray::readLasExtraBytesVlr(fn, dummy_extra, dummy_vlr, nullptr, &file_has_rgb);
-        if (file_has_rgb)
-          union_has_rgb = true;
+        if (ef.is_own) continue;
+        SensorAttr attr;
+        attr.name = ef.name; attr.size = ef.size; attr.offset = ef.sensor_offset;
+        std::memcpy(attr.record.data(), ef.vlr_record, 192);
+        schemas[f].attrs.push_back(attr);
       }
+      if (schemas[f].hdr.has("tree_id") || schemas[f].hdr.has("stem_id"))
+        { has_labels[f] = true; union_has_labels = true; }
+      if (schemas[f].hdr.has_rgb)
+        union_has_rgb = true;
     }
 
     // Build the union sensor-attr schema: name-deduplicated, ordered by first appearance.
@@ -333,7 +250,7 @@ int rayCombine(int argc, char *argv[])
             remaps[f].push_back({ fa.offset, ua.offset, std::min(fa.size, ua.size) });
             break;
           }
-      const uint16_t fp = static_cast<uint16_t>(10 + schemas[f].orig_extra);
+      const uint16_t fp = static_cast<uint16_t>(10 + schemas[f].hdr.sensorExtraSize());
       needs_remap[f] = (fp != writer_pass_stride) || (remaps[f].size() < union_attrs.size());
       if (!needs_remap[f])
         for (const auto &r : remaps[f])
@@ -407,7 +324,7 @@ int rayCombine(int argc, char *argv[])
     {
       const std::string &fname = cloud_files.files()[i].name();
       const std::string fext   = ray::getFileNameExtension(fname);
-      const uint16_t file_pass_stride = static_cast<uint16_t>(10 + schemas[i].orig_extra);
+      const uint16_t file_pass_stride = static_cast<uint16_t>(10 + schemas[i].hdr.sensorExtraSize());
       std::vector<uint8_t> passthrough_buf;
       size_t passthrough_cursor = 0;  ///< byte offset into passthrough_buf for the next chunk
       // Label buffers: readLas appends tree_id/stem_id for files that declare them. Sliced

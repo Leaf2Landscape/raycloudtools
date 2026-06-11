@@ -23,13 +23,20 @@ static bool beginWriter(CloudWriter &writer, const std::string &out_file,
                         uint16_t &pass_stride_out, std::vector<uint8_t> &extra_bytes_vlr_out,
                         bool &has_tree_id_out, bool &has_stem_id_out)
 {
-  uint16_t orig_extra = 0;
   has_tree_id_out = false;
   has_stem_id_out = false;
+  pass_stride_out = 10;
   if (ext == "las" || ext == "laz")
-    readLasExtraBytesVlr(in_file, orig_extra, extra_bytes_vlr_out, nullptr, nullptr,
-                         &has_tree_id_out, &has_stem_id_out);
-  pass_stride_out = static_cast<uint16_t>(10 + orig_extra);
+  {
+    LasHeader hdr;
+    if (readLasHeader(in_file, hdr))
+    {
+      extra_bytes_vlr_out = hdr.sensorExtraVlr();
+      pass_stride_out     = static_cast<uint16_t>(10 + hdr.sensorExtraSize());
+      has_tree_id_out     = hdr.has("tree_id");
+      has_stem_id_out     = hdr.has("stem_id");
+    }
+  }
   return writer.begin(out_file, extra_bytes_vlr_out, false, has_tree_id_out, has_stem_id_out);
 }
 
@@ -593,9 +600,13 @@ bool deduplicateVoxel(const std::string &file_name, double vox_width,
   bool has_rgb = false;
   if (is_las)
   {
-    uint16_t orig_extra = 0;
-    readLasExtraBytesVlr(file_name, orig_extra, extra_bytes_vlr, nullptr, &has_rgb);
-    pass_stride = static_cast<uint16_t>(10 + orig_extra);
+    LasHeader hdr;
+    if (readLasHeader(file_name, hdr))
+    {
+      extra_bytes_vlr = hdr.sensorExtraVlr();
+      pass_stride     = static_cast<uint16_t>(10 + hdr.sensorExtraSize());
+      has_rgb         = hdr.has_rgb;
+    }
   }
 
   // Per-chunk buffers shared by both passes. readLas appends tree_id/stem_id and passthrough across

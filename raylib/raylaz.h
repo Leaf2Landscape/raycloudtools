@@ -27,8 +27,9 @@ struct RAYLIB_EXPORT LasExtraField
   uint16_t offset   = 0;     ///< byte offset within the extra_bytes block per point
   uint8_t  dtype    = 0;     ///< LAS data_type (1-10)
   uint16_t size     = 0;     ///< per-point byte count derived from dtype
-  bool     is_own   = false; ///< true iff this field belongs to the raycloudtools schema
-  uint8_t  vlr_record[192] = {}; ///< raw 192-byte EXTRA_BYTES VLR record for this field
+  bool     is_own         = false; ///< true iff this field belongs to the raycloudtools schema
+  uint16_t sensor_offset  = 0;    ///< byte offset within the sensor-only extras block (0 for own fields)
+  uint8_t  vlr_record[192] = {};  ///< raw 192-byte EXTRA_BYTES VLR record for this field
 };
 
 /// Complete summary of a LAS/LAZ file header, including a generic table of all extra-byte

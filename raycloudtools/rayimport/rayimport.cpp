@@ -108,27 +108,16 @@ std::vector<char *> stripFilterArgs(int argc, char *argv[])
   return out;
 }
 
-void resolveFiltersLas(std::vector<ray::FieldFilter> &filters, const std::vector<uint8_t> &extra_bytes_vlr,
-                       uint16_t /*orig_extra_size*/)
+void resolveFiltersLas(std::vector<ray::FieldFilter> &filters, const ray::LasHeader &hdr)
 {
-  struct StdField
-  {
-    const char *name;
-    int offset;
-    int size;
-    bool is_signed;
-    bool is_float;
-    double scale;
-  };
+  struct StdField { const char *name; int offset; int size; bool is_signed; bool is_float; double scale; };
   static const StdField kStdFields[] = {
-    { "classification", 2, 1, false, false, 1.0 },
-    { "user_data", 3, 1, false, false, 1.0 },
-    { "scan_angle", 4, 2, true, false, 0.006 },
-    { "point_source_id", 6, 2, false, false, 1.0 },
-    { "intensity", 8, 2, false, false, 1.0 },
+    { "classification",  2, 1, false, false, 1.0   },
+    { "user_data",       3, 1, false, false, 1.0   },
+    { "scan_angle",      4, 2, true,  false, 0.006 },
+    { "point_source_id", 6, 2, false, false, 1.0   },
+    { "intensity",       8, 2, false, false, 1.0   },
   };
-  // Mirror of kDecodeExtraTypeSize in raylasdecode.h: LAS EXTRA_BYTES data_type -> byte size.
-  static const uint16_t kExtraTypeSize[11] = { 0, 1, 1, 2, 2, 4, 4, 8, 8, 4, 8 };
 
   for (ray::FieldFilter &f : filters)
   {
@@ -137,50 +126,31 @@ void resolveFiltersLas(std::vector<ray::FieldFilter> &filters, const std::vector
     {
       if (f.name == sf.name)
       {
-        f.pass_offset = sf.offset;
-        f.pass_size = sf.size;
-        f.is_signed = sf.is_signed;
-        f.is_float = sf.is_float;
-        f.scale = sf.scale;
-        f.resolved = true;
-        matched = true;
-        break;
+        f.pass_offset = sf.offset; f.pass_size = sf.size;
+        f.is_signed = sf.is_signed; f.is_float = sf.is_float; f.scale = sf.scale;
+        f.resolved = true; matched = true; break;
       }
     }
-    if (matched)
-      continue;
+    if (matched) continue;
 
-    int byte_offset = 10;  // sensor extras follow the 10-byte standard passthrough block
-    const size_t num_attrs = extra_bytes_vlr.size() / 192;
-    for (size_t a = 0; a < num_attrs; a++)
+    const ray::LasExtraField *ef = hdr.field(f.name);
+    if (ef && !ef->is_own)
     {
-      const uint8_t *rec = extra_bytes_vlr.data() + a * 192;
-      const uint8_t dtype = rec[2];
-      const uint16_t attr_size = (dtype > 0 && dtype <= 10) ? kExtraTypeSize[dtype] : 0;
-      if (attr_size == 0)
-        continue;
-      char attr_name[33] = {};
-      std::memcpy(attr_name, rec + 4, 32);
-      if (f.name == attr_name)
-      {
-        f.pass_offset = byte_offset;
-        f.pass_size = attr_size;
-        f.is_signed = (dtype == 2 || dtype == 4 || dtype == 6 || dtype == 8 || dtype == 9 || dtype == 10);
-        f.is_float = (dtype == 9 || dtype == 10);
-        // LAS EXTRA_BYTES VLR: options bit 3 = scale relevant, bit 4 = offset relevant.
-        // scale at bytes 112-119 (first double), offset at bytes 136-143 (first double).
-        const uint8_t opts = rec[3];
-        f.scale  = (opts & 0x08u) ? *reinterpret_cast<const double *>(rec + 112) : 1.0;
-        f.offset = (opts & 0x10u) ? *reinterpret_cast<const double *>(rec + 136) : 0.0;
-        f.resolved = true;
-        matched = true;
-        break;
-      }
-      byte_offset += attr_size;
+      const uint8_t *rec = ef->vlr_record;
+      const uint8_t opts = rec[3];
+      f.pass_offset = static_cast<int>(10 + ef->sensor_offset);
+      f.pass_size   = static_cast<int>(ef->size);
+      f.is_signed   = (ef->dtype == 2 || ef->dtype == 4 || ef->dtype == 6 ||
+                       ef->dtype == 8 || ef->dtype == 9 || ef->dtype == 10);
+      f.is_float    = (ef->dtype == 9 || ef->dtype == 10);
+      f.scale  = (opts & 0x08u) ? *reinterpret_cast<const double *>(rec + 112) : 1.0;
+      f.offset = (opts & 0x10u) ? *reinterpret_cast<const double *>(rec + 136) : 0.0;
+      f.resolved = true;
     }
-    if (!matched)
+    else
     {
-      const bool is_range_alias = (f.name == "range" || f.name == "Range" || f.name == "min_range" || f.name == "max_range");
+      const bool is_range_alias = (f.name == "range" || f.name == "Range" ||
+                                   f.name == "min_range" || f.name == "max_range");
       if (!is_range_alias)
         std::cout << "Filter field '" << f.name << "' not found in input — skipping" << std::endl;
     }
@@ -390,13 +360,15 @@ int rayImport(int argc, char *argv[])
 
   // Pre-read original sensor extra-byte attributes from the input LAS/LAZ header so the writer
   // can register and preserve them before opening the output file.
+  ray::LasHeader input_hdr;
   std::vector<uint8_t> input_extra_bytes_vlr;
   bool input_has_rgb = false;
-  uint16_t orig_extra = 0;
   if (in_ext == "laz" || in_ext == "las")
   {
-    ray::readLasExtraBytesVlr(cloud_file.name(), orig_extra, input_extra_bytes_vlr, nullptr, &input_has_rgb);
-    resolveFiltersLas(filters, input_extra_bytes_vlr, orig_extra);
+    ray::readLasHeader(cloud_file.name(), input_hdr);
+    input_extra_bytes_vlr = input_hdr.sensorExtraVlr();
+    input_has_rgb = input_hdr.has_rgb;
+    resolveFiltersLas(filters, input_hdr);
   }
   // Range aliases not resolved by field lookup fall back to computed ray length (pass_offset stays -1).
   for (auto &f : filters)
@@ -580,7 +552,7 @@ int rayImport(int argc, char *argv[])
         }
       }
     }
-    const size_t pass_stride = 10u + orig_extra;
+    const size_t pass_stride = 10u + input_hdr.sensorExtraSize();
     bool has_active_filter = false;
     for (const auto &f : filters)
       if (f.resolved)

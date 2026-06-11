@@ -132,10 +132,12 @@ int rayColour(int argc, char *argv[])
   if (type != "shape" && type != "normal" && type != "branches")  // chunk loading possible for simple cases
   {
     const std::string ext = ray::getFileNameExtension(cloud_file.name());
-    uint16_t orig_extra = 0;
     std::vector<uint8_t> extra_bytes_vlr;
     if (ext == "las" || ext == "laz")
-      ray::readLasExtraBytesVlr(cloud_file.name(), orig_extra, extra_bytes_vlr);
+    {
+      ray::LasHeader hdr;
+      if (ray::readLasHeader(cloud_file.name(), hdr)) extra_bytes_vlr = hdr.sensorExtraVlr();
+    }
 
     ray::CloudWriter writer;
     if (!writer.begin(out_file, extra_bytes_vlr))

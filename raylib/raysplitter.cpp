@@ -28,8 +28,8 @@ bool split(const std::string &file_name, const std::string &in_name, const std::
   std::vector<uint8_t> extra_bytes_vlr;
   if (is_las)
   {
-    uint16_t orig_extra = 0;
-    readLasExtraBytesVlr(file_name, orig_extra, extra_bytes_vlr);
+    LasHeader hdr;
+    if (readLasHeader(file_name, hdr)) extra_bytes_vlr = hdr.sensorExtraVlr();
   }
 
   Cloud cloud_buffer;
@@ -97,8 +97,8 @@ bool splitPlane(const std::string &file_name, const std::string &in_name, const 
   std::vector<uint8_t> extra_bytes_vlr;
   if (is_las)
   {
-    uint16_t orig_extra = 0;
-    readLasExtraBytesVlr(file_name, orig_extra, extra_bytes_vlr);
+    LasHeader hdr;
+    if (readLasHeader(file_name, hdr)) extra_bytes_vlr = hdr.sensorExtraVlr();
   }
 
   CloudWriter inside_writer, outside_writer;
@@ -200,8 +200,8 @@ bool splitCapsule(const std::string &file_name, const std::string &in_name, cons
   std::vector<uint8_t> extra_bytes_vlr;
   if (is_las)
   {
-    uint16_t orig_extra = 0;
-    readLasExtraBytesVlr(file_name, orig_extra, extra_bytes_vlr);
+    LasHeader hdr;
+    if (readLasHeader(file_name, hdr)) extra_bytes_vlr = hdr.sensorExtraVlr();
   }
 
   CloudWriter inside_writer, outside_writer;
@@ -379,8 +379,8 @@ bool splitBox(const std::string &file_name, const std::string &in_name, const st
   std::vector<uint8_t> extra_bytes_vlr;
   if (is_las)
   {
-    uint16_t orig_extra = 0;
-    readLasExtraBytesVlr(file_name, orig_extra, extra_bytes_vlr);
+    LasHeader hdr;
+    if (readLasHeader(file_name, hdr)) extra_bytes_vlr = hdr.sensorExtraVlr();
   }
 
   CloudWriter inside_writer, outside_writer;
@@ -492,8 +492,8 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
   std::vector<uint8_t> extra_bytes_vlr;
   if (is_las)
   {
-    uint16_t orig_extra = 0;
-    readLasExtraBytesVlr(file_name, orig_extra, extra_bytes_vlr);
+    LasHeader hdr;
+    if (readLasHeader(file_name, hdr)) extra_bytes_vlr = hdr.sensorExtraVlr();
   }
 
   overlap /= 2.0;  // it now means overlap relative to grid edge
@@ -700,8 +700,8 @@ bool splitColour(const std::string &file_name, const std::string &cloud_name_stu
   std::vector<uint8_t> extra_bytes_vlr;
   if (is_las)
   {
-    uint16_t orig_extra = 0;
-    readLasExtraBytesVlr(file_name, orig_extra, extra_bytes_vlr);
+    LasHeader hdr;
+    if (readLasHeader(file_name, hdr)) extra_bytes_vlr = hdr.sensorExtraVlr();
   }
 
   std::map<RGBA, int, RGBALess> vox_map;

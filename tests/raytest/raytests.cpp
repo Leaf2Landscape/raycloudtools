@@ -247,7 +247,7 @@ namespace raytest
     { ray::Mesh m; EXPECT_TRUE(ray::readPlyMesh("forest_mesh.ply", m)); }
 
     // --- Test 1: rayextract segment produces segmented cloud + seeds file ---
-    EXPECT_EQ(command("rayextract segment forest.las --ground forest_mesh.ply"), 0);
+    EXPECT_EQ(command("rayextract segment forest.las forest_mesh.ply"), 0);
 
     ray::Cloud seg_cloud;
     EXPECT_TRUE(seg_cloud.load("forest_segmented.las"));
@@ -315,7 +315,7 @@ namespace raytest
   {
     EXPECT_EQ(command("raycreate forest 2"), 0);
     EXPECT_EQ(command("rayextract terrain forest.las"), 0);
-    EXPECT_EQ(command("rayextract segment forest.las --ground forest_mesh.ply"), 0);
+    EXPECT_EQ(command("rayextract segment forest.las forest_mesh.ply"), 0);
 
     // Remove the auto-generated seeds file to force the synthesis path.
     EXPECT_EQ(remove("forest_segmented_seeds.txt"), 0);
@@ -468,7 +468,7 @@ namespace raytest
   {
     EXPECT_EQ(command("raycreate forest 2"), 0);
     EXPECT_EQ(command("rayextract terrain forest.las"), 0);
-    EXPECT_EQ(command("rayextract segment forest.las --ground forest_mesh.ply"), 0);
+    EXPECT_EQ(command("rayextract segment forest.las forest_mesh.ply"), 0);
 
     ray::Cloud seg;
     EXPECT_TRUE(seg.load("forest_segmented.las"));
@@ -501,7 +501,7 @@ namespace raytest
   {
     EXPECT_EQ(command("raycreate forest 2"), 0);
     EXPECT_EQ(command("rayextract terrain forest.las"), 0);
-    EXPECT_EQ(command("rayextract segment forest.las --ground forest_mesh.ply"), 0);
+    EXPECT_EQ(command("rayextract segment forest.las forest_mesh.ply"), 0);
     EXPECT_EQ(copy("forest_segmented.las forest_segmented2.las"), 0);
     EXPECT_EQ(command("raycombine all forest_segmented.las forest_segmented2.las"), 0);
 

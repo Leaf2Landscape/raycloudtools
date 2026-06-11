@@ -299,25 +299,16 @@ struct ClassFieldSource { uint16_t byte_offset = 2; uint8_t las_dtype = 1; };
 // The passthrough buffer stores the sensor extra bytes after kPassthroughStdBytes
 // standard bytes, in VLR order; each preceding field advances the cumulative offset
 // by its data_type size. On no match, prints one warning and falls back to defaults.
-ClassFieldSource resolveClassField(const std::string& field_name,
-                                   const std::vector<uint8_t>& extra_bytes_vlr)
+ClassFieldSource resolveClassField(const std::string& field_name, const ray::LasHeader& hdr)
 {
   if (field_name.empty()) return ClassFieldSource{};
   std::string lowered = field_name;
   for (char& c : lowered) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   if (lowered == "classification") return ClassFieldSource{};
 
-  const size_t num_records = extra_bytes_vlr.size() / 192;
-  uint16_t cumulative_offset = 0;
-  for (size_t i = 0; i < num_records; ++i)
-  {
-    const uint8_t dtype = extra_bytes_vlr[i * 192 + 2];
-    char name[33] = {};
-    std::memcpy(name, &extra_bytes_vlr[i * 192 + 4], 32);
-    if (field_name == name)
-      return ClassFieldSource{ static_cast<uint16_t>(kPassthroughStdBytes + cumulative_offset), dtype };
-    if (dtype > 0 && dtype <= 10) cumulative_offset += kExtraByteSizes[dtype];
-  }
+  const ray::LasExtraField *f = hdr.field(field_name);
+  if (f && !f->is_own)
+    return ClassFieldSource{ static_cast<uint16_t>(kPassthroughStdBytes + f->sensor_offset), f->dtype };
 
   std::cerr << "Warning: classification field '" << field_name
             << "' not found in extra bytes; using standard Classification byte." << std::endl;
@@ -357,10 +348,10 @@ static ClassTable buildClassTable(const std::string& cloud_name, const VoxelGrid
 {
   ClassTable class_table;
 
-  uint16_t orig_extra_size = 0;
-  std::vector<uint8_t> extra_bytes_vlr;
-  readLasExtraBytesVlr(cloud_name, orig_extra_size, extra_bytes_vlr);
-  const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + orig_extra_size);
+  ray::LasHeader hdr;
+  readLasHeader(cloud_name, hdr);
+  const std::vector<uint8_t> extra_bytes_vlr = hdr.sensorExtraVlr();
+  const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + hdr.sensorExtraSize());
 
   const Cuboid& bounds    = grid.getBounds();
   const double vox_width  = grid.getVoxelWidth();
@@ -447,11 +438,11 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
   PerTreeIadMap per_tree_iad;
   PredominantTreeTable predominant_tree;
 
-  uint16_t orig_extra_size = 0;
-  std::vector<uint8_t> extra_bytes_vlr;
-  bool has_tree_id = false;
-  readLasExtraBytesVlr(cloud_name, orig_extra_size, extra_bytes_vlr, nullptr, nullptr, &has_tree_id);
-  const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + orig_extra_size);
+  ray::LasHeader hdr;
+  readLasHeader(cloud_name, hdr);
+  const bool has_tree_id = hdr.has("tree_id");
+  const std::vector<uint8_t> extra_bytes_vlr = hdr.sensorExtraVlr();
+  const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + hdr.sensorExtraSize());
 
   const Cuboid& bounds    = grid.getBounds();
   const double vox_width  = grid.getVoxelWidth();
@@ -469,8 +460,8 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
   split_field_codes(params.leaf_classes_str, leaf_field, leaf_codes_str);
   split_field_codes(params.wood_classes_str, wood_field, wood_codes_str);
 
-  const ClassFieldSource leaf_src = resolveClassField(leaf_field, extra_bytes_vlr);
-  const ClassFieldSource wood_src = resolveClassField(wood_field, extra_bytes_vlr);
+  const ClassFieldSource leaf_src = resolveClassField(leaf_field, hdr);
+  const ClassFieldSource wood_src = resolveClassField(wood_field, hdr);
 
   const bool any_bailey = std::any_of(params.attenuation_methods.begin(), params.attenuation_methods.end(),
                                        [](const std::string& m){ return m == "bailey"; });
@@ -1038,10 +1029,10 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
   const std::vector<double>* peaks_ptr = apply_flat_top ? &grid.getPeaks() : nullptr;
 
   // Determine the per-point passthrough stride from the ray cloud's extra-byte header.
-  uint16_t orig_extra_size = 0;
-  std::vector<uint8_t> extra_bytes_vlr;
-  readLasExtraBytesVlr(cloud_name, orig_extra_size, extra_bytes_vlr);
-  const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + orig_extra_size);
+  ray::LasHeader hdr;
+  readLasHeader(cloud_name, hdr);
+  const std::vector<uint8_t> extra_bytes_vlr = hdr.sensorExtraVlr();
+  const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + hdr.sensorExtraSize());
 
   if (resolved_threads > 1) {
     // --- OPTION 2: Parallel Producer-Consumer Implementation ---
@@ -1472,10 +1463,10 @@ bool OutOfCoreStrategy::createShards(const std::string& cloud_name, VoxelGrid& g
 
     // --- Producer loop ---
     // Determine the per-point passthrough stride from the ray cloud's extra-byte header.
-    uint16_t orig_extra_size = 0;
-    std::vector<uint8_t> extra_bytes_vlr;
-    readLasExtraBytesVlr(cloud_name, orig_extra_size, extra_bytes_vlr);
-    const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + orig_extra_size);
+    ray::LasHeader hdr;
+    readLasHeader(cloud_name, hdr);
+    const std::vector<uint8_t> extra_bytes_vlr = hdr.sensorExtraVlr();
+    const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + hdr.sensorExtraSize());
 
     size_t num_bounded = 0;
     std::vector<uint8_t> passthrough;
@@ -1576,10 +1567,9 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
       // Determine whether this file declares a "bound" extra attribute. When present, unbound
       // (miss) endpoints are excluded from the bounding box; old files without it include all
       // endpoints exactly as before.
-      uint16_t pre_orig_extra = 0;
-      std::vector<uint8_t> pre_extra_vlr;
-      bool file_has_bound = false;
-      readLasExtraBytesVlr(cloud_name, pre_orig_extra, pre_extra_vlr, &file_has_bound);
+      ray::LasHeader pre_hdr;
+      readLasHeader(cloud_name, pre_hdr);
+      const bool file_has_bound = pre_hdr.has("bound");
       size_t num_bounded = 0;
       return ray::readLas(cloud_name,
           [&](std::vector<Eigen::Vector3d>& /*starts*/, std::vector<Eigen::Vector3d>& ends,
@@ -1671,10 +1661,10 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
         std::vector<Eigen::Vector3d> ground_points;
 
         // Read classification from the passthrough buffer (byte [2] = extended classification).
-        uint16_t orig_extra_size = 0;
-        std::vector<uint8_t> extra_bytes_vlr;
-        readLasExtraBytesVlr(params.cloud_name, orig_extra_size, extra_bytes_vlr);
-        const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + orig_extra_size);
+        ray::LasHeader hdr;
+        readLasHeader(params.cloud_name, hdr);
+        const std::vector<uint8_t> extra_bytes_vlr = hdr.sensorExtraVlr();
+        const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + hdr.sensorExtraSize());
 
         // Chunked pass collecting ground points whose passthrough classification matches.
         size_t num_bounded = 0;
@@ -1808,10 +1798,9 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
     // cloud's trees, so it is written once for the base stub regardless of voxel filtering
     // (_filled / _include_empty variants reuse the same per-tree data).
     if (params.calc_inclination_dist && !per_tree_iad.empty()) {
-        bool has_stem_id = false;
-        uint16_t iad_extra_size = 0;
-        std::vector<uint8_t> iad_extra_vlr;
-        readLasExtraBytesVlr(params.cloud_name, iad_extra_size, iad_extra_vlr, nullptr, nullptr, nullptr, &has_stem_id);
+        ray::LasHeader iad_hdr;
+        readLasHeader(params.cloud_name, iad_hdr);
+        const bool has_stem_id = iad_hdr.has("stem_id");
         writePerTreeIadCsv(base_name_stub, per_tree_iad, params, has_stem_id);
     }
 

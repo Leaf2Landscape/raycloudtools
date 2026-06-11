@@ -611,8 +611,8 @@ bool convertCloud(const std::string &in_name, const std::string &out_name,
   std::vector<uint8_t> extra_bytes_vlr;
   if (is_las)
   {
-    uint16_t orig_extra = 0;
-    readLasExtraBytesVlr(in_name, orig_extra, extra_bytes_vlr);
+    LasHeader hdr;
+    if (readLasHeader(in_name, hdr)) extra_bytes_vlr = hdr.sensorExtraVlr();
   }
 
   CloudWriter writer;
