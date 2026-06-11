@@ -20,29 +20,37 @@ namespace ray
 // are registered in the output before any points are written.
 static bool beginWriter(CloudWriter &writer, const std::string &out_file,
                         const std::string &in_file, const std::string &ext,
-                        uint16_t &pass_stride_out, std::vector<uint8_t> &extra_bytes_vlr_out)
+                        uint16_t &pass_stride_out, std::vector<uint8_t> &extra_bytes_vlr_out,
+                        bool &has_tree_id_out, bool &has_stem_id_out)
 {
   uint16_t orig_extra = 0;
+  has_tree_id_out = false;
+  has_stem_id_out = false;
   if (ext == "las" || ext == "laz")
-    readLasExtraBytesVlr(in_file, orig_extra, extra_bytes_vlr_out);
+    readLasExtraBytesVlr(in_file, orig_extra, extra_bytes_vlr_out, nullptr, nullptr,
+                         &has_tree_id_out, &has_stem_id_out);
   pass_stride_out = static_cast<uint16_t>(10 + orig_extra);
-  return writer.begin(out_file, extra_bytes_vlr_out);
+  return writer.begin(out_file, extra_bytes_vlr_out, false, has_tree_id_out, has_stem_id_out);
 }
 
-// Read a LAS/LAZ file with per-point passthrough, or fall back to Cloud::read for PLY.
-// The callback signature matches Cloud::read. passthrough_buf is appended to before each callback,
-// and cleared inside the callback after consuming the current chunk's bytes.
+// Read a LAS/LAZ file with per-point passthrough (and optionally tree/stem IDs), or fall back to
+// Cloud::read for PLY. passthrough_buf is appended to before each callback, and cleared inside the
+// callback after consuming the current chunk's bytes. tree_ids_out/stem_ids_out accumulate across
+// chunks and must NOT be cleared per-chunk; callers track a base offset instead.
 static bool readWithPassthrough(const std::string &file_name, const std::string &ext,
                                 std::function<void(std::vector<Eigen::Vector3d> &,
                                                    std::vector<Eigen::Vector3d> &,
                                                    std::vector<double> &,
                                                    std::vector<RGBA> &)> apply,
-                                std::vector<uint8_t> *passthrough_buf)
+                                std::vector<uint8_t> *passthrough_buf,
+                                std::vector<int32_t> *tree_ids_out = nullptr,
+                                std::vector<int32_t> *stem_ids_out = nullptr)
 {
   if ((ext == "las" || ext == "laz") && passthrough_buf)
   {
     size_t num_bounded;
-    return readLas(file_name, apply, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, passthrough_buf);
+    return readLas(file_name, apply, num_bounded, 1.0, nullptr, computeReadChunkSize(),
+                   tree_ids_out, passthrough_buf, nullptr, nullptr, stem_ids_out);
   }
   return Cloud::read(file_name, apply);
 }
@@ -55,13 +63,17 @@ bool decimateSpatial(const std::string &file_name, double vox_width)
   ray::CloudWriter writer;
   uint16_t pass_stride = 8;
   std::vector<uint8_t> extra_bytes_vlr;
-  if (!beginWriter(writer, stub + "_decimated." + ext, file_name, ext, pass_stride, extra_bytes_vlr))
+  bool has_tree_id = false, has_stem_id = false;
+  if (!beginWriter(writer, stub + "_decimated." + ext, file_name, ext, pass_stride, extra_bytes_vlr,
+                   has_tree_id, has_stem_id))
     return false;
 
   ray::Cloud chunk;
   std::vector<int64_t> subsample;
   std::set<Eigen::Vector3i, ray::Vector3iLess> voxel_set;
   std::vector<uint8_t> passthrough_buf;
+  std::vector<int32_t> tree_ids_buf, stem_ids_buf;
+  size_t tree_ids_base = 0;
 
   auto decimate = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                       std::vector<double> &times, std::vector<ray::RGBA> &colours)
@@ -71,6 +83,7 @@ bool decimateSpatial(const std::string &file_name, double vox_width)
     voxelSubsample(ends, width, subsample, voxel_set);
     chunk.resize(subsample.size());
     std::vector<uint8_t> chunk_pass;
+    std::vector<int32_t> chunk_tree, chunk_stem;
     if (!passthrough_buf.empty())
     {
       chunk_pass.reserve(subsample.size() * pass_stride);
@@ -88,11 +101,18 @@ bool decimateSpatial(const std::string &file_name, double vox_width)
       chunk.ends[i] = ends[id];
       chunk.colours[i] = colours[id];
       chunk.times[i] = times[id];
+      if (!tree_ids_buf.empty())
+        chunk_tree.push_back(tree_ids_buf[tree_ids_base + id]);
+      if (!stem_ids_buf.empty())
+        chunk_stem.push_back(stem_ids_buf[tree_ids_base + id]);
     }
-    writer.writeChunk(chunk.starts, chunk.ends, chunk.times, chunk.colours, chunk_pass);
+    tree_ids_base += ends.size();
+    writer.writeChunk(chunk.starts, chunk.ends, chunk.times, chunk.colours, chunk_pass, {}, chunk_tree, chunk_stem);
   };
 
-  if (!readWithPassthrough(file_name, ext, decimate, &passthrough_buf))
+  if (!readWithPassthrough(file_name, ext, decimate, &passthrough_buf,
+                           has_tree_id ? &tree_ids_buf : nullptr,
+                           has_stem_id ? &stem_ids_buf : nullptr))
     return false;
   writer.end();
   return true;
@@ -106,11 +126,15 @@ bool decimateTemporal(const std::string &file_name, int num_rays)
   ray::CloudWriter writer;
   uint16_t pass_stride = 8;
   std::vector<uint8_t> extra_bytes_vlr;
-  if (!beginWriter(writer, stub + "_decimated." + ext, file_name, ext, pass_stride, extra_bytes_vlr))
+  bool has_tree_id = false, has_stem_id = false;
+  if (!beginWriter(writer, stub + "_decimated." + ext, file_name, ext, pass_stride, extra_bytes_vlr,
+                   has_tree_id, has_stem_id))
     return false;
 
   ray::Cloud chunk;
   std::vector<uint8_t> passthrough_buf;
+  std::vector<int32_t> tree_ids_buf, stem_ids_buf;
+  size_t tree_ids_base = 0;
 
   auto decimate = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                       std::vector<double> &times, std::vector<ray::RGBA> &colours)
@@ -119,6 +143,7 @@ bool decimateTemporal(const std::string &file_name, int num_rays)
     size_t count = (ends.size() + decimation - 1) / decimation;
     chunk.resize(count);
     std::vector<uint8_t> chunk_pass;
+    std::vector<int32_t> chunk_tree, chunk_stem;
     if (!passthrough_buf.empty())
     {
       chunk_pass.reserve(count * pass_stride);
@@ -135,11 +160,18 @@ bool decimateTemporal(const std::string &file_name, int num_rays)
       chunk.ends[c] = ends[i];
       chunk.times[c] = times[i];
       chunk.colours[c] = colours[i];
+      if (!tree_ids_buf.empty())
+        chunk_tree.push_back(tree_ids_buf[tree_ids_base + i]);
+      if (!stem_ids_buf.empty())
+        chunk_stem.push_back(stem_ids_buf[tree_ids_base + i]);
     }
-    writer.writeChunk(chunk.starts, chunk.ends, chunk.times, chunk.colours, chunk_pass);
+    tree_ids_base += ends.size();
+    writer.writeChunk(chunk.starts, chunk.ends, chunk.times, chunk.colours, chunk_pass, {}, chunk_tree, chunk_stem);
   };
 
-  if (!readWithPassthrough(file_name, ext, decimate, &passthrough_buf))
+  if (!readWithPassthrough(file_name, ext, decimate, &passthrough_buf,
+                           has_tree_id ? &tree_ids_buf : nullptr,
+                           has_stem_id ? &stem_ids_buf : nullptr))
     return false;
   writer.end();
   return true;
@@ -153,7 +185,9 @@ bool decimateSpatioTemporal(const std::string &file_name, double vox_width, int 
   ray::CloudWriter writer;
   uint16_t pass_stride = 8;
   std::vector<uint8_t> extra_bytes_vlr;
-  if (!beginWriter(writer, stub + "_decimated." + ext, file_name, ext, pass_stride, extra_bytes_vlr))
+  bool has_tree_id = false, has_stem_id = false;
+  if (!beginWriter(writer, stub + "_decimated." + ext, file_name, ext, pass_stride, extra_bytes_vlr,
+                   has_tree_id, has_stem_id))
     return false;
 
   std::map<Eigen::Vector3i, Eigen::Vector2i, ray::Vector3iLess> voxel_map;
@@ -200,6 +234,8 @@ bool decimateSpatioTemporal(const std::string &file_name, double vox_width, int 
 
   // Pass 2: emit selected points with passthrough preserved.
   std::vector<uint8_t> passthrough_buf;
+  std::vector<int32_t> tree_ids_buf, stem_ids_buf;
+  size_t tree_ids_base = 0;
   auto finalise = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                       std::vector<double> &times, std::vector<ray::RGBA> &colours)
   {
@@ -207,6 +243,7 @@ bool decimateSpatioTemporal(const std::string &file_name, double vox_width, int 
     std::vector<double> out_times;
     std::vector<ray::RGBA> out_colours;
     std::vector<uint8_t> chunk_pass;
+    std::vector<int32_t> chunk_tree, chunk_stem;
     for (size_t i = 0; i < ends.size(); i++)
     {
       Eigen::Vector3d coords = ends[i] / voxel_width;
@@ -229,13 +266,20 @@ bool decimateSpatioTemporal(const std::string &file_name, double vox_width, int 
           const uint8_t *src = passthrough_buf.data() + i * pass_stride;
           chunk_pass.insert(chunk_pass.end(), src, src + pass_stride);
         }
+        if (!tree_ids_buf.empty())
+          chunk_tree.push_back(tree_ids_buf[tree_ids_base + i]);
+        if (!stem_ids_buf.empty())
+          chunk_stem.push_back(stem_ids_buf[tree_ids_base + i]);
       }
       ends_left--;
     }
+    tree_ids_base += ends.size();
     passthrough_buf.clear();
-    writer.writeChunk(out_starts, out_ends, out_times, out_colours, chunk_pass);
+    writer.writeChunk(out_starts, out_ends, out_times, out_colours, chunk_pass, {}, chunk_tree, chunk_stem);
   };
-  if (!readWithPassthrough(file_name, ext, finalise, &passthrough_buf))
+  if (!readWithPassthrough(file_name, ext, finalise, &passthrough_buf,
+                           has_tree_id ? &tree_ids_buf : nullptr,
+                           has_stem_id ? &stem_ids_buf : nullptr))
     return false;
   writer.end();
   return true;
@@ -250,12 +294,16 @@ bool decimateRaysSpatial(const std::string &file_name, double vox_width)
   ray::CloudWriter writer;
   uint16_t pass_stride = 8;
   std::vector<uint8_t> extra_bytes_vlr;
-  if (!beginWriter(writer, stub + "_decimated." + ext, file_name, ext, pass_stride, extra_bytes_vlr))
+  bool has_tree_id = false, has_stem_id = false;
+  if (!beginWriter(writer, stub + "_decimated." + ext, file_name, ext, pass_stride, extra_bytes_vlr,
+                   has_tree_id, has_stem_id))
     return false;
 
   ray::Cloud chunk;
   Subsampler subsampler;
   std::vector<uint8_t> passthrough_buf;
+  std::vector<int32_t> tree_ids_buf, stem_ids_buf;
+  size_t tree_ids_base = 0;
 
   auto decimate = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                       std::vector<double> &times, std::vector<ray::RGBA> &colours)
@@ -274,6 +322,7 @@ bool decimateRaysSpatial(const std::string &file_name, double vox_width)
     }
     chunk.resize(subsampler.subsample.size());
     std::vector<uint8_t> chunk_pass;
+    std::vector<int32_t> chunk_tree, chunk_stem;
     if (!passthrough_buf.empty())
     {
       chunk_pass.reserve(subsampler.subsample.size() * pass_stride);
@@ -291,11 +340,18 @@ bool decimateRaysSpatial(const std::string &file_name, double vox_width)
       chunk.ends[i] = ends[id];
       chunk.colours[i] = colours[id];
       chunk.times[i] = times[id];
+      if (!tree_ids_buf.empty())
+        chunk_tree.push_back(tree_ids_buf[tree_ids_base + id]);
+      if (!stem_ids_buf.empty())
+        chunk_stem.push_back(stem_ids_buf[tree_ids_base + id]);
     }
-    writer.writeChunk(chunk.starts, chunk.ends, chunk.times, chunk.colours, chunk_pass);
+    tree_ids_base += ends.size();
+    writer.writeChunk(chunk.starts, chunk.ends, chunk.times, chunk.colours, chunk_pass, {}, chunk_tree, chunk_stem);
   };
 
-  if (!readWithPassthrough(file_name, ext, decimate, &passthrough_buf))
+  if (!readWithPassthrough(file_name, ext, decimate, &passthrough_buf,
+                           has_tree_id ? &tree_ids_buf : nullptr,
+                           has_stem_id ? &stem_ids_buf : nullptr))
     return false;
   writer.end();
   return true;
@@ -309,7 +365,9 @@ bool decimateAngular(const std::string &file_name, double radius_per_length)
   ray::CloudWriter writer;
   uint16_t pass_stride = 8;
   std::vector<uint8_t> extra_bytes_vlr;
-  if (!beginWriter(writer, stub + "_decimated." + ext, file_name, ext, pass_stride, extra_bytes_vlr))
+  bool has_tree_id = false, has_stem_id = false;
+  if (!beginWriter(writer, stub + "_decimated." + ext, file_name, ext, pass_stride, extra_bytes_vlr,
+                   has_tree_id, has_stem_id))
     return false;
 
   int min_index = -20;
@@ -368,6 +426,8 @@ bool decimateAngular(const std::string &file_name, double radius_per_length)
 
   // Pass 2: emit kept points with passthrough preserved.
   std::vector<uint8_t> passthrough_buf;
+  std::vector<int32_t> tree_ids_buf, stem_ids_buf;
+  size_t tree_ids_base = 0;
   auto finalise = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                       std::vector<double> &times, std::vector<ray::RGBA> &colours)
   {
@@ -375,6 +435,7 @@ bool decimateAngular(const std::string &file_name, double radius_per_length)
     std::vector<double> out_times;
     std::vector<ray::RGBA> out_colours;
     std::vector<uint8_t> chunk_pass;
+    std::vector<int32_t> chunk_tree, chunk_stem;
     for (size_t i = 0; i < ends.size(); i++)
     {
       index++;
@@ -398,12 +459,19 @@ bool decimateAngular(const std::string &file_name, double radius_per_length)
           const uint8_t *src = passthrough_buf.data() + i * pass_stride;
           chunk_pass.insert(chunk_pass.end(), src, src + pass_stride);
         }
+        if (!tree_ids_buf.empty())
+          chunk_tree.push_back(tree_ids_buf[tree_ids_base + i]);
+        if (!stem_ids_buf.empty())
+          chunk_stem.push_back(stem_ids_buf[tree_ids_base + i]);
       }
     }
+    tree_ids_base += ends.size();
     passthrough_buf.clear();
-    writer.writeChunk(out_starts, out_ends, out_times, out_colours, chunk_pass);
+    writer.writeChunk(out_starts, out_ends, out_times, out_colours, chunk_pass, {}, chunk_tree, chunk_stem);
   };
-  if (!readWithPassthrough(file_name, ext, finalise, &passthrough_buf))
+  if (!readWithPassthrough(file_name, ext, finalise, &passthrough_buf,
+                           has_tree_id ? &tree_ids_buf : nullptr,
+                           has_stem_id ? &stem_ids_buf : nullptr))
     return false;
   writer.end();
   return true;

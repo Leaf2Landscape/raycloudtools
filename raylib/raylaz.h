@@ -46,10 +46,12 @@ bool RAYLIB_EXPORT readLas(const std::string &file_name,
 /// When @c has_bound_out is non-null, it is set to true iff the file declares a "bound" extra attribute
 /// (absent in older files written before the bound field existed).
 /// When @c has_rgb_out is non-null, it is set to true iff the file uses point format 7+ (native RGB fields).
+/// When @c has_tree_id_out / @c has_stem_id_out is non-null, set to true iff the file has those attributes.
 /// Returns false if the file cannot be opened or LAS support is not compiled in.
 bool RAYLIB_EXPORT readLasExtraBytesVlr(const std::string &file_name, uint16_t &orig_extra_size_out,
                                         std::vector<uint8_t> &extra_bytes_vlr_out,
-                                        bool *has_bound_out = nullptr, bool *has_rgb_out = nullptr);
+                                        bool *has_bound_out = nullptr, bool *has_rgb_out = nullptr,
+                                        bool *has_tree_id_out = nullptr, bool *has_stem_id_out = nullptr);
 
 /// Write to a laz or las file. The intensity is the only part that is extracted from the @c colours argument.
 bool RAYLIB_EXPORT writeLas(std::string file_name, const std::vector<Eigen::Vector3d> &points,

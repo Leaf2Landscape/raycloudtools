@@ -702,13 +702,18 @@ bool readLas(const std::string &file_name,
 }
 
 bool readLasExtraBytesVlr(const std::string &file_name, uint16_t &orig_extra_size_out,
-                           std::vector<uint8_t> &extra_bytes_vlr_out, bool *has_bound_out, bool *has_rgb_out)
+                           std::vector<uint8_t> &extra_bytes_vlr_out, bool *has_bound_out, bool *has_rgb_out,
+                           bool *has_tree_id_out, bool *has_stem_id_out)
 {
 #if RAYLIB_WITH_LAS
   if (has_bound_out)
     *has_bound_out = false;
   if (has_rgb_out)
     *has_rgb_out = false;
+  if (has_tree_id_out)
+    *has_tree_id_out = false;
+  if (has_stem_id_out)
+    *has_stem_id_out = false;
   laszip_POINTER reader;
   if (laszip_create(&reader))
     return false;
@@ -775,6 +780,10 @@ bool readLasExtraBytesVlr(const std::string &file_name, uint16_t &orig_extra_siz
       memcpy(attr_name, rec + 4, 32);
       if (has_bound_out && strcmp(attr_name, "bound") == 0)
         *has_bound_out = true;
+      if (has_tree_id_out && strcmp(attr_name, "tree_id") == 0)
+        *has_tree_id_out = true;
+      if (has_stem_id_out && strcmp(attr_name, "stem_id") == 0)
+        *has_stem_id_out = true;
       bool is_ours = false;
       if (is_raycloud)
         for (const char *own : kRayCloudAttrs)
@@ -800,6 +809,8 @@ bool readLasExtraBytesVlr(const std::string &file_name, uint16_t &orig_extra_siz
   RAYLIB_UNUSED(extra_bytes_vlr_out);
   RAYLIB_UNUSED(has_bound_out);
   RAYLIB_UNUSED(has_rgb_out);
+  RAYLIB_UNUSED(has_tree_id_out);
+  RAYLIB_UNUSED(has_stem_id_out);
   return false;
 #endif
 }
