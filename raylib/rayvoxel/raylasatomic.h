@@ -46,6 +46,19 @@ namespace ray
     __atomic_fetch_or(&dest, bits, __ATOMIC_RELAXED);
   }
 
+  // Saturating atomic increment for uint8 — CAS loop since there is no hardware lock-incb.
+  static inline void atomic_inc_u8_sat(uint8_t& dest) noexcept
+  {
+    uint8_t expected = __atomic_load_n(&dest, __ATOMIC_RELAXED);
+    while (expected < 255) {
+      uint8_t desired = expected + 1;
+      if (__atomic_compare_exchange_n(&dest, &expected, desired,
+                                      /*weak=*/true,
+                                      __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+        break;
+    }
+  }
+
 } // namespace ray
 
 #endif // RAYLIB_RAYVOXEL_RAYLASATOMIC_H

@@ -388,10 +388,17 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
         }
 
         if (params.subvoxel_split > 0) {
-            int set_bits = popcount(v.subvoxel_bitmap);
             int total_subvoxels = params.subvoxel_split * params.subvoxel_split * params.subvoxel_split;
+            uint64_t bitmap = 0;
+            int set_bits = 0;
+            for (int i = 0; i < total_subvoxels; i++) {
+                if (v.subvoxel_counts[i] >= static_cast<uint8_t>(params.subvoxel_min_beams)) {
+                    bitmap |= (1ULL << i);
+                    set_bits++;
+                }
+            }
             data.exploration_rate = (total_subvoxels > 0) ? static_cast<double>(set_bits) / total_subvoxels : 0.0;
-            data.subvoxel_bitmap = v.subvoxel_bitmap;
+            data.subvoxel_bitmap = bitmap;
         }
         return data;
     };
@@ -440,8 +447,10 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
                       user_extent.y() / static_cast<double>(user_dims.y()),
                       user_extent.z() / static_cast<double>(user_dims.z()));
   space.header["res"] = format_vec_string(res);
-  if (params.subvoxel_split > 0)
+  if (params.subvoxel_split > 0) {
     space.header["subvoxel_split"] = std::to_string(params.subvoxel_split);
+    space.header["subvoxel_min_beams"] = std::to_string(params.subvoxel_min_beams);
+  }
 
   std::string colnames = "i j k classification nbEchos nbSampling padG0.5 lgTotal lMeanTotal lMeanFreeTotal lMeanEffectiveFreeTotal sdLength"
                          " zenithAngleMean azimuthAngleMean azimuthConcentration distLaser"

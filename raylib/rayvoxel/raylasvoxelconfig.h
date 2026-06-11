@@ -75,7 +75,8 @@ namespace ray
     bool calc_beam_metrics = false;
     std::string laser_spec_name;
     Eigen::Vector2d beam_params = {0.0, 0.0};
-    int subvoxel_split = 0; // N for an N x N x N subvoxel grid
+    int subvoxel_split = 0;      // N for an N x N x N subvoxel grid
+    int subvoxel_min_beams = 10; // Min beam count per subvoxel cell to count as explored
   };
 
 } // namespace ray

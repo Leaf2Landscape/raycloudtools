@@ -377,7 +377,8 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                             Eigen::Vector3d le = (current_ray_vox_start_ + current_ray_vox_dir_ * end_length - p.cast<double>()) * subvoxel_split_;
                             uint64_t bits = 0;
                             walkSubGrid(ls, le, subvoxel_split_, bits);
-                            if (bits) atomic_or_u64(v.subvoxel_bitmap, bits);
+                            for (uint64_t b = bits; b; b &= b - 1)
+                              atomic_inc_u8_sat(v.subvoxel_counts[__builtin_ctzll(b)]);
                         }
                         if (end_length >= out_length - 1e-6) {
                             if (!current_ray_unbound_) atomic_iadd(v.num_miss_rays, 1);
@@ -428,7 +429,12 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                         if (subvoxel_split_ > 0) {
                             Eigen::Vector3d ls = (current_ray_vox_start_ + current_ray_vox_dir_ * in_length  - p.cast<double>()) * subvoxel_split_;
                             Eigen::Vector3d le = (current_ray_vox_start_ + current_ray_vox_dir_ * end_length - p.cast<double>()) * subvoxel_split_;
-                            walkSubGrid(ls, le, subvoxel_split_, v.subvoxel_bitmap);
+                            uint64_t bits = 0;
+                            walkSubGrid(ls, le, subvoxel_split_, bits);
+                            for (uint64_t b = bits; b; b &= b - 1) {
+                              int i = __builtin_ctzll(b);
+                              v.subvoxel_counts[i] = static_cast<uint8_t>(std::min(255, static_cast<int>(v.subvoxel_counts[i]) + 1));
+                            }
                         }
                         if (end_length >= out_length - 1e-6) {
                             if (!current_ray_unbound_) v.num_miss_rays += 1;

@@ -115,7 +115,7 @@ namespace ray
       float num_unbound_rays = 0.0f;    // weighted count of unbound (miss) rays traversing this voxel
       float path_length_unbound = 0.0f; // weighted sum of clipped path lengths for unbound rays
       int32_t num_miss_rays = 0;        // count of bound rays that traverse this voxel without hitting it
-      uint64_t subvoxel_bitmap = 0;       // Bitmap for tracking subvoxel coverage (up to 4x4x4).
+      std::array<uint8_t, 64> subvoxel_counts = {}; // Per-subvoxel beam counts (up to 4x4x4 = 64 cells).
 
       /// @brief Calculates Plant Area Density (PAD) assuming spherical LAD (G=0.5).
       double pad_g0_5() const;
@@ -234,7 +234,8 @@ namespace ray
     num_unbound_rays += other.num_unbound_rays;
     path_length_unbound += other.path_length_unbound;
     num_miss_rays += other.num_miss_rays;
-    subvoxel_bitmap |= other.subvoxel_bitmap;
+    for (int i = 0; i < 64; i++)
+      subvoxel_counts[i] = static_cast<uint8_t>(std::min(255, static_cast<int>(subvoxel_counts[i]) + other.subvoxel_counts[i]));
   }
 
   inline VoxelGrid::Voxel VoxelGrid::Voxel::operator*(double scale) const
@@ -266,7 +267,7 @@ namespace ray
     v.num_unbound_rays = static_cast<float>(num_unbound_rays * scale);
     v.path_length_unbound = static_cast<float>(path_length_unbound * scale);
     v.num_miss_rays = static_cast<int32_t>(num_miss_rays * scale);
-    v.subvoxel_bitmap = subvoxel_bitmap;
+    v.subvoxel_counts = subvoxel_counts;
     return v;
   }
 

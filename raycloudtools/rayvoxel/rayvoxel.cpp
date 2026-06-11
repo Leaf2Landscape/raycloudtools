@@ -66,6 +66,7 @@ void usage()
   std::cout << "  --laser_spec <name>             Select a predefined laser specification (e.g., VZ-400)." << std::endl;
   std::cout << "  --beam_params <diam,div>        Manually specify beam diameter (m) and divergence (rad)." << std::endl;
   std::cout << "  --subvoxel_split <N>            Enable exploration rate calculation with an N x N x N grid (N=2,3,4). Default: 0 (off)." << std::endl;
+  std::cout << "  --subvoxel_min_beams <N>        Min beams through a subvoxel cell to count it as explored. Default: 10." << std::endl;
   std::cout << "  --no_inclination_dist           Disable the inclination-distribution pass (skips KNN normal estimation) while keeping --veg_metrics." << std::endl;
   std::cout << "  --output_iad                    Write per-bin LIAD/WIAD/PIAD histogram columns to output (default: off; G scalars are always written) (computed via a tiled parallel KNN pass; see --iad_tile_size)." << std::endl;
   std::cout << "  --n_iad_bins <N>                Number of inclination-angle histogram bins over [0, pi/2]. Default: 18." << std::endl;
@@ -143,6 +144,8 @@ int main_function(int argc, char *argv[])
   OptionalKeyValueArgument beam_params("beam_params", '\0', &beam_params_val);
   IntArgument subvoxel_split_val(0, 4, 0);
   OptionalKeyValueArgument subvoxel_split("subvoxel_split", '\0', &subvoxel_split_val);
+  IntArgument subvoxel_min_beams_val(1, 255, 10);
+  OptionalKeyValueArgument subvoxel_min_beams("subvoxel_min_beams", '\0', &subvoxel_min_beams_val);
   OptionalFlagArgument inclination_dist("inclination_dist", '\0');
   OptionalFlagArgument no_inclination_dist("no_inclination_dist", '\0');
   OptionalFlagArgument output_iad("output_iad", '\0');
@@ -168,7 +171,7 @@ int main_function(int argc, char *argv[])
       &dtm_file, &dtm_from_class, &dtm_cell_size, &dtm_filter_distance,
       &flat_top_compensation, &neighbour_priors,
       &veg_metrics, &leaf_classes, &wood_classes, &lad, &lad_params,
-      &beam_metrics, &laser_spec, &beam_params, &subvoxel_split,
+      &beam_metrics, &laser_spec, &beam_params, &subvoxel_split, &subvoxel_min_beams,
       &inclination_dist, &no_inclination_dist, &output_iad, &n_iad_bins, &attenuation_method, &knn_normal,
       &triangle_lmax, &iad_tile_size, &average_leaf_area };
 
@@ -278,6 +281,7 @@ int main_function(int argc, char *argv[])
     params.beam_params = beam_params_val.value();
   }
   params.subvoxel_split = subvoxel_split_val.value();
+  params.subvoxel_min_beams = subvoxel_min_beams_val.value();
   // IAD is on by default whenever vegetation metrics are active; --no_inclination_dist opts out.
   params.calc_inclination_dist = (veg_metrics.isSet() || inclination_dist.isSet()) && !no_inclination_dist.isSet();
   params.output_iad = output_iad.isSet();
