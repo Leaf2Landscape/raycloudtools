@@ -16,6 +16,7 @@
 #include "raylib/rayunused.h"
 #include "raylib/rayply.h"
 #include "raylib/raylaz.h"
+#include "raylib/raycloudreader.h"
 #include "raylib/raysysinfo.h"
 #include "raylib/rayvoxel/rayvox.h"
 #include "raylib/rayvoxel/raylasvoxelise.h"
@@ -348,8 +349,9 @@ static ClassTable buildClassTable(const std::string& cloud_name, const VoxelGrid
 {
   ClassTable class_table;
 
-  ray::LasHeader hdr;
-  readLasHeader(cloud_name, hdr);
+  ray::CloudReader reader;
+  reader.begin(cloud_name);
+  const ray::LasHeader &hdr = reader.header();
   const std::vector<uint8_t> extra_bytes_vlr = hdr.sensorExtraVlr();
   const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + hdr.sensorExtraSize());
 
@@ -359,13 +361,12 @@ static ClassTable buildClassTable(const std::string& cloud_name, const VoxelGrid
 
   size_t num_bounded = 0;
   std::vector<uint8_t> passthrough;
-  uint16_t pt_extra = 0;
   // global_chunk_start tracks the running point offset across readLas chunk callbacks.
   // The mmap fast path pre-allocates the passthrough for all points at global indices, while
   // the sequential path appends per-chunk — both are correct when indexing with the global offset.
   size_t global_chunk_start = 0;
 
-  ray::readLas(cloud_name,
+  reader.read(
     [&](std::vector<Eigen::Vector3d>& /*starts*/, std::vector<Eigen::Vector3d>& ends,
         std::vector<double>& /*times*/, std::vector<ray::RGBA>& colours) {
       for (size_t i = 0; i < ends.size(); ++i) {
@@ -388,7 +389,7 @@ static ClassTable buildClassTable(const std::string& cloud_name, const VoxelGrid
         class_table[grid.flatIndex(ix, iy, iz)][classification] += 1.0f;
       }
       global_chunk_start += ends.size();
-    }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, &pt_extra);
+    }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough);
 
   return class_table;
 }
@@ -440,8 +441,9 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
   PredominantTreeTable predominant_tree;
   VoxelLeafWoodTable voxel_lw;
 
-  ray::LasHeader hdr;
-  readLasHeader(cloud_name, hdr);
+  ray::CloudReader reader;
+  reader.begin(cloud_name);
+  const ray::LasHeader &hdr = reader.header();
   const bool has_tree_id = hdr.has("tree_id");
   const std::vector<uint8_t> extra_bytes_vlr = hdr.sensorExtraVlr();
   const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + hdr.sensorExtraSize());
@@ -512,11 +514,10 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
   size_t num_bounded = 0;
   std::vector<uint8_t> passthrough;
   std::vector<int32_t> tree_ids_all;
-  uint16_t pt_extra = 0;
   size_t global_chunk_start = 0;
   size_t total_points = 0;
 
-  ray::readLas(cloud_name,
+  reader.read(
     [&](std::vector<Eigen::Vector3d>& starts, std::vector<Eigen::Vector3d>& ends,
         std::vector<double>& /*times*/, std::vector<ray::RGBA>& colours) {
       for (size_t i = 0; i < ends.size(); ++i) {
@@ -565,7 +566,7 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
         if (any_bailey && flat_owner.find(flat_idx) == flat_owner.end()) flat_owner[flat_idx] = t;
       }
       global_chunk_start += ends.size();
-    }, num_bounded, 255.0, nullptr, 1000000, &tree_ids_all, &passthrough, &pt_extra);
+    }, num_bounded, 255.0, nullptr, 1000000, &tree_ids_all, &passthrough);
 
   if (total_points < 2) {
     class_table_out = std::move(class_table);
@@ -1036,8 +1037,9 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
   const std::vector<double>* peaks_ptr = apply_flat_top ? &grid.getPeaks() : nullptr;
 
   // Determine the per-point passthrough stride from the ray cloud's extra-byte header.
-  ray::LasHeader hdr;
-  readLasHeader(cloud_name, hdr);
+  ray::CloudReader reader;
+  reader.begin(cloud_name);
+  const ray::LasHeader &hdr = reader.header();
   const std::vector<uint8_t> extra_bytes_vlr = hdr.sensorExtraVlr();
   const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + hdr.sensorExtraSize());
 
@@ -1108,7 +1110,6 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
     size_t num_bounded = 0;
     std::vector<uint8_t> passthrough;
     std::vector<int32_t> beam_ids_chunk;
-    uint16_t pt_extra = 0;
     static bool not_raycloud_warned = false;
     double pending_gps_time = std::numeric_limits<double>::quiet_NaN();
     int32_t pending_beam_id = -1;
@@ -1137,7 +1138,7 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
       }
     };
 
-    ray::readLas(cloud_name,
+    reader.read(
       [&](std::vector<Eigen::Vector3d>& starts, std::vector<Eigen::Vector3d>& ends,
           std::vector<double>& times, std::vector<ray::RGBA>& colours) {
         if (starts.empty() && !not_raycloud_warned) {
@@ -1167,7 +1168,7 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
         passthrough.clear();
         beam_ids_chunk.clear();
       }, num_bounded, 255.0, nullptr, las_chunk,
-         nullptr, &passthrough, &pt_extra, nullptr, nullptr, &beam_ids_chunk);
+         nullptr, &passthrough, nullptr, &beam_ids_chunk);
 
     flush_beam();  // commit the last beam
     if (current_batch.count > 0) {
@@ -1196,7 +1197,6 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
     size_t num_bounded = 0;
     std::vector<uint8_t> passthrough;
     std::vector<int32_t> beam_ids_chunk;
-    uint16_t pt_extra = 0;
     static bool not_raycloud_warned = false;
     // Beam accumulator state, persisting across readLas chunk calls.
     double pending_gps_time = std::numeric_limits<double>::quiet_NaN();
@@ -1217,7 +1217,7 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
         pending_returns.clear();
       }
     };
-    ray::readLas(cloud_name,
+    reader.read(
       [&](std::vector<Eigen::Vector3d>& starts, std::vector<Eigen::Vector3d>& ends,
           std::vector<double>& times, std::vector<ray::RGBA>& colours) {
         if (starts.empty() && !not_raycloud_warned) {
@@ -1246,7 +1246,7 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
         }
         passthrough.clear();
         beam_ids_chunk.clear();
-      }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, &pt_extra, nullptr, nullptr, &beam_ids_chunk);
+      }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, nullptr, &beam_ids_chunk);
 
     flush_beam();
     // Flat path: writes already landed in flat_voxels_ — nothing to move.
@@ -1470,15 +1470,15 @@ bool OutOfCoreStrategy::createShards(const std::string& cloud_name, VoxelGrid& g
 
     // --- Producer loop ---
     // Determine the per-point passthrough stride from the ray cloud's extra-byte header.
-    ray::LasHeader hdr;
-    readLasHeader(cloud_name, hdr);
+    ray::CloudReader reader;
+    reader.begin(cloud_name);
+    const ray::LasHeader &hdr = reader.header();
     const std::vector<uint8_t> extra_bytes_vlr = hdr.sensorExtraVlr();
     const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + hdr.sensorExtraSize());
 
     size_t num_bounded = 0;
     std::vector<uint8_t> passthrough;
     std::vector<int32_t> beam_ids_chunk;
-    uint16_t pt_extra = 0;
     static bool not_raycloud_warned = false;
     // Beam accumulator state, persisting across readLas chunk calls.
     double pending_gps_time = std::numeric_limits<double>::quiet_NaN();
@@ -1499,7 +1499,7 @@ bool OutOfCoreStrategy::createShards(const std::string& cloud_name, VoxelGrid& g
         pending_returns.clear();
       }
     };
-    ray::readLas(cloud_name,
+    reader.read(
       [&](std::vector<Eigen::Vector3d>& starts, std::vector<Eigen::Vector3d>& ends,
           std::vector<double>& times, std::vector<ray::RGBA>& colours) {
         if (starts.empty() && !not_raycloud_warned) {
@@ -1528,7 +1528,7 @@ bool OutOfCoreStrategy::createShards(const std::string& cloud_name, VoxelGrid& g
         }
         passthrough.clear();
         beam_ids_chunk.clear();
-      }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, &pt_extra, nullptr, nullptr, &beam_ids_chunk);
+      }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, nullptr, &beam_ids_chunk);
 
     flush_beam(); // Flush the final beam.
     beam_queue.notify_done();
@@ -1574,11 +1574,12 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
       // Determine whether this file declares a "bound" extra attribute. When present, unbound
       // (miss) endpoints are excluded from the bounding box; old files without it include all
       // endpoints exactly as before.
-      ray::LasHeader pre_hdr;
-      readLasHeader(cloud_name, pre_hdr);
+      ray::CloudReader reader;
+      reader.begin(cloud_name);
+      const ray::LasHeader &pre_hdr = reader.header();
       const bool file_has_bound = pre_hdr.has("bound");
       size_t num_bounded = 0;
-      return ray::readLas(cloud_name,
+      return reader.read(
           [&](std::vector<Eigen::Vector3d>& /*starts*/, std::vector<Eigen::Vector3d>& ends,
               std::vector<double>& /*times*/, std::vector<ray::RGBA>& colours) {
             for (size_t i = 0; i < ends.size(); ++i) {
@@ -1668,16 +1669,16 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
         std::vector<Eigen::Vector3d> ground_points;
 
         // Read classification from the passthrough buffer (byte [2] = extended classification).
-        ray::LasHeader hdr;
-        readLasHeader(params.cloud_name, hdr);
+        ray::CloudReader reader;
+        reader.begin(params.cloud_name);
+        const ray::LasHeader &hdr = reader.header();
         const std::vector<uint8_t> extra_bytes_vlr = hdr.sensorExtraVlr();
         const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + hdr.sensorExtraSize());
 
         // Chunked pass collecting ground points whose passthrough classification matches.
         size_t num_bounded = 0;
         std::vector<uint8_t> passthrough;
-        uint16_t pt_extra = 0;
-        if (!ray::readLas(params.cloud_name,
+        if (!reader.read(
             [&](std::vector<Eigen::Vector3d>& /*starts*/, std::vector<Eigen::Vector3d>& ends,
                 std::vector<double>& /*times*/, std::vector<ray::RGBA>& /*colours*/) {
               for (size_t i = 0; i < ends.size(); ++i) {
@@ -1688,7 +1689,7 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
                 }
               }
               passthrough.clear();
-            }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, &pt_extra)) {
+            }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough)) {
             std::cerr << "Error: Could not re-open LAS file to extract ground points for DTM." << std::endl;
             return false;
         }
@@ -1806,8 +1807,9 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
     // cloud's trees, so it is written once for the base stub regardless of voxel filtering
     // (_filled / _include_empty variants reuse the same per-tree data).
     if (params.calc_inclination_dist && !per_tree_iad.empty()) {
-        ray::LasHeader iad_hdr;
-        readLasHeader(params.cloud_name, iad_hdr);
+        ray::CloudReader iad_reader;
+        iad_reader.begin(params.cloud_name);
+        const ray::LasHeader &iad_hdr = iad_reader.header();
         const bool has_stem_id = iad_hdr.has("stem_id");
         writePerTreeIadCsv(base_name_stub, per_tree_iad, params, has_stem_id);
     }

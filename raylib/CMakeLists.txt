@@ -16,6 +16,7 @@ set(PUBLIC_HEADERS
   rayalignment.h
   rayaxisalign.h
   raycloud.h
+  raycloudreader.h
   raycloudwriter.h
   rayconcavehull.h
   rayconvexhull.h
@@ -85,6 +86,7 @@ set(SOURCES
   rayalignment.cpp
   rayaxisalign.cpp
   raycloud.cpp
+  raycloudreader.cpp
   raycloudwriter.cpp
   rayconcavehull.cpp
   rayconvexhull.cpp

@@ -6,6 +6,7 @@
 #include "raylib/extraction/raysegment.h"
 #include "raylib/raycloud.h"
 #include "raylib/raycloudwriter.h"
+#include "raylib/raycloudreader.h"
 #include "raylib/rayparse.h"
 #include "raylib/raylaz.h"
 #include "raylib/raysysinfo.h"
@@ -95,14 +96,11 @@ void colourFromImage(const std::string &cloud_file, const std::string &image_fil
     writer.writeChunk(starts, ends, times, colours, chunk_pass);
   };
 
-  const std::string ext = ray::getFileNameExtension(cloud_file);
-  if (ext == "las" || ext == "laz")
-  {
-    size_t num_bounded;
-    if (!ray::readLas(cloud_file, colour_from_image, num_bounded, 1.0, nullptr, ray::computeReadChunkSize(), nullptr, &passthrough_buf))
-      usage();
-  }
-  else if (!ray::Cloud::read(cloud_file, colour_from_image))
+  ray::CloudReader reader;
+  if (!reader.begin(cloud_file))
+    usage();
+  size_t num_bounded;
+  if (!reader.read(colour_from_image, num_bounded, 1.0, nullptr, ray::computeReadChunkSize(), nullptr, &passthrough_buf))
     usage();
 
   stbi_image_free(image_data);
@@ -131,13 +129,10 @@ int rayColour(int argc, char *argv[])
 
   if (type != "shape" && type != "normal" && type != "branches")  // chunk loading possible for simple cases
   {
-    const std::string ext = ray::getFileNameExtension(cloud_file.name());
-    std::vector<uint8_t> extra_bytes_vlr;
-    if (ext == "las" || ext == "laz")
-    {
-      ray::LasHeader hdr;
-      if (ray::readLasHeader(cloud_file.name(), hdr)) extra_bytes_vlr = hdr.sensorExtraVlr();
-    }
+    ray::CloudReader reader;
+    if (!reader.begin(cloud_file.name()))
+      usage();
+    std::vector<uint8_t> extra_bytes_vlr = reader.header().sensorExtraVlr();
 
     ray::CloudWriter writer;
     if (!writer.begin(out_file, extra_bytes_vlr))
@@ -204,15 +199,11 @@ int rayColour(int argc, char *argv[])
     {
       colourFromImage(cloud_file.name(), image_file.name(), writer, passthrough_buf);
     }
-    else if (ext == "las" || ext == "laz")
+    else
     {
       size_t num_bounded;
-      if (!ray::readLas(cloud_file.name(), colour_rays, num_bounded, 1.0, nullptr, ray::computeReadChunkSize(), nullptr, &passthrough_buf))
+      if (!reader.read(colour_rays, num_bounded, 1.0, nullptr, ray::computeReadChunkSize(), nullptr, &passthrough_buf))
         usage();
-    }
-    else if (!ray::Cloud::read(cloud_file.name(), colour_rays))
-    {
-      usage();
     }
     writer.end();
     if (!lit.isSet())

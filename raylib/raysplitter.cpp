@@ -9,6 +9,7 @@
 #include <map>
 #include "extraction/rayforest.h"
 #include "raycloudwriter.h"
+#include "raycloudreader.h"
 #include "raycuboid.h"
 #include "extraction/raytrees.h"
 #include "rayparse.h"
@@ -22,15 +23,10 @@ namespace ray
 bool split(const std::string &file_name, const std::string &in_name, const std::string &out_name,
            std::function<bool(const Cloud &cloud, int i)> is_outside)
 {
-  const std::string ext = getFileNameExtension(file_name);
-  const bool is_las = (ext == "las" || ext == "laz");
-
-  std::vector<uint8_t> extra_bytes_vlr;
-  if (is_las)
-  {
-    LasHeader hdr;
-    if (readLasHeader(file_name, hdr)) extra_bytes_vlr = hdr.sensorExtraVlr();
-  }
+  CloudReader reader;
+  if (!reader.begin(file_name))
+    return false;
+  std::vector<uint8_t> extra_bytes_vlr = reader.header().sensorExtraVlr();
 
   Cloud cloud_buffer;
   CloudWriter in_writer, out_writer;
@@ -70,16 +66,8 @@ bool split(const std::string &file_name, const std::string &in_name, const std::
     cloud_buffer.passthrough.clear();
   };
 
-  bool res;
-  if (is_las)
-  {
-    size_t num_bounded;
-    res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
-  }
-  else
-  {
-    res = Cloud::read(file_name, per_chunk);
-  }
+  size_t num_bounded;
+  bool res = reader.read(per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
   if (!res)
     return false;
   in_writer.end();
@@ -91,15 +79,10 @@ bool split(const std::string &file_name, const std::string &in_name, const std::
 bool splitPlane(const std::string &file_name, const std::string &in_name, const std::string &out_name,
                 const Eigen::Vector3d &plane)
 {
-  const std::string ext = getFileNameExtension(file_name);
-  const bool is_las = (ext == "las" || ext == "laz");
-
-  std::vector<uint8_t> extra_bytes_vlr;
-  if (is_las)
-  {
-    LasHeader hdr;
-    if (readLasHeader(file_name, hdr)) extra_bytes_vlr = hdr.sensorExtraVlr();
-  }
+  CloudReader reader;
+  if (!reader.begin(file_name))
+    return false;
+  std::vector<uint8_t> extra_bytes_vlr = reader.header().sensorExtraVlr();
 
   CloudWriter inside_writer, outside_writer;
   if (!inside_writer.begin(in_name, extra_bytes_vlr))
@@ -173,16 +156,8 @@ bool splitPlane(const std::string &file_name, const std::string &in_name, const 
     cloud_buffer.passthrough.clear();
   };
 
-  bool res;
-  if (is_las)
-  {
-    size_t num_bounded;
-    res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
-  }
-  else
-  {
-    res = Cloud::read(file_name, per_chunk);
-  }
+  size_t num_bounded;
+  bool res = reader.read(per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
   if (!res)
     return false;
   inside_writer.end();
@@ -194,15 +169,10 @@ bool splitPlane(const std::string &file_name, const std::string &in_name, const 
 bool splitCapsule(const std::string &file_name, const std::string &in_name, const std::string &out_name,
                   const Eigen::Vector3d &end1, const Eigen::Vector3d &end2, double radius)
 {
-  const std::string ext = getFileNameExtension(file_name);
-  const bool is_las = (ext == "las" || ext == "laz");
-
-  std::vector<uint8_t> extra_bytes_vlr;
-  if (is_las)
-  {
-    LasHeader hdr;
-    if (readLasHeader(file_name, hdr)) extra_bytes_vlr = hdr.sensorExtraVlr();
-  }
+  CloudReader reader;
+  if (!reader.begin(file_name))
+    return false;
+  std::vector<uint8_t> extra_bytes_vlr = reader.header().sensorExtraVlr();
 
   CloudWriter inside_writer, outside_writer;
   if (!inside_writer.begin(in_name, extra_bytes_vlr))
@@ -351,16 +321,8 @@ bool splitCapsule(const std::string &file_name, const std::string &in_name, cons
     cloud_buffer.passthrough.clear();
   };
 
-  bool res;
-  if (is_las)
-  {
-    size_t num_bounded;
-    res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
-  }
-  else
-  {
-    res = Cloud::read(file_name, per_chunk);
-  }
+  size_t num_bounded;
+  bool res = reader.read(per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
   if (!res)
     return false;
   inside_writer.end();
@@ -373,15 +335,10 @@ bool splitCapsule(const std::string &file_name, const std::string &in_name, cons
 bool splitBox(const std::string &file_name, const std::string &in_name, const std::string &out_name,
               const Eigen::Vector3d &centre, const Eigen::Vector3d &extents)
 {
-  const std::string ext = getFileNameExtension(file_name);
-  const bool is_las = (ext == "las" || ext == "laz");
-
-  std::vector<uint8_t> extra_bytes_vlr;
-  if (is_las)
-  {
-    LasHeader hdr;
-    if (readLasHeader(file_name, hdr)) extra_bytes_vlr = hdr.sensorExtraVlr();
-  }
+  CloudReader reader;
+  if (!reader.begin(file_name))
+    return false;
+  std::vector<uint8_t> extra_bytes_vlr = reader.header().sensorExtraVlr();
 
   CloudWriter inside_writer, outside_writer;
   if (!inside_writer.begin(in_name, extra_bytes_vlr))
@@ -457,16 +414,8 @@ bool splitBox(const std::string &file_name, const std::string &in_name, const st
     cloud_buffer.passthrough.clear();
   };
 
-  bool res;
-  if (is_las)
-  {
-    size_t num_bounded;
-    res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
-  }
-  else
-  {
-    res = Cloud::read(file_name, per_chunk);
-  }
+  size_t num_bounded;
+  bool res = reader.read(per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
   if (!res)
     return false;
   inside_writer.end();
@@ -486,15 +435,10 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
 bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub, const Eigen::Vector4d &cell_width,
                double overlap)
 {
-  const std::string ext = getFileNameExtension(file_name);
-  const bool is_las = (ext == "las" || ext == "laz");
-
-  std::vector<uint8_t> extra_bytes_vlr;
-  if (is_las)
-  {
-    LasHeader hdr;
-    if (readLasHeader(file_name, hdr)) extra_bytes_vlr = hdr.sensorExtraVlr();
-  }
+  CloudReader reader;
+  if (!reader.begin(file_name))
+    return false;
+  std::vector<uint8_t> extra_bytes_vlr = reader.header().sensorExtraVlr();
 
   overlap /= 2.0;  // it now means overlap relative to grid edge
   Cloud::Info info;
@@ -657,16 +601,8 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
       cloud_buffer.passthrough.clear();
     };
 
-    bool res;
-    if (is_las)
-    {
-      size_t num_bounded;
-      res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
-    }
-    else
-    {
-      res = Cloud::read(file_name, per_chunk);
-    }
+    size_t num_bounded;
+    bool res = reader.read(per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
     if (!res)
       return false;
 
@@ -694,15 +630,10 @@ public:
 /// Special case for splitting based on a colour
 bool splitColour(const std::string &file_name, const std::string &cloud_name_stub, bool seg_colour)
 {
-  const std::string file_ext = getFileNameExtension(file_name);
-  const bool is_las = (file_ext == "las" || file_ext == "laz");
-
-  std::vector<uint8_t> extra_bytes_vlr;
-  if (is_las)
-  {
-    LasHeader hdr;
-    if (readLasHeader(file_name, hdr)) extra_bytes_vlr = hdr.sensorExtraVlr();
-  }
+  CloudReader reader;
+  if (!reader.begin(file_name))
+    return false;
+  std::vector<uint8_t> extra_bytes_vlr = reader.header().sensorExtraVlr();
 
   std::map<RGBA, int, RGBALess> vox_map;
   // firstly, find out how many different colours there are
@@ -805,16 +736,8 @@ bool splitColour(const std::string &file_name, const std::string &cloud_name_stu
       cloud_buffer.passthrough.clear();
     };
 
-    bool res;
-    if (is_las)
-    {
-      size_t num_bounded;
-      res = readLas(file_name, per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
-    }
-    else
-    {
-      res = Cloud::read(file_name, per_chunk);
-    }
+    size_t num_bounded;
+    bool res = reader.read(per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
     if (!res)
       return false;
 

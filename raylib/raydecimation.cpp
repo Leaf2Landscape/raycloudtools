@@ -10,56 +10,31 @@
 #include <limits>
 #include <map>
 #include "raycloudwriter.h"
+#include "raycloudreader.h"
 #include "rayparse.h"
 #include "raylaz.h"
 #include "raysysinfo.h"
 
 namespace ray
 {
-// Open writer and pre-read extra-bytes VLR from a LAS/LAZ file so original sensor attributes
-// are registered in the output before any points are written.
-static bool beginWriter(CloudWriter &writer, const std::string &out_file,
-                        const std::string &in_file, const std::string &ext,
-                        uint16_t &pass_stride_out, std::vector<uint8_t> &extra_bytes_vlr_out,
+// Open writer using the input's extra-bytes VLR so original sensor attributes are registered in the
+// output before any points are written. The header is read once by the caller via CloudReader.
+static bool beginWriter(CloudWriter &writer, const std::string &out_file, bool is_las,
+                        const LasHeader &hdr, uint16_t &pass_stride_out,
+                        std::vector<uint8_t> &extra_bytes_vlr_out,
                         bool &has_tree_id_out, bool &has_stem_id_out)
 {
   has_tree_id_out = false;
   has_stem_id_out = false;
   pass_stride_out = 10;
-  if (ext == "las" || ext == "laz")
+  if (is_las)
   {
-    LasHeader hdr;
-    if (readLasHeader(in_file, hdr))
-    {
-      extra_bytes_vlr_out = hdr.sensorExtraVlr();
-      pass_stride_out     = static_cast<uint16_t>(10 + hdr.sensorExtraSize());
-      has_tree_id_out     = hdr.has("tree_id");
-      has_stem_id_out     = hdr.has("stem_id");
-    }
+    extra_bytes_vlr_out = hdr.sensorExtraVlr();
+    pass_stride_out     = static_cast<uint16_t>(10 + hdr.sensorExtraSize());
+    has_tree_id_out     = hdr.has("tree_id");
+    has_stem_id_out     = hdr.has("stem_id");
   }
   return writer.begin(out_file, extra_bytes_vlr_out, false, has_tree_id_out, has_stem_id_out);
-}
-
-// Read a LAS/LAZ file with per-point passthrough (and optionally tree/stem IDs), or fall back to
-// Cloud::read for PLY. passthrough_buf is appended to before each callback, and cleared inside the
-// callback after consuming the current chunk's bytes. tree_ids_out/stem_ids_out accumulate across
-// chunks and must NOT be cleared per-chunk; callers track a base offset instead.
-static bool readWithPassthrough(const std::string &file_name, const std::string &ext,
-                                std::function<void(std::vector<Eigen::Vector3d> &,
-                                                   std::vector<Eigen::Vector3d> &,
-                                                   std::vector<double> &,
-                                                   std::vector<RGBA> &)> apply,
-                                std::vector<uint8_t> *passthrough_buf,
-                                std::vector<int32_t> *tree_ids_out = nullptr,
-                                std::vector<int32_t> *stem_ids_out = nullptr)
-{
-  if ((ext == "las" || ext == "laz") && passthrough_buf)
-  {
-    size_t num_bounded;
-    return readLas(file_name, apply, num_bounded, 1.0, nullptr, computeReadChunkSize(),
-                   tree_ids_out, passthrough_buf, nullptr, nullptr, stem_ids_out);
-  }
-  return Cloud::read(file_name, apply);
 }
 
 bool decimateSpatial(const std::string &file_name, double vox_width)
@@ -67,12 +42,16 @@ bool decimateSpatial(const std::string &file_name, double vox_width)
   const std::string stub = getFileNameStub(file_name);
   const std::string ext = getFileNameExtension(file_name);
 
+  ray::CloudReader reader;
+  if (!reader.begin(file_name))
+    return false;
+
   ray::CloudWriter writer;
   uint16_t pass_stride = 8;
   std::vector<uint8_t> extra_bytes_vlr;
   bool has_tree_id = false, has_stem_id = false;
-  if (!beginWriter(writer, stub + "_decimated." + ext, file_name, ext, pass_stride, extra_bytes_vlr,
-                   has_tree_id, has_stem_id))
+  if (!beginWriter(writer, stub + "_decimated." + ext, reader.isLas(), reader.header(), pass_stride,
+                   extra_bytes_vlr, has_tree_id, has_stem_id))
     return false;
 
   ray::Cloud chunk;
@@ -117,9 +96,10 @@ bool decimateSpatial(const std::string &file_name, double vox_width)
     writer.writeChunk(chunk.starts, chunk.ends, chunk.times, chunk.colours, chunk_pass, {}, chunk_tree, chunk_stem);
   };
 
-  if (!readWithPassthrough(file_name, ext, decimate, &passthrough_buf,
-                           has_tree_id ? &tree_ids_buf : nullptr,
-                           has_stem_id ? &stem_ids_buf : nullptr))
+  size_t num_bounded;
+  if (!reader.read(decimate, num_bounded, 1.0, nullptr, computeReadChunkSize(),
+                   has_tree_id ? &tree_ids_buf : nullptr, &passthrough_buf,
+                   has_stem_id ? &stem_ids_buf : nullptr))
     return false;
   writer.end();
   return true;
@@ -130,12 +110,16 @@ bool decimateTemporal(const std::string &file_name, int num_rays)
   const std::string stub = getFileNameStub(file_name);
   const std::string ext = getFileNameExtension(file_name);
 
+  ray::CloudReader reader;
+  if (!reader.begin(file_name))
+    return false;
+
   ray::CloudWriter writer;
   uint16_t pass_stride = 8;
   std::vector<uint8_t> extra_bytes_vlr;
   bool has_tree_id = false, has_stem_id = false;
-  if (!beginWriter(writer, stub + "_decimated." + ext, file_name, ext, pass_stride, extra_bytes_vlr,
-                   has_tree_id, has_stem_id))
+  if (!beginWriter(writer, stub + "_decimated." + ext, reader.isLas(), reader.header(), pass_stride,
+                   extra_bytes_vlr, has_tree_id, has_stem_id))
     return false;
 
   ray::Cloud chunk;
@@ -176,9 +160,10 @@ bool decimateTemporal(const std::string &file_name, int num_rays)
     writer.writeChunk(chunk.starts, chunk.ends, chunk.times, chunk.colours, chunk_pass, {}, chunk_tree, chunk_stem);
   };
 
-  if (!readWithPassthrough(file_name, ext, decimate, &passthrough_buf,
-                           has_tree_id ? &tree_ids_buf : nullptr,
-                           has_stem_id ? &stem_ids_buf : nullptr))
+  size_t num_bounded;
+  if (!reader.read(decimate, num_bounded, 1.0, nullptr, computeReadChunkSize(),
+                   has_tree_id ? &tree_ids_buf : nullptr, &passthrough_buf,
+                   has_stem_id ? &stem_ids_buf : nullptr))
     return false;
   writer.end();
   return true;
@@ -189,12 +174,16 @@ bool decimateSpatioTemporal(const std::string &file_name, double vox_width, int 
   const std::string stub = getFileNameStub(file_name);
   const std::string ext = getFileNameExtension(file_name);
 
+  ray::CloudReader reader;
+  if (!reader.begin(file_name))
+    return false;
+
   ray::CloudWriter writer;
   uint16_t pass_stride = 8;
   std::vector<uint8_t> extra_bytes_vlr;
   bool has_tree_id = false, has_stem_id = false;
-  if (!beginWriter(writer, stub + "_decimated." + ext, file_name, ext, pass_stride, extra_bytes_vlr,
-                   has_tree_id, has_stem_id))
+  if (!beginWriter(writer, stub + "_decimated." + ext, reader.isLas(), reader.header(), pass_stride,
+                   extra_bytes_vlr, has_tree_id, has_stem_id))
     return false;
 
   std::map<Eigen::Vector3i, Eigen::Vector2i, ray::Vector3iLess> voxel_map;
@@ -284,9 +273,10 @@ bool decimateSpatioTemporal(const std::string &file_name, double vox_width, int 
     passthrough_buf.clear();
     writer.writeChunk(out_starts, out_ends, out_times, out_colours, chunk_pass, {}, chunk_tree, chunk_stem);
   };
-  if (!readWithPassthrough(file_name, ext, finalise, &passthrough_buf,
-                           has_tree_id ? &tree_ids_buf : nullptr,
-                           has_stem_id ? &stem_ids_buf : nullptr))
+  size_t num_bounded;
+  if (!reader.read(finalise, num_bounded, 1.0, nullptr, computeReadChunkSize(),
+                   has_tree_id ? &tree_ids_buf : nullptr, &passthrough_buf,
+                   has_stem_id ? &stem_ids_buf : nullptr))
     return false;
   writer.end();
   return true;
@@ -298,12 +288,16 @@ bool decimateRaysSpatial(const std::string &file_name, double vox_width)
   const std::string stub = getFileNameStub(file_name);
   const std::string ext = getFileNameExtension(file_name);
 
+  ray::CloudReader reader;
+  if (!reader.begin(file_name))
+    return false;
+
   ray::CloudWriter writer;
   uint16_t pass_stride = 8;
   std::vector<uint8_t> extra_bytes_vlr;
   bool has_tree_id = false, has_stem_id = false;
-  if (!beginWriter(writer, stub + "_decimated." + ext, file_name, ext, pass_stride, extra_bytes_vlr,
-                   has_tree_id, has_stem_id))
+  if (!beginWriter(writer, stub + "_decimated." + ext, reader.isLas(), reader.header(), pass_stride,
+                   extra_bytes_vlr, has_tree_id, has_stem_id))
     return false;
 
   ray::Cloud chunk;
@@ -356,9 +350,10 @@ bool decimateRaysSpatial(const std::string &file_name, double vox_width)
     writer.writeChunk(chunk.starts, chunk.ends, chunk.times, chunk.colours, chunk_pass, {}, chunk_tree, chunk_stem);
   };
 
-  if (!readWithPassthrough(file_name, ext, decimate, &passthrough_buf,
-                           has_tree_id ? &tree_ids_buf : nullptr,
-                           has_stem_id ? &stem_ids_buf : nullptr))
+  size_t num_bounded;
+  if (!reader.read(decimate, num_bounded, 1.0, nullptr, computeReadChunkSize(),
+                   has_tree_id ? &tree_ids_buf : nullptr, &passthrough_buf,
+                   has_stem_id ? &stem_ids_buf : nullptr))
     return false;
   writer.end();
   return true;
@@ -369,12 +364,16 @@ bool decimateAngular(const std::string &file_name, double radius_per_length)
   const std::string stub = getFileNameStub(file_name);
   const std::string ext = getFileNameExtension(file_name);
 
+  ray::CloudReader reader;
+  if (!reader.begin(file_name))
+    return false;
+
   ray::CloudWriter writer;
   uint16_t pass_stride = 8;
   std::vector<uint8_t> extra_bytes_vlr;
   bool has_tree_id = false, has_stem_id = false;
-  if (!beginWriter(writer, stub + "_decimated." + ext, file_name, ext, pass_stride, extra_bytes_vlr,
-                   has_tree_id, has_stem_id))
+  if (!beginWriter(writer, stub + "_decimated." + ext, reader.isLas(), reader.header(), pass_stride,
+                   extra_bytes_vlr, has_tree_id, has_stem_id))
     return false;
 
   int min_index = -20;
@@ -476,9 +475,10 @@ bool decimateAngular(const std::string &file_name, double radius_per_length)
     passthrough_buf.clear();
     writer.writeChunk(out_starts, out_ends, out_times, out_colours, chunk_pass, {}, chunk_tree, chunk_stem);
   };
-  if (!readWithPassthrough(file_name, ext, finalise, &passthrough_buf,
-                           has_tree_id ? &tree_ids_buf : nullptr,
-                           has_stem_id ? &stem_ids_buf : nullptr))
+  size_t num_bounded;
+  if (!reader.read(finalise, num_bounded, 1.0, nullptr, computeReadChunkSize(),
+                   has_tree_id ? &tree_ids_buf : nullptr, &passthrough_buf,
+                   has_stem_id ? &stem_ids_buf : nullptr))
     return false;
   writer.end();
   return true;
@@ -591,7 +591,10 @@ bool deduplicateVoxel(const std::string &file_name, double vox_width,
 {
   const std::string ext = getFileNameExtension(file_name);
 
-  const bool is_las = (ext == "las" || ext == "laz");
+  CloudReader reader;
+  if (!reader.begin(file_name))
+    return false;
+  const bool is_las = reader.isLas();
 
   // Inspect the combined file's schema so the rewritten file preserves all of its columns:
   // sensor extra-bytes (passthrough), tree_id/stem_id labels, and native RGB.
@@ -600,13 +603,9 @@ bool deduplicateVoxel(const std::string &file_name, double vox_width,
   bool has_rgb = false;
   if (is_las)
   {
-    LasHeader hdr;
-    if (readLasHeader(file_name, hdr))
-    {
-      extra_bytes_vlr = hdr.sensorExtraVlr();
-      pass_stride     = static_cast<uint16_t>(10 + hdr.sensorExtraSize());
-      has_rgb         = hdr.has_rgb;
-    }
+    extra_bytes_vlr = reader.header().sensorExtraVlr();
+    pass_stride     = static_cast<uint16_t>(10 + reader.header().sensorExtraSize());
+    has_rgb         = reader.header().has_rgb;
   }
 
   // Per-chunk buffers shared by both passes. readLas appends tree_id/stem_id and passthrough across
@@ -621,13 +620,9 @@ bool deduplicateVoxel(const std::string &file_name, double vox_width,
   auto readAll = [&](std::function<void(std::vector<Eigen::Vector3d> &, std::vector<Eigen::Vector3d> &,
                                         std::vector<double> &, std::vector<RGBA> &)> apply) -> bool
   {
-    if (is_las)
-    {
-      size_t num_bounded;
-      return readLas(file_name, apply, num_bounded, 1.0, nullptr, computeReadChunkSize(),
-                     &tree_ids_buf, &passthrough_buf, nullptr, nullptr, &stem_ids_buf);
-    }
-    return Cloud::read(file_name, apply);
+    size_t num_bounded;
+    return reader.read(apply, num_bounded, 1.0, nullptr, computeReadChunkSize(),
+                       &tree_ids_buf, &passthrough_buf, &stem_ids_buf);
   };
 
   // Pass 1: find the global winner point index per voxel cell.

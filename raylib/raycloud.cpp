@@ -9,6 +9,7 @@
 #include "rayparse.h"
 #include "rayply.h"
 #include "raycloudwriter.h"
+#include "raycloudreader.h"
 #include "rayprogress.h"
 #include "raysysinfo.h"
 
@@ -36,11 +37,9 @@ void Cloud::clear()
 
 void Cloud::save(const std::string &file_name) const
 {
-  const std::string ext = getFileNameExtension(file_name);
-  if (ext == "las" || ext == "laz")
-    writeLasRayCloud(file_name, starts, ends, times, colours, tree_ids, stem_ids, passthrough, extra_bytes_vlr);
-  else
-    writePlyRayCloud(file_name, starts, ends, times, colours);
+  CloudWriter writer;
+  writer.begin(file_name, extra_bytes_vlr, false, !tree_ids.empty(), !stem_ids.empty());
+  writer.writeChunk(*this);
 }
 
 bool Cloud::load(const std::string &file_name, bool check_extension, int min_num_rays)
@@ -605,15 +604,10 @@ bool Cloud::read(const std::string &file_name,
 bool convertCloud(const std::string &in_name, const std::string &out_name,
                   std::function<void(Eigen::Vector3d &start, Eigen::Vector3d &end, double &time, RGBA &colour)> apply)
 {
-  const std::string ext = getFileNameExtension(in_name);
-  const bool is_las = (ext == "las" || ext == "laz");
-
-  std::vector<uint8_t> extra_bytes_vlr;
-  if (is_las)
-  {
-    LasHeader hdr;
-    if (readLasHeader(in_name, hdr)) extra_bytes_vlr = hdr.sensorExtraVlr();
-  }
+  CloudReader reader;
+  if (!reader.begin(in_name))
+    return false;
+  std::vector<uint8_t> extra_bytes_vlr = reader.header().sensorExtraVlr();
 
   CloudWriter writer;
   if (!writer.begin(out_name, extra_bytes_vlr))
@@ -629,16 +623,8 @@ bool convertCloud(const std::string &in_name, const std::string &out_name,
     writer.writeChunk(starts, ends, times, colours, chunk_pass);
   };
 
-  bool res;
-  if (is_las)
-  {
-    size_t num_bounded;
-    res = readLas(in_name, applyToChunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
-  }
-  else
-  {
-    res = Cloud::read(in_name, applyToChunk);
-  }
+  size_t num_bounded;
+  bool res = reader.read(applyToChunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
   if (!res)
     return false;
   writer.end();

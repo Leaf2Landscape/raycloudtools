@@ -11,6 +11,7 @@
 #include "raylib/rayprogressthread.h"
 #include "raylib/raythreads.h"
 #include "raylib/raycloudwriter.h"
+#include "raylib/raycloudreader.h"
 #include "raylib/raydecimation.h"
 #include "raylib/raylaz.h"
 #include "raylib/raysysinfo.h"
@@ -179,8 +180,8 @@ int rayCombine(int argc, char *argv[])
       std::array<uint8_t, 192> record{};  ///< raw 192-byte EXTRA_BYTES VLR record
     };
 
-    // Pre-pass: read the full header from every LAS/LAZ input file. A single readLasHeader call
-    // per file populates the field table, label flags, and RGB flag — no separate VLR parse needed.
+    // Pre-pass: read the full header from every input file via CloudReader. A single begin() call
+    // per file populates the field table, label flags, and RGB flag (PLY yields an empty header).
     struct FileSchema
     {
       ray::LasHeader hdr;
@@ -194,9 +195,9 @@ int rayCombine(int argc, char *argv[])
     for (int f = 0; f < nfiles; ++f)
     {
       const std::string &fn = cloud_files.files()[f].name();
-      const std::string fe  = ray::getFileNameExtension(fn);
-      if (fe == "las" || fe == "laz")
-        ray::readLasHeader(fn, schemas[f].hdr);
+      ray::CloudReader reader;
+      reader.begin(fn);
+      schemas[f].hdr = reader.header();
       for (const auto &ef : schemas[f].hdr.extras)
       {
         if (ef.is_own) continue;
@@ -323,7 +324,6 @@ int rayCombine(int argc, char *argv[])
     for (int i = 0; i < nfiles; ++i)
     {
       const std::string &fname = cloud_files.files()[i].name();
-      const std::string fext   = ray::getFileNameExtension(fname);
       const uint16_t file_pass_stride = static_cast<uint16_t>(10 + schemas[i].hdr.sensorExtraSize());
       std::vector<uint8_t> passthrough_buf;
       size_t passthrough_cursor = 0;  ///< byte offset into passthrough_buf for the next chunk
@@ -442,23 +442,17 @@ int rayCombine(int argc, char *argv[])
         writer.writeChunk(starts, ends, times, colours, chunk_pass, {}, chunk_tree_ids, chunk_stem_ids);
       };
 
-      if (fext == "las" || fext == "laz")
-      {
-        size_t num_bounded;
-        // Only request label output for files that declare labels; others stay empty and are
-        // sentinel-filled in concatenate when the union output carries labels.
-        std::vector<int32_t> *tree_ids_out = has_labels[i] ? &tree_ids_buf : nullptr;
-        std::vector<int32_t> *stem_ids_out = has_labels[i] ? &stem_ids_buf : nullptr;
-        if (!ray::readLas(fname, concatenate, num_bounded, 1.0, nullptr,
-                          ray::computeReadChunkSize(), tree_ids_out, &passthrough_buf,
-                          nullptr, nullptr, stem_ids_out))
-          usage();
-      }
-      else
-      {
-        if (!ray::Cloud::read(fname, concatenate))
-          usage();
-      }
+      ray::CloudReader reader;
+      if (!reader.begin(fname))
+        usage();
+      size_t num_bounded;
+      // Only request label output for files that declare labels; others stay empty and are
+      // sentinel-filled in concatenate when the union output carries labels.
+      std::vector<int32_t> *tree_ids_out = has_labels[i] ? &tree_ids_buf : nullptr;
+      std::vector<int32_t> *stem_ids_out = has_labels[i] ? &stem_ids_buf : nullptr;
+      if (!reader.read(concatenate, num_bounded, 1.0, nullptr,
+                       ray::computeReadChunkSize(), tree_ids_out, &passthrough_buf, stem_ids_out))
+        usage();
     }
     writer.end();
 
