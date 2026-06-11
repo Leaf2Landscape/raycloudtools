@@ -107,7 +107,8 @@ namespace ray
   MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const VoxelizationParameters& params,
                                            const HeightField* dtm, const ClassTable& class_table,
                                            const PerTreeIadMap& per_tree_iad,
-                                           const PredominantTreeTable& predominant_tree);
+                                           const PredominantTreeTable& predominant_tree,
+                                           const VoxelLeafWoodTable& voxel_lw);
 
   /// @brief Writes the per-tree inclination angle distributions to a {stub}_iad.csv sidecar.
   /// One row per tree_id (joined across stems). Columns are gated by has_leaf/has_wood and by

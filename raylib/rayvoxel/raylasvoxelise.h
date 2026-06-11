@@ -221,6 +221,11 @@ namespace ray
   // Absent entry / -1 means "no tree_id data for this voxel".
   using PredominantTreeTable = std::unordered_map<int64_t, int32_t>;
 
+  // VoxelLeafWoodTable: flat voxel index → {leaf_hit_count, wood_hit_count} based on the
+  // extra-byte class field (e.g. foliage_type). Separate from ClassTable, which stores
+  // standard LAS classification codes and cannot represent extra-byte-keyed counts.
+  using VoxelLeafWoodTable = std::unordered_map<int64_t, std::pair<int32_t, int32_t>>;
+
   // --- Inline Voxel Operator Implementations ---
 
   inline void VoxelGrid::Voxel::operator+=(const VoxelGrid::Voxel &other)

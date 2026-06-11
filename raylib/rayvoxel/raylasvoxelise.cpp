@@ -420,7 +420,8 @@ struct TileResult {
 static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid& grid,
                                   const VoxelizationParameters& params, const HeightField* dtm,
                                   ClassTable& class_table_out, PerTreeIadMap& per_tree_iad_out,
-                                  PredominantTreeTable& predominant_tree_out)
+                                  PredominantTreeTable& predominant_tree_out,
+                                  VoxelLeafWoodTable& voxel_lw_out)
 {
   // Compact per-tile point record. Replaces the parallel global positions/leaf_vals/wood_vals/
   // flat_indices/beam_angles arrays: routing points into per-tile buckets during the readLas pass
@@ -437,6 +438,7 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
   ClassTable class_table;
   PerTreeIadMap per_tree_iad;
   PredominantTreeTable predominant_tree;
+  VoxelLeafWoodTable voxel_lw;
 
   ray::LasHeader hdr;
   readLasHeader(cloud_name, hdr);
@@ -462,6 +464,20 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
 
   const ClassFieldSource leaf_src = resolveClassField(leaf_field, hdr);
   const ClassFieldSource wood_src = resolveClassField(wood_field, hdr);
+
+  // Parse leaf/wood class sets before readLas so they can be used in the readLas callback
+  // for per-voxel leaf/wood counting. The sets are also used later in the tile KNN loop.
+  std::set<int> leaf_set, wood_set;
+  {
+    std::stringstream ss(leaf_codes_str);
+    std::string item;
+    while (std::getline(ss, item, ',')) { try { leaf_set.insert(std::stoi(item)); } catch (...) {} }
+  }
+  {
+    std::stringstream ss(wood_codes_str);
+    std::string item;
+    while (std::getline(ss, item, ',')) { try { wood_set.insert(std::stoi(item)); } catch (...) {} }
+  }
 
   const bool any_bailey = std::any_of(params.attenuation_methods.begin(), params.attenuation_methods.end(),
                                        [](const std::string& m){ return m == "bailey"; });
@@ -528,6 +544,8 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
         // IadTable collection (same as buildIadTable): leaf/wood field values + flat index.
         const int lv = readClassValue(&passthrough[base], leaf_src);
         const int wv = readClassValue(&passthrough[base], wood_src);
+        if (leaf_set.count(lv)) voxel_lw[flat_idx].first  += 1;
+        if (wood_set.count(wv)) voxel_lw[flat_idx].second += 1;
         const Eigen::Vector3d dir = ends[i] - starts[i];
         const double len2 = dir.squaredNorm();
         const double bz = (len2 > 1e-12) ? std::acos(std::min(1.0, std::abs(dir.z() / std::sqrt(len2)))) : 0.0;
@@ -553,20 +571,8 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
     class_table_out = std::move(class_table);
     per_tree_iad_out = std::move(per_tree_iad);
     predominant_tree_out = std::move(predominant_tree);
+    voxel_lw_out = std::move(voxel_lw);
     return;
-  }
-
-  // Parse leaf/wood class sets (read-only during tile workers).
-  std::set<int> leaf_set, wood_set;
-  {
-    std::stringstream ss(leaf_codes_str);
-    std::string item;
-    while (std::getline(ss, item, ',')) { try { leaf_set.insert(std::stoi(item)); } catch (...) {} }
-  }
-  {
-    std::stringstream ss(wood_codes_str);
-    std::string item;
-    while (std::getline(ss, item, ',')) { try { wood_set.insert(std::stoi(item)); } catch (...) {} }
   }
 
   size_t resolved_threads = (params.num_threads == 0)
@@ -962,6 +968,7 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
   class_table_out = std::move(class_table);
   per_tree_iad_out = std::move(per_tree_iad);
   predominant_tree_out = std::move(predominant_tree);
+  voxel_lw_out = std::move(voxel_lw);
 }
 
 // ==================================================================================
@@ -1760,6 +1767,7 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
     ClassTable class_table;
     PerTreeIadMap per_tree_iad;
     PredominantTreeTable predominant_tree;
+    VoxelLeafWoodTable voxel_lw;
     if (params.calc_inclination_dist) {
       {
         static bool empty_classes_warned = false;
@@ -1770,7 +1778,7 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
         }
       }
       std::cout << "Building classification table and inclination angle distributions..." << std::endl;
-      buildClassAndIadTable(params.cloud_name, grid, params, dtm_ptr.get(), class_table, per_tree_iad, predominant_tree);
+      buildClassAndIadTable(params.cloud_name, grid, params, dtm_ptr.get(), class_table, per_tree_iad, predominant_tree, voxel_lw);
     } else {
       {
         static bool field_no_iad_warned = false;
@@ -1788,7 +1796,7 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
     }
 
     std::cout << "Calculating output metrics..." << std::endl;
-    MetricResultsMap metrics = calculateOutputMetrics(grid, params, dtm_ptr.get(), class_table, per_tree_iad, predominant_tree);
+    MetricResultsMap metrics = calculateOutputMetrics(grid, params, dtm_ptr.get(), class_table, per_tree_iad, predominant_tree, voxel_lw);
 
     // Pass the pre-calculated metrics to the writer functions.
     std::string base_name_stub = getFileNameStub(params.cloud_name);

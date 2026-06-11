@@ -210,7 +210,8 @@ double computeLambda(const VoxelGrid::Voxel& v, const std::string& method)
 MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const VoxelizationParameters& params,
                                          const HeightField* dtm, const ClassTable& class_table,
                                          const PerTreeIadMap& per_tree_iad,
-                                         const PredominantTreeTable& predominant_tree)
+                                         const PredominantTreeTable& predominant_tree,
+                                         const VoxelLeafWoodTable& voxel_lw)
 {
     MetricResultsMap results;
     const double voxel_volume = grid.getVoxelWidth() * grid.getVoxelWidth() * grid.getVoxelWidth();
@@ -281,9 +282,15 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
                 data.distance_from_ground = data.z - ground_height;
         }
 
-        // Leaf/wood hit counts shared by the G=0.5, parametric, and empirical metric blocks.
+        // Leaf/wood hit counts from VoxelLeafWoodTable (extra-byte-aware, populated in
+        // buildClassAndIadTable from lv/wv — correct for both extra-byte and standard class fields).
+        // Falls back to classification_hits[code] when voxel_lw is empty (non-IAD path).
         float leaf_hits = 0.0f, wood_hits = 0.0f;
-        if (params.calc_veg_metrics || params.calc_inclination_dist || params.has_leaf || params.has_wood) {
+        auto lw_it = voxel_lw.find(flat_idx);
+        if (lw_it != voxel_lw.end()) {
+            leaf_hits = static_cast<float>(lw_it->second.first);
+            wood_hits = static_cast<float>(lw_it->second.second);
+        } else if (params.has_leaf || params.has_wood) {
             for (int code : leaf_classes)
                 if (code >= 0 && code <= 255) leaf_hits += data.classification_hits[code];
             for (int code : wood_classes)
@@ -490,6 +497,7 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
   colnames += " voxel_size surface_area";
   if (params.subvoxel_split > 0) colnames += " subvoxel_split";
   colnames += " mean_zenith_angle mean_azimuth_angle_deg azimuth_concentration mean_laser_dist";
+  colnames += " attenuation_fpl attenuation_ppl";
   if (!params.dtm_file.empty() || params.dtm_from_class >= 0) colnames += " distance_from_ground";
   if (params.calc_beam_metrics) colnames += " transmittance bs_entering bs_intercepted";
   if (params.subvoxel_split > 0) colnames += " exploration_rate subvoxel_bitmap";
@@ -537,6 +545,8 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
     v_data.variables.push_back(std::to_string(data ? data->mean_azimuth_rad * 180.0 / kPi : 0.0));
     v_data.variables.push_back(std::to_string(data ? data->azimuth_concentration : 0.0));
     v_data.variables.push_back(std::to_string(data ? data->mean_laser_dist : 0.0));
+    v_data.variables.push_back(std::to_string(data ? data->attenuation_fpl_unbiased : 0.0));
+    v_data.variables.push_back(std::to_string(data ? data->attenuation_ppl : 0.0));
     if (!params.dtm_file.empty() || params.dtm_from_class >= 0) {
       v_data.variables.push_back(
         (data && data->distance_from_ground != std::numeric_limits<double>::lowest())
@@ -557,11 +567,11 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
     if (params.calc_inclination_dist) {
       v_data.variables.push_back(std::to_string(data ? data->predominant_tree : -1));
       v_data.variables.push_back(data ? dewit_val(data->piad_dewit) : "NA");
-      if (params.has_leaf) v_data.variables.push_back(data ? dewit_val(data->liad_dewit) : "NA");
-      if (params.has_wood) v_data.variables.push_back(data ? dewit_val(data->wiad_dewit) : "NA");
+      if (params.has_leaf) v_data.variables.push_back((data && data->num_hit_leaf > 0) ? dewit_val(data->liad_dewit) : "NA");
+      if (params.has_wood) v_data.variables.push_back((data && data->num_hit_wood > 0) ? dewit_val(data->wiad_dewit) : "NA");
       v_data.variables.push_back(std::to_string(data ? data->g_plant : 0.0));
-      if (params.has_leaf) v_data.variables.push_back(std::to_string(data ? data->g_leaf : 0.0));
-      if (params.has_wood) v_data.variables.push_back(std::to_string(data ? data->g_wood : 0.0));
+      if (params.has_leaf) v_data.variables.push_back(std::to_string((data && data->num_hit_leaf > 0) ? data->g_leaf : 0.0));
+      if (params.has_wood) v_data.variables.push_back(std::to_string((data && data->num_hit_wood > 0) ? data->g_wood : 0.0));
       for (const auto& method : params.attenuation_methods) {
         auto lookup = [&](const std::unordered_map<std::string, double>& m) -> double {
           auto it = m.find(method); return it != m.end() ? it->second : 0.0;
@@ -616,6 +626,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
   header += " voxel_size surface_area";
   if (params.subvoxel_split > 0) header += " subvoxel_split";
   header += " mean_zenith_angle mean_azimuth_angle_deg azimuth_concentration mean_laser_dist";
+  header += " attenuation_fpl attenuation_ppl";
   if (!params.dtm_file.empty() || params.dtm_from_class >= 0) header += " distance_from_ground";
   if (params.calc_beam_metrics) header += " transmittance bs_entering bs_intercepted";
   if (params.subvoxel_split > 0) header += " exploration_rate subvoxel_bitmap";
@@ -652,7 +663,8 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
     if (params.subvoxel_split > 0) outfile << " " << params.subvoxel_split;
     outfile << " " << (data.mean_zenith_angle_rad * 180.0 / kPi)
             << " " << (data.mean_azimuth_rad * 180.0 / kPi)
-            << " " << data.azimuth_concentration << " " << data.mean_laser_dist;
+            << " " << data.azimuth_concentration << " " << data.mean_laser_dist
+            << " " << data.attenuation_fpl_unbiased << " " << data.attenuation_ppl;
     if (!params.dtm_file.empty() || params.dtm_from_class >= 0) {
       if (data.distance_from_ground != std::numeric_limits<double>::lowest())
         outfile << " " << data.distance_from_ground;
@@ -667,11 +679,11 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
     };
     if (params.calc_inclination_dist) {
       outfile << " " << data.predominant_tree << " " << dewit_str(data.piad_dewit);
-      if (params.has_leaf) outfile << " " << dewit_str(data.liad_dewit);
-      if (params.has_wood) outfile << " " << dewit_str(data.wiad_dewit);
+      if (params.has_leaf) outfile << " " << (data.num_hit_leaf > 0 ? dewit_str(data.liad_dewit) : "NA");
+      if (params.has_wood) outfile << " " << (data.num_hit_wood > 0 ? dewit_str(data.wiad_dewit) : "NA");
       outfile << " " << data.g_plant;
-      if (params.has_leaf) outfile << " " << data.g_leaf;
-      if (params.has_wood) outfile << " " << data.g_wood;
+      if (params.has_leaf) outfile << " " << (data.num_hit_leaf > 0 ? data.g_leaf : 0.0);
+      if (params.has_wood) outfile << " " << (data.num_hit_wood > 0 ? data.g_wood : 0.0);
       for (const auto& method : params.attenuation_methods) {
         auto lookup = [&](const std::unordered_map<std::string, double>& m) -> double {
           auto it = m.find(method); return it != m.end() ? it->second : 0.0;
