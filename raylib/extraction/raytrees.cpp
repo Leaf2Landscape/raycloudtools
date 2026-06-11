@@ -388,8 +388,9 @@ Trees::Trees(Cloud &cloud, const Eigen::Vector3d &offset, const Mesh &mesh,
       pair_to_sec[key] = sec_idx;
       sec_labels_.push_back(key);
       BranchSection root_sec;
-      root_sec.parent = -1;
-      root_sec.root   = sec_idx;
+      root_sec.parent      = -1;
+      root_sec.root        = sec_idx;
+      root_sec.split_count = 2;  // labels are authoritative — skip trunk-level bifurcation
       sections_.push_back(root_sec);
       it = pair_to_sec.find(key);
     }
