@@ -593,8 +593,10 @@ bool readLas(const std::string &file_name,
     {
       lazperf::reader::named_file lazf(file_name);
       const auto &lazhdr = lazf.header();
+      // lazhdr.point_count is the 32-bit legacy field — zero on LAS 1.4 files whose count lives in
+      // the 64-bit extended record. lazf.pointCount() returns the correct value for both versions.
       if (lazhdr.point_record_length == ctx.point_record_length &&
-          lazhdr.point_count == number_of_points)
+          lazf.pointCount() == number_of_points)
       {
         const uint32_t laz_chunk_size = lazf.lazVlr().chunk_size;
         const int laz_format = lazhdr.point_format_id;
@@ -634,29 +636,35 @@ bool readLas(const std::string &file_name,
           setup_indexed_buffers();
           size_t bounded_count = 0;
 
-#pragma omp parallel for schedule(dynamic) reduction(+ : bounded_count)
-          for (laszip_I64 c = 0; c < static_cast<laszip_I64>(num_laz_chunks); ++c)
+          // LAZ chunks are uniform size (50 k pts by default), so static scheduling minimises
+          // OMP overhead vs dynamic. Per-thread record/scratch buffers are allocated once outside
+          // the inner point loop to avoid repeated heap allocation per chunk.
+#pragma omp parallel reduction(+ : bounded_count)
           {
-            const size_t cc = static_cast<size_t>(c);
-            lazperf::reader::chunk_decompressor decomp(laz_format, laz_eb_count,
-                                                       chunk_bufs[cc].data());
             std::vector<char> record(ctx.point_record_length);
             std::vector<uint8_t> extra_scratch(ctx.extra_bytes_total ? ctx.extra_bytes_total : 1);
             laszip_point_struct pt;
             std::memset(&pt, 0, sizeof(pt));
-            const size_t base_idx = static_cast<size_t>(chunk_start[cc]);
-            for (size_t j = 0; j < static_cast<size_t>(chunks[cc].count); ++j)
+#pragma omp for schedule(static)
+            for (laszip_I64 c = 0; c < static_cast<laszip_I64>(num_laz_chunks); ++c)
             {
-              decomp.decompress(record.data());
-              fillPointFromRecord(reinterpret_cast<const uint8_t *>(record.data()), ctx, pt,
-                                  extra_scratch.data());
-              int32_t xi = pt.X, yi = pt.Y, zi = pt.Z;
-              Eigen::Vector3d position(xi * ctx.scale[0] + ctx.offset[0],
-                                       yi * ctx.scale[1] + ctx.offset[1],
-                                       zi * ctx.scale[2] + ctx.offset[2]);
-              uint8_t bounded;
-              decodePointRecordIndexed(&pt, ctx, position, base_idx + j, buf, bounded);
-              bounded_count += bounded;
+              const size_t cc = static_cast<size_t>(c);
+              lazperf::reader::chunk_decompressor decomp(laz_format, laz_eb_count,
+                                                         chunk_bufs[cc].data());
+              const size_t base_idx = static_cast<size_t>(chunk_start[cc]);
+              for (size_t j = 0; j < static_cast<size_t>(chunks[cc].count); ++j)
+              {
+                decomp.decompress(record.data());
+                fillPointFromRecord(reinterpret_cast<const uint8_t *>(record.data()), ctx, pt,
+                                    extra_scratch.data());
+                int32_t xi = pt.X, yi = pt.Y, zi = pt.Z;
+                Eigen::Vector3d position(xi * ctx.scale[0] + ctx.offset[0],
+                                         yi * ctx.scale[1] + ctx.offset[1],
+                                         zi * ctx.scale[2] + ctx.offset[2]);
+                uint8_t bounded;
+                decodePointRecordIndexed(&pt, ctx, position, base_idx + j, buf, bounded);
+                bounded_count += bounded;
+              }
             }
           }
 
