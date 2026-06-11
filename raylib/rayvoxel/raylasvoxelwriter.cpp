@@ -506,9 +506,6 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
       if (params.has_wood) colnames += " wad_" + method;
     }
   }
-  if (params.has_leaf) colnames += " lad_g0.5";
-  if (params.has_wood) colnames += " wad_g0.5";
-  if (params.calc_veg_metrics) colnames += " pad_g_corrected pad_leaf pad_wood";
   space.header["colnames"] = colnames;
 
   auto process_voxel = [&](int64_t i, int64_t j, int64_t k, const VoxelOutputData* data) {
@@ -571,13 +568,6 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
         if (params.has_wood) v_data.variables.push_back(std::to_string(data ? lookup(data->wad_per_method) : 0.0));
       }
     }
-    if (params.has_leaf) v_data.variables.push_back(std::to_string(data ? data->lad_g0_5 : 0.0));
-    if (params.has_wood) v_data.variables.push_back(std::to_string(data ? data->wad_g0_5 : 0.0));
-    if (params.calc_veg_metrics) {
-      v_data.variables.push_back(std::to_string(data ? data->pad_g_corrected : 0.0));
-      v_data.variables.push_back(std::to_string(data ? data->pad_leaf : 0.0));
-      v_data.variables.push_back(std::to_string(data ? data->pad_wood : 0.0));
-    }
     space.voxels.push_back(v_data);
   };
 
@@ -639,9 +629,6 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
       if (params.has_wood) header += " wad_" + method;
     }
   }
-  if (params.has_leaf) header += " lad_g0.5";
-  if (params.has_wood) header += " wad_g0.5";
-  if (params.calc_veg_metrics) header += " pad_g_corrected pad_leaf pad_wood";
   header += "\n";
   outfile << header;
 
@@ -687,9 +674,6 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
         if (params.has_wood) outfile << " " << lookup(data.wad_per_method);
       }
     }
-    if (params.has_leaf) outfile << " " << data.lad_g0_5;
-    if (params.has_wood) outfile << " " << data.wad_g0_5;
-    if (params.calc_veg_metrics) outfile << " " << data.pad_g_corrected << " " << data.pad_leaf << " " << data.pad_wood;
     outfile << "\n";
     point_count++;
   };
