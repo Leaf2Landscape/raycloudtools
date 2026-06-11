@@ -4,6 +4,7 @@
 //
 // Author: Thomas Lowe
 #include "rayleaves.h"
+#include "../rayparse.h"
 #include <nabo/nabo.h>
 #include "../raycuboid.h"
 #include "../rayforeststructure.h"
@@ -17,6 +18,8 @@
 #include <string>
 #include "raylib/imageread.h"
 #include "raylib/rayvoxel/rayvox.h"
+#include <algorithm>
+#include <fstream>
 #include <sstream>
 #include <unordered_map>
 
@@ -47,13 +50,44 @@ std::function<double(double)> getLeafAngleDistribution(int distribution)
   }
 }
 
-bool generateLeaves(const std::string &cloud_stub, const std::string &trees_file, const std::string &leaf_file,
+bool generateLeaves(const std::string &cloud_name, const std::string &trees_file, const std::string &leaf_file,
                     double leaf_area, double droop, int distribution, double leafAreaDensity, bool stalks,
-                    const std::string &vox_file, const std::string &rayvoxel_method)
+                    const std::string &vox_file, const std::string &rayvoxel_method,
+                    const std::string &leaf_classes_str)
 {
+  // Build leaf-point predicate from optional --leaf_classes code list (e.g. "1,2,3").
+  // Strip any "field:" prefix to match rayvoxel syntax. Without --leaf_classes: alpha != 0.
+  std::function<bool(uint8_t)> is_leaf;
+  {
+    std::string codes_str = leaf_classes_str;
+    auto colon = codes_str.find(':');
+    if (colon != std::string::npos)
+      codes_str = codes_str.substr(colon + 1);
+    if (codes_str.empty())
+    {
+      is_leaf = [](uint8_t a) { return a != 0; };
+    }
+    else
+    {
+      std::vector<uint8_t> codes;
+      std::stringstream ss(codes_str);
+      std::string tok;
+      while (std::getline(ss, tok, ','))
+      {
+        tok.erase(0, tok.find_first_not_of(" \t"));
+        tok.erase(tok.find_last_not_of(" \t") + 1);
+        if (!tok.empty())
+          codes.push_back(static_cast<uint8_t>(std::stoi(tok)));
+      }
+      is_leaf = [codes](uint8_t a) {
+        return std::find(codes.begin(), codes.end(), a) != codes.end();
+      };
+    }
+  }
+
   // For now we assume that woody points have been set as unbounded (alpha=0). e.g. through raycolour foliage or
   // raysplit file distance 0.2 as examples. so firstly we must calculate the foliage density across the whole map.
-  std::string cloud_name = cloud_stub + ".ply";
+  const std::string cloud_stub = getFileNameStub(cloud_name);
   Cloud::Info info;
   if (!Cloud::getInfo(cloud_name, info))
   {
@@ -71,8 +105,8 @@ bool generateLeaves(const std::string &cloud_stub, const std::string &trees_file
   grid.addNeighbourPriors();
 
   // Optional per-voxel leaf area density (LAD) and leaf inclination angle distribution (LIAD)
-  // loaded from a rayvoxel .vox file. When present, these override the scalar --leaf_density
-  // and analytic --leaf_angle values on a per-voxel / per-cell basis.
+  // loaded from a rayvoxel file. Supports both AMAPVox .vox format (VOXEL SPACE header, nbEchos)
+  // and the extended .txt format (num_hits, subvoxel_bitmap, lad_*, liad_*).
   struct VoxKey {
     long i, j, k;
     bool operator==(const VoxKey& o) const { return i==o.i && j==o.j && k==o.k; }
@@ -85,7 +119,8 @@ bool generateLeaves(const std::string &cloud_stub, const std::string &trees_file
       return h;
     }
   };
-  struct VoxLeafData { double lad; std::vector<double> liad; };
+  // nb_echos: total echoes in this voxel from the full lidar scan (used for fraction computation)
+  struct VoxLeafData { double lad; std::vector<double> liad; uint64_t bitmap = 0; int nb_echos = 0; };
   using VoxMap = std::unordered_map<VoxKey, VoxLeafData, VoxKeyHash>;
 
   VoxMap vox_map;
@@ -95,91 +130,225 @@ bool generateLeaves(const std::string &cloud_stub, const std::string &trees_file
   std::unordered_map<int, std::vector<double>> cell_liad_sum;
   bool has_lad_vox = false;
   bool has_liad_vox = false;
+  bool has_bitmap_vox = false;
 
   if (!vox_file.empty())
   {
-    ray::VoxelSpace space;
-    if (!ray::readVox(vox_file, space))
+    // Detect format: AMAPVox "VOXEL SPACE" vs extended text
+    bool is_amap_format = false;
     {
-      std::cerr << "Error: cannot read rayvoxel file: " << vox_file << std::endl;
-      return false;
-    }
-
-    // Parse min_corner and res from header (format: "x y z")
-    auto parse_vec3 = [](const std::string& s, Eigen::Vector3d& out) {
-      std::istringstream ss(s);
-      return static_cast<bool>(ss >> out.x() >> out.y() >> out.z());
-    };
-    auto it_min = space.header.find("min_corner");
-    auto it_res = space.header.find("res");
-    if (it_min == space.header.end() || it_res == space.header.end() ||
-        !parse_vec3(it_min->second, vox_min) || !parse_vec3(it_res->second, vox_res))
-    {
-      std::cerr << "Error: rayvoxel file missing min_corner or res header." << std::endl;
-      return false;
-    }
-
-    // Parse colnames to find lad and liad column indices (0-based after i j k)
-    auto it_col = space.header.find("colnames");
-    std::vector<std::string> colnames;
-    if (it_col != space.header.end())
-    {
-      std::istringstream ss(it_col->second);
-      std::string tok;
-      while (ss >> tok) colnames.push_back(tok);
-    }
-    // Skip the first 3 (i j k)
-    auto col_idx = [&](const std::string& name) -> int {
-      for (int c = 3; c < (int)colnames.size(); ++c)
-        if (colnames[c] == name) return c - 3; // 0-based into variables[]
-      return -1;
-    };
-
-    // LAD column: user method -> fpl -> ladG0.5 -> scalar
-    int lad_col = col_idx("lad_" + rayvoxel_method);
-    if (lad_col < 0) lad_col = col_idx("lad_fpl");
-    if (lad_col < 0) lad_col = col_idx("ladG0.5");
-    has_lad_vox = (lad_col >= 0);
-    if (!has_lad_vox)
-      std::cout << "Note: rayvoxel file has no lad column for method '" << rayvoxel_method
-                << "'; using --leaf_density as fallback." << std::endl;
-
-    // LIAD columns: liad_0, liad_1, ...
-    std::vector<int> liad_cols;
-    for (int b = 0; ; ++b)
-    {
-      int c = col_idx("liad_" + std::to_string(b));
-      if (c < 0) break;
-      liad_cols.push_back(c);
-    }
-    n_iad_bins = (int)liad_cols.size();
-    has_liad_vox = (n_iad_bins > 0);
-    if (!has_liad_vox)
-      std::cout << "Note: rayvoxel file has no liad_* columns; using --leaf_angle distribution as fallback." << std::endl;
-
-    // One-time notification if user also provided --leaf_density or --leaf_angle
-    // (caller already passed leafAreaDensity and distribution; just note fallback role)
-    if (has_lad_vox)
-      std::cout << "Note: --rayvoxel active; --leaf_density used only as fallback for uncovered voxels." << std::endl;
-    if (has_liad_vox)
-      std::cout << "Note: --rayvoxel active; --leaf_angle used only as fallback when liad data is absent." << std::endl;
-
-    // Build VoxMap
-    auto safe_val = [](const VoxelData& v, int col) -> double {
-      if (col < 0 || col >= (int)v.variables.size()) return 0.0;
-      try { return std::stod(v.variables[col]); } catch (...) { return 0.0; }
-    };
-    for (auto& vd : space.voxels)
-    {
-      VoxLeafData ld;
-      ld.lad = has_lad_vox ? safe_val(vd, lad_col) : 0.0;
-      if (has_liad_vox)
+      std::ifstream probe(vox_file);
+      std::string first_line;
+      if (std::getline(probe, first_line))
       {
-        ld.liad.resize(n_iad_bins);
-        for (int b = 0; b < n_iad_bins; ++b)
-          ld.liad[b] = safe_val(vd, liad_cols[b]);
+        auto s = first_line.find_first_not_of(" \t\r\n");
+        auto e = first_line.find_last_not_of(" \t\r\n");
+        std::string trimmed = (s != std::string::npos) ? first_line.substr(s, e - s + 1) : "";
+        is_amap_format = (trimmed == "VOXEL SPACE");
       }
-      vox_map[{vd.i, vd.j, vd.k}] = std::move(ld);
+    }
+
+    auto notify_columns = [&]() {
+      if (!has_lad_vox)
+        std::cout << "Note: rayvoxel file has no lad column for method '" << rayvoxel_method
+                  << "'; using --leaf_density as fallback." << std::endl;
+      if (!has_liad_vox)
+        std::cout << "Note: rayvoxel file has no liad_* columns; using --leaf_angle distribution as fallback." << std::endl;
+      if (has_lad_vox)
+        std::cout << "Note: --rayvoxel active; --leaf_density used only as fallback for uncovered voxels." << std::endl;
+      if (has_liad_vox)
+        std::cout << "Note: --rayvoxel active; --leaf_angle used only as fallback when liad data is absent." << std::endl;
+      if (has_bitmap_vox)
+        std::cout << "Note: subvoxel_bitmap found; using bitmap-guided leaf placement with three-state occupancy." << std::endl;
+    };
+
+    if (is_amap_format)
+    {
+      // ---- AMAPVox VOXEL SPACE format ----
+      ray::VoxelSpace space;
+      if (!ray::readVox(vox_file, space))
+      {
+        std::cerr << "Error: cannot read rayvoxel file: " << vox_file << std::endl;
+        return false;
+      }
+
+      auto parse_vec3 = [](const std::string& s, Eigen::Vector3d& out) {
+        std::istringstream ss(s);
+        return static_cast<bool>(ss >> out.x() >> out.y() >> out.z());
+      };
+      auto it_min = space.header.find("min_corner");
+      auto it_res = space.header.find("res");
+      if (it_min == space.header.end() || it_res == space.header.end() ||
+          !parse_vec3(it_min->second, vox_min) || !parse_vec3(it_res->second, vox_res))
+      {
+        std::cerr << "Error: rayvoxel file missing min_corner or res header." << std::endl;
+        return false;
+      }
+
+      auto it_col = space.header.find("colnames");
+      std::vector<std::string> colnames;
+      if (it_col != space.header.end())
+      {
+        std::istringstream ss(it_col->second);
+        std::string tok;
+        while (ss >> tok) colnames.push_back(tok);
+      }
+      auto col_idx = [&](const std::string& name) -> int {
+        for (int c = 3; c < (int)colnames.size(); ++c)
+          if (colnames[c] == name) return c - 3;
+        return -1;
+      };
+
+      int lad_col = col_idx("lad_" + rayvoxel_method);
+      if (lad_col < 0) lad_col = col_idx("lad_fpl");
+      if (lad_col < 0) lad_col = col_idx("ladG0.5");
+      has_lad_vox = (lad_col >= 0);
+
+      std::vector<int> liad_cols;
+      for (int b = 0; ; ++b) {
+        int c = col_idx("liad_" + std::to_string(b));
+        if (c < 0) break;
+        liad_cols.push_back(c);
+      }
+      n_iad_bins = (int)liad_cols.size();
+      has_liad_vox = (n_iad_bins > 0);
+
+      int bitmap_col = col_idx("subvoxel_bitmap");
+      has_bitmap_vox = (bitmap_col >= 0);
+
+      int nb_echos_col = col_idx("nbEchos");
+
+      notify_columns();
+
+      auto safe_val = [](const VoxelData& v, int col) -> double {
+        if (col < 0 || col >= (int)v.variables.size()) return 0.0;
+        try { return std::stod(v.variables[col]); } catch (...) { return 0.0; }
+      };
+      for (auto& vd : space.voxels)
+      {
+        VoxLeafData ld;
+        ld.lad = has_lad_vox ? safe_val(vd, lad_col) : 0.0;
+        ld.nb_echos = (nb_echos_col >= 0 && nb_echos_col < (int)vd.variables.size())
+                        ? (int)safe_val(vd, nb_echos_col) : 0;
+        if (has_liad_vox) {
+          ld.liad.resize(n_iad_bins);
+          for (int b = 0; b < n_iad_bins; ++b)
+            ld.liad[b] = safe_val(vd, liad_cols[b]);
+        }
+        if (has_bitmap_vox) {
+          try {
+            ld.bitmap = bitmap_col < (int)vd.variables.size()
+                          ? static_cast<uint64_t>(std::stoull(vd.variables[bitmap_col])) : 0;
+          } catch (...) { ld.bitmap = 0; }
+        }
+        vox_map[{vd.i, vd.j, vd.k}] = std::move(ld);
+      }
+    }
+    else
+    {
+      // ---- Extended text format (i j k x y z voxel_state ... num_hits ... subvoxel_bitmap ...) ----
+      std::ifstream ifs(vox_file);
+      if (!ifs.is_open()) {
+        std::cerr << "Error: cannot open rayvoxel file: " << vox_file << std::endl;
+        return false;
+      }
+      std::string header_line;
+      if (!std::getline(ifs, header_line)) {
+        std::cerr << "Error: empty rayvoxel file: " << vox_file << std::endl;
+        return false;
+      }
+      std::vector<std::string> cols;
+      { std::istringstream hss(header_line); std::string t; while (hss >> t) cols.push_back(t); }
+
+      auto fc = [&](const std::string& name) -> int {
+        for (int i = 0; i < (int)cols.size(); ++i)
+          if (cols[i] == name) return i;
+        return -1;
+      };
+      int i_col = fc("i"), j_col = fc("j"), k_col = fc("k");
+      int x_col = fc("x"), y_col = fc("y"), z_col = fc("z");
+      int vs_col = fc("voxel_size");
+      if (i_col < 0 || j_col < 0 || k_col < 0) {
+        std::cerr << "Error: rayvoxel txt file missing i/j/k columns." << std::endl;
+        return false;
+      }
+
+      int nb_echos_col_txt = fc("num_hits");  // extended txt uses num_hits
+      int bitmap_col_txt   = fc("subvoxel_bitmap");
+
+      int lad_col_txt = fc("lad_" + rayvoxel_method);
+      if (lad_col_txt < 0) lad_col_txt = fc("lad_fpl");
+      if (lad_col_txt < 0) lad_col_txt = fc("lad_g0.5");
+      if (lad_col_txt < 0) lad_col_txt = fc("ladG0.5");
+      has_lad_vox = (lad_col_txt >= 0);
+
+      std::vector<int> liad_cols_txt;
+      for (int b = 0; ; ++b) {
+        int c = fc("liad_" + std::to_string(b));
+        if (c < 0) break;
+        liad_cols_txt.push_back(c);
+      }
+      n_iad_bins = (int)liad_cols_txt.size();
+      has_liad_vox = (n_iad_bins > 0);
+      has_bitmap_vox = (bitmap_col_txt >= 0);
+
+      notify_columns();
+
+      bool vox_meta_set = false;
+      std::string line;
+      while (std::getline(ifs, line))
+      {
+        if (line.empty() || line[0] == '#') continue;
+        std::vector<std::string> vals;
+        { std::istringstream ss(line); std::string t; while (ss >> t) vals.push_back(t); }
+
+        int needed = std::max({i_col, j_col, k_col});
+        if ((int)vals.size() <= needed) continue;
+
+        try {
+          long vi = std::stol(vals[i_col]);
+          long vj = std::stol(vals[j_col]);
+          long vk = std::stol(vals[k_col]);
+
+          // Infer vox_min and vox_res from x/y/z/voxel_size columns on the first valid row
+          if (!vox_meta_set && x_col >= 0 && y_col >= 0 && z_col >= 0 && vs_col >= 0 &&
+              std::max({x_col, y_col, z_col, vs_col}) < (int)vals.size())
+          {
+            double vs = std::stod(vals[vs_col]);
+            vox_res = Eigen::Vector3d(vs, vs, vs);
+            vox_min = Eigen::Vector3d(std::stod(vals[x_col]) - (vi + 0.5) * vs,
+                                     std::stod(vals[y_col]) - (vj + 0.5) * vs,
+                                     std::stod(vals[z_col]) - (vk + 0.5) * vs);
+            vox_meta_set = true;
+          }
+
+          auto safe_txt = [&](int col) -> double {
+            if (col < 0 || col >= (int)vals.size()) return 0.0;
+            try { return std::stod(vals[col]); } catch (...) { return 0.0; }
+          };
+
+          VoxLeafData ld;
+          ld.lad = has_lad_vox ? safe_txt(lad_col_txt) : 0.0;
+          ld.nb_echos = (nb_echos_col_txt >= 0 && nb_echos_col_txt < (int)vals.size())
+                          ? (int)std::stoi(vals[nb_echos_col_txt]) : 0;
+          if (has_liad_vox) {
+            ld.liad.resize(n_iad_bins);
+            for (int b = 0; b < n_iad_bins; ++b) ld.liad[b] = safe_txt(liad_cols_txt[b]);
+          }
+          if (has_bitmap_vox) {
+            try {
+              ld.bitmap = (bitmap_col_txt >= 0 && bitmap_col_txt < (int)vals.size())
+                            ? static_cast<uint64_t>(std::stoull(vals[bitmap_col_txt])) : 0;
+            } catch (...) { ld.bitmap = 0; }
+          }
+          vox_map[{vi, vj, vk}] = std::move(ld);
+        } catch (...) { continue; }
+      }
+
+      if (!vox_meta_set) {
+        std::cerr << "Error: could not derive voxel origin from rayvoxel txt file (missing x/y/z/voxel_size columns)." << std::endl;
+        return false;
+      }
     }
 
     // Aggregate LIAD into 1m DensityGrid cells
@@ -205,7 +374,6 @@ bool generateLeaves(const std::string &cloud_stub, const std::string &trees_file
         for (double v : hist) sum += v;
         if (sum <= 0.0) { hist.clear(); continue; }
         for (double& v : hist) v /= sum;
-        // convert to CDF
         for (int b = 1; b < (int)hist.size(); ++b) hist[b] += hist[b-1];
       }
     }
@@ -319,6 +487,7 @@ bool generateLeaves(const std::string &cloud_stub, const std::string &trees_file
     Eigen::Vector3d origin;
     double grad0;
   };
+
   std::vector<Leaf> leaves;
   std::vector<double> leaf_counter(grid.voxels().size());
   std::srand(1);
@@ -335,134 +504,250 @@ bool generateLeaves(const std::string &cloud_stub, const std::string &trees_file
   std::uniform_real_distribution<> dis(0.0, 1.0);
   std::uniform_real_distribution<> bin_dis(0.0, 1.0);  // for CDF inversion within bin
 
-  auto add_leaves = [&](std::vector<Eigen::Vector3d> &, std::vector<Eigen::Vector3d> &ends, std::vector<double> &,
-                        std::vector<ray::RGBA> &colours) {
-    for (size_t i = 0; i < ends.size(); i++)
+  // Helper: sample a leaf angle from per-cell LIAD CDF or fall back to analytic distribution
+  auto sample_angle = [&](int grid_idx) -> double {
+    if (!vox_file.empty() && has_liad_vox)
     {
-      if (colours[i].alpha == 0)
-        continue;
-      int index = grid.getIndexFromPos(ends[i]);
-      auto &voxel = grid.voxels()[index];
-
-      double desired_leaf_area;
-      if (!vox_file.empty() && has_lad_vox)
+      auto cit = cell_liad_sum.find(grid_idx);
+      if (cit != cell_liad_sum.end() && !cit->second.empty())
       {
-        Eigen::Vector3d frac = (ends[i] - vox_min).cwiseQuotient(vox_res);
-        VoxKey vk{ static_cast<long>(std::floor(frac.x())),
-                   static_cast<long>(std::floor(frac.y())),
-                   static_cast<long>(std::floor(frac.z())) };
-        auto it = vox_map.find(vk);
-        if (it != vox_map.end())
-          desired_leaf_area = it->second.lad * vox_res.prod();
-        else
-          desired_leaf_area = leafAreaDensity * vox_width * vox_width * vox_width; // fallback
+        double u = dis(gen);
+        const auto &cdf = cit->second;
+        int bin = (int)cdf.size() - 1;
+        for (int b = 0; b < (int)cdf.size(); ++b)
+          if (u <= cdf[b]) { bin = b; break; }
+        return (bin + bin_dis(gen)) * 90.0 / n_iad_bins;
       }
-      else
-      {
-        desired_leaf_area = leafAreaDensity * vox_width * vox_width * vox_width;
-      }
-      if (desired_leaf_area <= 0.0)
-        continue;
-      double num_leaves_d = desired_leaf_area / leaf_area;
-      double num_points = (double)voxel.numHits();
-      double &count = leaf_counter[index];
-      count += num_leaves_d / num_points;
-      bool add_leaf = false;
-      if (count >= 1.0)
-      {
-        add_leaf = true;
-        count--;
-      }
-
-      if (add_leaf)
-      {
-        Leaf new_leaf;
-        new_leaf.centre = ends[i];
-
-        double min_dist = 1e10;
-        Eigen::Vector3d closest_point_on_branch(0, 0, 0);
-        for (auto &ind : neighbour_segments[index])
-        {
-          auto &tree = forest.trees[tree_ids[ind]];
-          Eigen::Vector3d line_closest;
-          Eigen::Vector3d closest = tree.closestPointOnSegment(segment_ids[ind], ends[i], line_closest);
-          double dist = (closest - ends[i]).norm();
-          double radius = tree.segments()[segment_ids[ind]].radius;
-          if (dist <= radius)
-          {
-            min_dist = 1e10;
-            break;
-          }
-          if (dist < min_dist)
-          {
-            min_dist = dist;
-            closest_point_on_branch = closest;
-          }
-        }
-        if (min_dist == 1e10)
-        {
-          continue;
-        }        // Calculate leaf direction using the user-specified leaf angle distribution
-        Eigen::Vector3d branch_direction = (new_leaf.centre - closest_point_on_branch).normalized();
-        
-        // Generate a random angle using the distribution
-        double angle;
-        bool used_liad = false;
-        if (!vox_file.empty() && has_liad_vox)
-        {
-          auto cit = cell_liad_sum.find(index);
-          if (cit != cell_liad_sum.end() && !cit->second.empty())
-          {
-            // Inverse-transform sample from the per-cell CDF
-            double u = dis(gen);
-            int bin = 0;
-            const auto& cdf = cit->second;
-            for (int b = 0; b < (int)cdf.size(); ++b)
-              if (u <= cdf[b]) { bin = b; break; }
-            // Uniform within the bin
-            angle = (bin + bin_dis(gen)) * 90.0 / n_iad_bins;
-            used_liad = true;
-          }
-        }
-        if (!used_liad)
-        {
-          do {
-            angle = dis(gen) * 90.0; // Random angle between 0 and 90 degrees
-          } while (dis(gen) > leafAngleDistribution(angle));
-        }
-
-        // Convert angle to radians
-        double angle_rad = angle * M_PI / 180.0;
-
-        // Create a rotation axis perpendicular to the branch direction
-        Eigen::Vector3d rotation_axis = branch_direction.cross(Eigen::Vector3d::UnitZ()).normalized();
-        if (rotation_axis.norm() < 1e-6) {
-          rotation_axis = branch_direction.cross(Eigen::Vector3d::UnitY()).normalized();
-        }
-
-        // Create rotation matrix
-        Eigen::AngleAxisd rotation(angle_rad, rotation_axis);
-        
-        // Apply rotation to branch direction to get leaf direction
-        new_leaf.direction = rotation * branch_direction;
-
-        // Apply droop
-        Eigen::Vector3d flat = new_leaf.direction;
-        flat[2] = 0.0;
-        double dist = flat.norm();
-        new_leaf.direction[2] -= droop * dist * dist;
-        new_leaf.direction.normalize();
-
-        new_leaf.origin = closest_point_on_branch;
-        new_leaf.grad0 = std::tan(angle_rad);
-
-        leaves.push_back(new_leaf);
-      }  
     }
+    double angle;
+    do { angle = dis(gen) * 90.0; } while (dis(gen) > leafAngleDistribution(angle));
+    return angle;
   };
 
-  if (!ray::Cloud::read(cloud_name, add_leaves))
-    return false;
+  // Helper: find nearest branch to a point; returns false if point is inside a branch cylinder
+  auto find_nearest_branch = [&](const Eigen::Vector3d &pos, int grid_idx,
+                                 Eigen::Vector3d &closest_out) -> bool {
+    double min_dist = 1e10;
+    for (auto &ind : neighbour_segments[grid_idx])
+    {
+      auto &tree = forest.trees[tree_ids[ind]];
+      Eigen::Vector3d line_closest;
+      Eigen::Vector3d closest = tree.closestPointOnSegment(segment_ids[ind], pos, line_closest);
+      double dist = (closest - pos).norm();
+      double radius = tree.segments()[segment_ids[ind]].radius;
+      if (dist <= radius)
+        return false;
+      if (dist < min_dist)
+      {
+        min_dist = dist;
+        closest_out = closest;
+      }
+    }
+    return min_dist < 1e10;
+  };
+
+  // Helper: build a Leaf given position and closest branch point
+  auto build_leaf = [&](const Eigen::Vector3d &centre, const Eigen::Vector3d &closest_branch,
+                        int grid_idx) -> Leaf {
+    Leaf lf;
+    lf.centre = centre;
+    lf.origin = closest_branch;
+
+    Eigen::Vector3d branch_dir = (centre - closest_branch).normalized();
+    double angle = sample_angle(grid_idx);
+    double angle_rad = angle * M_PI / 180.0;
+
+    Eigen::Vector3d rot_axis = branch_dir.cross(Eigen::Vector3d::UnitZ()).normalized();
+    if (rot_axis.norm() < 1e-6)
+      rot_axis = branch_dir.cross(Eigen::Vector3d::UnitY()).normalized();
+
+    lf.direction = Eigen::AngleAxisd(angle_rad, rot_axis) * branch_dir;
+
+    // Apply droop
+    Eigen::Vector3d flat = lf.direction;
+    flat[2] = 0.0;
+    double dist_h = flat.norm();
+    lf.direction[2] -= droop * dist_h * dist_h;
+    lf.direction.normalize();
+
+    lf.grad0 = std::tan(angle_rad);
+    return lf;
+  };
+
+  const bool use_bitmap_path = !vox_file.empty() && has_bitmap_vox;
+
+  if (use_bitmap_path)
+  {
+    // Detect subvoxel split N from max set bit across all rayvox bitmaps
+    int max_bit_seen = 0;
+    for (auto &[key, ld] : vox_map)
+      for (int b = 63; b >= 0; --b)
+        if ((ld.bitmap >> b) & 1) { if (b > max_bit_seen) max_bit_seen = b; break; }
+    const int split_n = (max_bit_seen >= 27) ? 4 : (max_bit_seen >= 8) ? 3 : 2;
+    const int split_n3 = split_n * split_n * split_n;
+
+    // Build input bitmaps and per-voxel point counts from the input cloud.
+    // A rayvox bitmap bit=1 means a ray explored that sub-cell (explored/not-occluded).
+    // An input bitmap bit=1 means a foliage point from our input cloud fell in that sub-cell.
+    // Three states: hit (input=1), empty (rayvox=1 & input=0), occluded (rayvox=0 & input=0).
+    std::unordered_map<VoxKey, uint64_t, VoxKeyHash> input_bitmaps;
+    std::unordered_map<VoxKey, int, VoxKeyHash> input_pts_count;
+    // Per hit sub-cell: sum of input point positions and count, to compute average for leaf placement.
+    std::unordered_map<VoxKey, std::unordered_map<int, std::pair<Eigen::Vector3d, int>>, VoxKeyHash> hit_pos_accum;
+
+    auto build_input = [&](std::vector<Eigen::Vector3d> &, std::vector<Eigen::Vector3d> &ends,
+                           std::vector<double> &, std::vector<ray::RGBA> &colours) {
+      for (size_t i = 0; i < ends.size(); i++)
+      {
+        if (!is_leaf(colours[i].alpha)) continue;
+        const Eigen::Vector3d rel = vox_res.array().inverse() * (ends[i] - vox_min).array();
+        long vi = (long)std::floor(rel.x());
+        long vj = (long)std::floor(rel.y());
+        long vk = (long)std::floor(rel.z());
+        VoxKey key{vi, vj, vk};
+        input_pts_count[key]++;
+        double fx = rel.x() - vi, fy = rel.y() - vj, fz = rel.z() - vk;
+        int sx = std::min(std::max((int)(fx * split_n), 0), split_n - 1);
+        int sy = std::min(std::max((int)(fy * split_n), 0), split_n - 1);
+        int sz = std::min(std::max((int)(fz * split_n), 0), split_n - 1);
+        int bit = sx + sy * split_n + sz * split_n * split_n;
+        input_bitmaps[key] |= (1ULL << bit);
+        auto &accum = hit_pos_accum[key][bit];
+        accum.first += ends[i];
+        accum.second++;
+      }
+    };
+    if (!ray::Cloud::read(cloud_name, build_input))
+      return false;
+
+    const double vox_vol = vox_res[0] * vox_res[1] * vox_res[2];
+
+    for (auto &[key, ld] : vox_map)
+    {
+      uint64_t rayvox_bmp = ld.bitmap;
+      auto inp_it = input_bitmaps.find(key);
+      uint64_t inp_bmp = (inp_it != input_bitmaps.end()) ? inp_it->second : 0;
+
+      if (rayvox_bmp == 0 && inp_bmp == 0)
+        continue;
+
+      // Fraction: how much of the full-lidar echoes are represented in our input cloud.
+      // If the voxel had no recorded echoes (occluded / not in vox file), assume fraction=1.
+      auto cnt_it = input_pts_count.find(key);
+      int n_input_pts = (cnt_it != input_pts_count.end()) ? cnt_it->second : 0;
+      double fraction = (ld.nb_echos > 0) ? std::min(1.0, (double)n_input_pts / ld.nb_echos) : 1.0;
+
+      double vox_lad = has_lad_vox ? ld.lad : leafAreaDensity;
+      double expected_leaves = vox_lad * fraction * vox_vol / leaf_area;
+      if (expected_leaves <= 0.0)
+        continue;
+
+      // Partition valid sub-cells into: hit (input=1), occluded (rayvox=0 & input=0).
+      // Empty sub-cells (rayvox=1 & input=0) are skipped — no leaf material in explored-but-empty space.
+      std::vector<int> hit_bits, occ_bits;
+      for (int bit = 0; bit < split_n3; ++bit)
+      {
+        bool rayvox_bit = (rayvox_bmp >> bit) & 1;
+        bool inp_bit    = (inp_bmp    >> bit) & 1;
+        if (inp_bit)
+          hit_bits.push_back(bit);   // confirmed foliage point
+        else if (!rayvox_bit)
+          occ_bits.push_back(bit);   // occluded: could contain foliage
+        // else: empty (ray passed through, no hit) — skip
+      }
+
+      int n_active = (int)hit_bits.size() + (int)occ_bits.size();
+      if (n_active == 0)
+        continue;
+
+      // Distribute expected leaves evenly across active (non-empty) sub-cells,
+      // iterating hits first so that when expected_leaves < n_hit, all leaves land in hits.
+      const double leaves_per_active_bit = expected_leaves / n_active;
+
+      for (int pass = 0; pass < 2; ++pass)
+      {
+        const auto &bits = (pass == 0) ? hit_bits : occ_bits;
+        for (int bit : bits)
+        {
+          int sx = bit % split_n;
+          int sy = (bit / split_n) % split_n;
+          int sz = bit / (split_n * split_n);
+
+          Eigen::Vector3d sub_centre = vox_min + vox_res.cwiseProduct(
+            Eigen::Vector3d(key.i + (sx + 0.5) / split_n,
+                            key.j + (sy + 0.5) / split_n,
+                            key.k + (sz + 0.5) / split_n));
+
+          if (!((sub_centre.array() >= grid_bounds.min_bound_.array()).all() &&
+                (sub_centre.array() < grid_bounds.max_bound_.array()).all()))
+            continue;
+          int grid_idx = grid.getIndexFromPos(sub_centre);
+
+          double &count = leaf_counter[grid_idx];
+          count += leaves_per_active_bit;
+          if (count < 1.0)
+            continue;
+          count -= 1.0;
+
+          if (neighbour_segments[grid_idx].empty())
+            continue;
+
+          // For hit sub-cells use the average input scan position (non-grid-aligned, within the sub-cell).
+          Eigen::Vector3d leaf_pos = sub_centre;
+          if (pass == 0)
+          {
+            auto hpa_it = hit_pos_accum.find(key);
+            if (hpa_it != hit_pos_accum.end())
+            {
+              auto bp_it = hpa_it->second.find(bit);
+              if (bp_it != hpa_it->second.end() && bp_it->second.second > 0)
+                leaf_pos = bp_it->second.first / bp_it->second.second;
+            }
+          }
+
+          Eigen::Vector3d closest;
+          if (!find_nearest_branch(leaf_pos, grid_idx, closest))
+            continue;
+
+          leaves.push_back(build_leaf(leaf_pos, closest, grid_idx));
+        }
+      }
+    }
+  }
+  else
+  {
+    auto add_leaves = [&](std::vector<Eigen::Vector3d> &, std::vector<Eigen::Vector3d> &ends,
+                          std::vector<double> &, std::vector<ray::RGBA> &colours) {
+      for (size_t i = 0; i < ends.size(); i++)
+      {
+        if (!is_leaf(colours[i].alpha))
+          continue;
+        int index = grid.getIndexFromPos(ends[i]);
+        auto &voxel = grid.voxels()[index];
+
+        const double vox_vol = vox_width * vox_width * vox_width;
+        double desired_leaf_area = leafAreaDensity * vox_vol;
+        if (desired_leaf_area <= 0.0)
+          continue;
+        double num_leaves_d = desired_leaf_area / leaf_area;
+        double num_points = (double)voxel.numHits();
+        double &count = leaf_counter[index];
+        count += num_leaves_d / num_points;
+        if (count < 1.0)
+          continue;
+        count -= 1.0;
+
+        Eigen::Vector3d closest;
+        if (!find_nearest_branch(ends[i], index, closest))
+          continue;
+
+        leaves.push_back(build_leaf(ends[i], closest, index));
+      }
+    };
+
+    if (!ray::Cloud::read(cloud_name, add_leaves))
+      return false;
+  }
 
   Mesh leaf_mesh;
   // could read it from file at this point

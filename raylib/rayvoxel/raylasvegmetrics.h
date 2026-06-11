@@ -38,6 +38,12 @@ namespace ray
   std::string encodeIadToJson(const std::vector<double>& bin_centres_deg,
                               const std::vector<double>& values);
 
+  /// @brief Finds the closest de Wit distribution to an empirical inclination histogram by L2
+  /// distance. Candidates: planophile, erectophile, plagiophile, extremophile, spherical, uniform.
+  /// Returns the distribution name string, or "" if hist is empty or all-zero.
+  std::string classifyDeWit(const std::vector<double>& bin_centres,
+                             const std::vector<double>& hist);
+
   /// @struct LaserSpecification
   /// @brief Holds the physical properties of a laser scanner's beam.
   struct LaserSpecification

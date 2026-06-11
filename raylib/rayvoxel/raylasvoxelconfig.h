@@ -61,7 +61,7 @@ namespace ray
     std::string lad_params_str;
 
     bool calc_inclination_dist = false;
-    bool output_iad = false;          // write per-bin liad/wiad/piad columns to output
+    bool output_iad = false;          // write a per-tree {stub}_iad.csv sidecar (requires tree_id)
     bool has_leaf = false;            // --leaf_classes was provided
     bool has_wood = false;            // --wood_classes was provided
     int  n_iad_bins = 18;

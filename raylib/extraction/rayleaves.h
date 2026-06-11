@@ -11,8 +11,9 @@
 
 namespace ray
 {
-bool generateLeaves(const std::string &cloud_stub, const std::string &trees_file, const std::string &leaf_file,
+bool generateLeaves(const std::string &cloud_name, const std::string &trees_file, const std::string &leaf_file,
                     double leaf_area, double droop, int distribution, double leafAreaDensity, bool stalks,
-                    const std::string &vox_file = "", const std::string &rayvoxel_method = "fpl");
+                    const std::string &vox_file = "", const std::string &rayvoxel_method = "fpl",
+                    const std::string &leaf_classes_str = "");
 }  // namespace ray
 #endif  // RAYLIB_RAYLEAVES_H

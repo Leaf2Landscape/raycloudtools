@@ -405,9 +405,12 @@ static ClassTable buildClassTable(const std::string& cloud_name, const VoxelGrid
 // Per-tile accumulator for the tiled parallel KNN/IAD pass. Each worker thread owns one
 // TileResult; histograms are merged serially after the thread pool joins.
 struct TileResult {
-  std::unordered_map<int64_t, std::vector<double>> all_hist, leaf_hist, wood_hist, beam_hist;
-  std::unordered_map<int64_t, float> leaf_hit_count, wood_hit_count;
+  // Histograms and hit counts are keyed by tree_id (joined across stems), not voxel index.
+  std::unordered_map<int32_t, std::vector<double>> all_hist, leaf_hist, wood_hist, beam_hist;
+  std::unordered_map<int32_t, float> leaf_hit_count, wood_hit_count;
   std::unordered_map<int64_t, TriangleHistograms> triangle_histograms;
+  // Per-voxel tally of tree_id → point-hit count, reduced to predominant_tree during the merge.
+  std::unordered_map<int64_t, std::unordered_map<int32_t, int32_t>> tree_hits;
 };
 
 // Per-point surface normals estimated via KNN PCA (smallest-eigenvalue eigenvector).
@@ -425,7 +428,8 @@ struct TileResult {
 // leaf/wood point SEPARATION and is a distinct method.
 static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid& grid,
                                   const VoxelizationParameters& params, const HeightField* dtm,
-                                  ClassTable& class_table_out, IadTable& iad_table_out)
+                                  ClassTable& class_table_out, PerTreeIadMap& per_tree_iad_out,
+                                  PredominantTreeTable& predominant_tree_out)
 {
   // Compact per-tile point record. Replaces the parallel global positions/leaf_vals/wood_vals/
   // flat_indices/beam_angles arrays: routing points into per-tile buckets during the readLas pass
@@ -436,14 +440,17 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
     int wood_val;
     int64_t flat_idx;
     double beam_angle;  // zenith angle [0, pi/2] of the point's inbound ray
+    int32_t tree_id;    // raycloud tree_id of the point; -1 when absent (excluded from per-tree IAD)
   };
 
   ClassTable class_table;
-  IadTable iad_table;
+  PerTreeIadMap per_tree_iad;
+  PredominantTreeTable predominant_tree;
 
   uint16_t orig_extra_size = 0;
   std::vector<uint8_t> extra_bytes_vlr;
-  readLasExtraBytesVlr(cloud_name, orig_extra_size, extra_bytes_vlr);
+  bool has_tree_id = false;
+  readLasExtraBytesVlr(cloud_name, orig_extra_size, extra_bytes_vlr, nullptr, nullptr, &has_tree_id);
   const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + orig_extra_size);
 
   const Cuboid& bounds    = grid.getBounds();
@@ -487,8 +494,17 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
   // flat_idx. Populated inline during routing to avoid a second pass over the points.
   std::unordered_map<int64_t, int> flat_owner;
 
+  // tree_id is a raycloud attribute decoded by readLas into tree_ids_all at the global point
+  // index (parallel to the passthrough buffer). When the input has no tree_id field, per-tree
+  // IAD is disabled: predominant_tree stays -1 everywhere and no {stub}_iad.csv is written, but
+  // the class table is still built below (it is independent of tree identity).
+  if (!has_tree_id) {
+    std::cerr << "Info: no tree_id field in input; per-tree IAD disabled, predominant_tree=-1." << std::endl;
+  }
+
   size_t num_bounded = 0;
   std::vector<uint8_t> passthrough;
+  std::vector<int32_t> tree_ids_all;
   uint16_t pt_extra = 0;
   size_t global_chunk_start = 0;
   size_t total_points = 0;
@@ -525,22 +541,27 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
         const double len2 = dir.squaredNorm();
         const double bz = (len2 > 1e-12) ? std::acos(std::min(1.0, std::abs(dir.z() / std::sqrt(len2)))) : 0.0;
 
+        // tree_id grouping key (joins across stems). -1 when the file has no tree_id field, or for
+        // any unlabeled point; such points are excluded from per-tree histograms.
+        const int32_t tid = has_tree_id ? tree_ids_all[global_chunk_start + i] : -1;
+
         // Route into the point's core tile.
         const int tx = std::clamp((int)((ends[i].x() - minx) / tile_sz), 0, n_tx - 1);
         const int ty = std::clamp((int)((ends[i].y() - miny) / tile_sz), 0, n_ty - 1);
         const int t  = ty * n_tx + tx;
-        tile_points[t].push_back(TilePoint{ ends[i], lv, wv, flat_idx, bz });
+        tile_points[t].push_back(TilePoint{ ends[i], lv, wv, flat_idx, bz, tid });
         ++total_points;
 
         // Owner tile = tile of the first point that maps to this flat_idx (lowest global index).
         if (any_bailey && flat_owner.find(flat_idx) == flat_owner.end()) flat_owner[flat_idx] = t;
       }
       global_chunk_start += ends.size();
-    }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, &pt_extra);
+    }, num_bounded, 255.0, nullptr, 1000000, &tree_ids_all, &passthrough, &pt_extra);
 
   if (total_points < 2) {
     class_table_out = std::move(class_table);
-    iad_table_out = std::move(iad_table);
+    per_tree_iad_out = std::move(per_tree_iad);
+    predominant_tree_out = std::move(predominant_tree);
     return;
   }
 
@@ -562,9 +583,11 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
       : static_cast<size_t>(params.num_threads);
   if (resolved_threads == 0) resolved_threads = 1;
 
-  std::unordered_map<int64_t, std::vector<double>> all_hist, leaf_hist, wood_hist, beam_hist;
-  std::unordered_map<int64_t, float> leaf_hit_count, wood_hit_count;
+  // Histograms / hit counts keyed by tree_id; tree_hits keyed by voxel for predominant_tree.
+  std::unordered_map<int32_t, std::vector<double>> all_hist, leaf_hist, wood_hist, beam_hist;
+  std::unordered_map<int32_t, float> leaf_hit_count, wood_hit_count;
   std::unordered_map<int64_t, TriangleHistograms> triangle_histograms;
+  std::unordered_map<int64_t, std::unordered_map<int32_t, int32_t>> tree_hits;
 
   if (n_tiles == 1) {
     // Small cloud: single bucket, global KD-tree, no tiling overhead.
@@ -615,28 +638,34 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
       int bin = static_cast<int>(theta / (kPi / 2.0) * params.n_iad_bins);
       bin = std::clamp(bin, 0, params.n_iad_bins - 1);
 
+      // predominant_tree tally: count this point's hit toward its voxel's tree histogram.
       const int64_t flat_idx = tp[i].flat_idx;
-      auto& ah = all_hist[flat_idx];
+      const int32_t tid = tp[i].tree_id;
+      if (tid >= 0) tree_hits[flat_idx][tid] += 1;
+      // Points without a tree_id contribute to no tree's IAD; skip the per-tree histograms.
+      if (tid < 0) continue;
+
+      auto& ah = all_hist[tid];
       if (ah.empty()) ah.assign(params.n_iad_bins, 0.0);
       ah[bin] += 1.0;
 
       {
         int bbin = static_cast<int>(tp[i].beam_angle / (kPi / 2.0) * params.n_iad_bins);
         bbin = std::clamp(bbin, 0, params.n_iad_bins - 1);
-        auto& bh = beam_hist[flat_idx];
+        auto& bh = beam_hist[tid];
         if (bh.empty()) bh.assign(params.n_iad_bins, 0.0);
         bh[bbin] += 1.0;
       }
 
       if (leaf_set.count(tp[i].leaf_val)) {
-        leaf_hit_count[flat_idx] += 1.0f;
-        auto& lh = leaf_hist[flat_idx];
+        leaf_hit_count[tid] += 1.0f;
+        auto& lh = leaf_hist[tid];
         if (lh.empty()) lh.assign(params.n_iad_bins, 0.0);
         lh[bin] += 1.0;
       }
       if (wood_set.count(tp[i].wood_val)) {
-        wood_hit_count[flat_idx] += 1.0f;
-        auto& wh = wood_hist[flat_idx];
+        wood_hit_count[tid] += 1.0f;
+        auto& wh = wood_hist[tid];
         if (wh.empty()) wh.assign(params.n_iad_bins, 0.0);
         wh[bin] += 1.0;
       }
@@ -721,28 +750,34 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
         int bin = static_cast<int>(theta / (kPi / 2.0) * params.n_iad_bins);
         bin = std::clamp(bin, 0, params.n_iad_bins - 1);
 
+        // predominant_tree tally: count this core point's hit toward its voxel's tree histogram.
         const int64_t flat_idx = buf[c]->flat_idx;
-        auto& ah = tr.all_hist[flat_idx];
+        const int32_t tid = buf[c]->tree_id;
+        if (tid >= 0) tr.tree_hits[flat_idx][tid] += 1;
+        // Points without a tree_id contribute to no tree's IAD; skip the per-tree histograms.
+        if (tid < 0) continue;
+
+        auto& ah = tr.all_hist[tid];
         if (ah.empty()) ah.assign(params.n_iad_bins, 0.0);
         ah[bin] += 1.0;
 
         {
           int bbin = static_cast<int>(buf[c]->beam_angle / (kPi / 2.0) * params.n_iad_bins);
           bbin = std::clamp(bbin, 0, params.n_iad_bins - 1);
-          auto& bh = tr.beam_hist[flat_idx];
+          auto& bh = tr.beam_hist[tid];
           if (bh.empty()) bh.assign(params.n_iad_bins, 0.0);
           bh[bbin] += 1.0;
         }
 
         if (leaf_set.count(buf[c]->leaf_val)) {
-          tr.leaf_hit_count[flat_idx] += 1.0f;
-          auto& lh = tr.leaf_hist[flat_idx];
+          tr.leaf_hit_count[tid] += 1.0f;
+          auto& lh = tr.leaf_hist[tid];
           if (lh.empty()) lh.assign(params.n_iad_bins, 0.0);
           lh[bin] += 1.0;
         }
         if (wood_set.count(buf[c]->wood_val)) {
-          tr.wood_hit_count[flat_idx] += 1.0f;
-          auto& wh = tr.wood_hist[flat_idx];
+          tr.wood_hit_count[tid] += 1.0f;
+          auto& wh = tr.wood_hist[tid];
           if (wh.empty()) wh.assign(params.n_iad_bins, 0.0);
           wh[bin] += 1.0;
         }
@@ -779,8 +814,8 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
 
   // Merge per-tile results. Histograms are additive (each point is accumulated by exactly
   // one core tile). Triangle histograms use single-owner assignment (non-additive means).
-  auto merge_hist = [&](std::unordered_map<int64_t, std::vector<double>>& dst,
-                        std::unordered_map<int64_t, std::vector<double>>& src) {
+  auto merge_hist = [&](std::unordered_map<int32_t, std::vector<double>>& dst,
+                        std::unordered_map<int32_t, std::vector<double>>& src) {
     for (auto& kv : src) {
       auto& d = dst[kv.first];
       if (d.empty()) d = std::move(kv.second);
@@ -796,6 +831,10 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
     for (auto& kv : tr.leaf_hit_count) leaf_hit_count[kv.first] += kv.second;
     for (auto& kv : tr.wood_hit_count) wood_hit_count[kv.first] += kv.second;
     for (auto& kv : tr.triangle_histograms) triangle_histograms.emplace(kv.first, std::move(kv.second));
+    for (auto& kv : tr.tree_hits) {
+      auto& dst = tree_hits[kv.first];
+      for (auto& tc : kv.second) dst[tc.first] += tc.second;
+    }
   }
   } // end tiled path
 
@@ -810,34 +849,43 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
   for (int b = 0; b < params.n_iad_bins; ++b)
     bin_centres[b] = (b + 0.5) * (kPi / 2.0) / params.n_iad_bins;
 
+  // Reduce each voxel's tree-hit tally to its predominant tree (argmax point hits). Iterate the
+  // inner counts in ascending tree_id and keep the first strict maximum, so ties resolve to the
+  // lowest tree_id deterministically regardless of thread/merge order.
+  for (const auto& pair : tree_hits) {
+    std::vector<int32_t> tids;
+    tids.reserve(pair.second.size());
+    for (const auto& tc : pair.second) tids.push_back(tc.first);
+    std::sort(tids.begin(), tids.end());
+    int32_t best_tid = -1, best_count = 0;
+    for (int32_t k : tids) {
+      const int32_t c = pair.second.at(k);
+      if (c > best_count) { best_count = c; best_tid = k; }
+    }
+    predominant_tree[pair.first] = best_tid;
+  }
+
+  // Build one IadData per tree_id (joined across stems) from the tree-keyed histograms.
   for (auto& pair : all_hist) {
-    const int64_t flat_idx = pair.first;
+    const int32_t tid = pair.first;
     IadData iad;
     iad.bin_centres = bin_centres;
     iad.piad = pair.second;  // all points -> plant
-    auto lit = leaf_hist.find(flat_idx);
+    auto lit = leaf_hist.find(tid);
     iad.liad = (lit != leaf_hist.end()) ? lit->second : std::vector<double>(params.n_iad_bins, 0.0);
-    auto wit = wood_hist.find(flat_idx);
+    auto wit = wood_hist.find(tid);
     iad.wiad = (wit != wood_hist.end()) ? wit->second : std::vector<double>(params.n_iad_bins, 0.0);
-
-    // For the bailey method, extract triangle-facet G values without overwriting the empirical
-    // liad/wiad/piad. This preserves empirical G (leaf_g/wood_g/plant_g) for non-bailey methods
-    // that may be running alongside bailey in the same invocation.
-    if (any_bailey) {
-      auto it = triangle_histograms.find(flat_idx);
-      if (it != triangle_histograms.end()) {
-        iad.bailey_g_leaf = it->second.bailey_g_leaf;
-        iad.bailey_g_wood = it->second.bailey_g_wood;
-      }
-    }
 
     normalize(iad.liad);
     normalize(iad.wiad);
     normalize(iad.piad);
+    iad.liad_dewit = classifyDeWit(bin_centres, iad.liad);
+    iad.wiad_dewit = classifyDeWit(bin_centres, iad.wiad);
+    iad.piad_dewit = classifyDeWit(bin_centres, iad.piad);
 
-    // Angle-integrated G: weight G(theta_beam, leaf_angles) over the empirical beam-direction
+    // Angle-integrated G: weight G(theta_beam, leaf_angles) over the tree's empirical beam-direction
     // distribution rather than evaluating at a single mean angle.
-    auto bhit = beam_hist.find(flat_idx);
+    auto bhit = beam_hist.find(tid);
     if (bhit != beam_hist.end()) {
       std::vector<double> norm_beam = bhit->second;
       normalize(norm_beam);
@@ -852,28 +900,77 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
       iad.leaf_g  = g_leaf;
       iad.wood_g  = g_wood;
     } else {
-      const int64_t ci = flat_idx % dims[0];
-      const int64_t cj = (flat_idx / dims[0]) % dims[1];
-      const int64_t ck = flat_idx / (dims[0] * dims[1]);
-      const VoxelGrid::Voxel& vv = grid.getVoxel(ci, cj, ck);
-      const double mean_zenith = (vv.num_beams_weighted > 0) ? (vv.sum_of_angles / vv.num_beams_weighted) : 0.0;
-      iad.plant_g = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.piad);
-      iad.leaf_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.liad);
-      iad.wood_g  = computeGFromHistogram(mean_zenith, iad.bin_centres, iad.wiad);
+      // No beam-angle samples for this tree (rare): fall back to spherical G = 0.5.
+      iad.plant_g = 0.5;
+      iad.leaf_g  = 0.5;
+      iad.wood_g  = 0.5;
     }
 
     {
-      auto lhit = leaf_hit_count.find(flat_idx);
+      auto lhit = leaf_hit_count.find(tid);
       if (lhit != leaf_hit_count.end()) iad.leaf_hits = lhit->second;
-      auto whit = wood_hit_count.find(flat_idx);
+      auto whit = wood_hit_count.find(tid);
       if (whit != wood_hit_count.end()) iad.wood_hits = whit->second;
     }
 
-    iad_table[flat_idx] = std::move(iad);
+    per_tree_iad[tid] = std::move(iad);
+  }
+
+  // Bailey path (Option A): triangle-facet histograms are voxel-keyed. Fold each voxel's facets
+  // into its predominant tree, area-weighted, to produce per-tree bailey histograms and mean G.
+  if (any_bailey) {
+    std::unordered_map<int32_t, std::vector<double>> tree_tiad_leaf, tree_tiad_wood;
+    std::unordered_map<int32_t, double> g_num_leaf, g_den_leaf, g_num_wood, g_den_wood;
+    for (const auto& kv : triangle_histograms) {
+      auto pit = predominant_tree.find(kv.first);
+      if (pit == predominant_tree.end() || pit->second < 0) continue;
+      const int32_t tid = pit->second;
+      const TriangleHistograms& th = kv.second;
+      if (!th.tiad_leaf.empty()) {
+        auto& acc = tree_tiad_leaf[tid];
+        if (acc.empty()) acc.assign(params.n_iad_bins, 0.0);
+        double w = 0.0;
+        for (int b = 0; b < params.n_iad_bins; ++b) { acc[b] += th.tiad_leaf[b]; w += th.tiad_leaf[b]; }
+        g_num_leaf[tid] += th.bailey_g_leaf * w;
+        g_den_leaf[tid] += w;
+      }
+      if (!th.tiad_wood.empty()) {
+        auto& acc = tree_tiad_wood[tid];
+        if (acc.empty()) acc.assign(params.n_iad_bins, 0.0);
+        double w = 0.0;
+        for (int b = 0; b < params.n_iad_bins; ++b) { acc[b] += th.tiad_wood[b]; w += th.tiad_wood[b]; }
+        g_num_wood[tid] += th.bailey_g_wood * w;
+        g_den_wood[tid] += w;
+      }
+    }
+    for (auto& kv : per_tree_iad) {
+      const int32_t tid = kv.first;
+      IadData& iad = kv.second;
+      std::vector<double> piad_b(params.n_iad_bins, 0.0);
+      auto lit = tree_tiad_leaf.find(tid);
+      if (lit != tree_tiad_leaf.end()) {
+        iad.liad_bailey = lit->second;
+        for (int b = 0; b < params.n_iad_bins; ++b) piad_b[b] += lit->second[b];
+        normalize(iad.liad_bailey);
+      }
+      auto wit = tree_tiad_wood.find(tid);
+      if (wit != tree_tiad_wood.end()) {
+        iad.wiad_bailey = wit->second;
+        for (int b = 0; b < params.n_iad_bins; ++b) piad_b[b] += wit->second[b];
+        normalize(iad.wiad_bailey);
+      }
+      normalize(piad_b);
+      iad.piad_bailey = std::move(piad_b);
+      auto gdl = g_den_leaf.find(tid);
+      if (gdl != g_den_leaf.end() && gdl->second > 0.0) iad.bailey_g_leaf = g_num_leaf[tid] / gdl->second;
+      auto gdw = g_den_wood.find(tid);
+      if (gdw != g_den_wood.end() && gdw->second > 0.0) iad.bailey_g_wood = g_num_wood[tid] / gdw->second;
+    }
   }
 
   class_table_out = std::move(class_table);
-  iad_table_out = std::move(iad_table);
+  per_tree_iad_out = std::move(per_tree_iad);
+  predominant_tree_out = std::move(predominant_tree);
 }
 
 // ==================================================================================
@@ -1671,7 +1768,8 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
     // When inclination distributions are active, the class and IAD tables share an
     // identical I/O scan, so build them together in a single readLas pass.
     ClassTable class_table;
-    IadTable iad_table;
+    PerTreeIadMap per_tree_iad;
+    PredominantTreeTable predominant_tree;
     if (params.calc_inclination_dist) {
       {
         static bool empty_classes_warned = false;
@@ -1682,7 +1780,7 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
         }
       }
       std::cout << "Building classification table and inclination angle distributions..." << std::endl;
-      buildClassAndIadTable(params.cloud_name, grid, params, dtm_ptr.get(), class_table, iad_table);
+      buildClassAndIadTable(params.cloud_name, grid, params, dtm_ptr.get(), class_table, per_tree_iad, predominant_tree);
     } else {
       {
         static bool field_no_iad_warned = false;
@@ -1700,10 +1798,22 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
     }
 
     std::cout << "Calculating output metrics..." << std::endl;
-    MetricResultsMap metrics = calculateOutputMetrics(grid, params, dtm_ptr.get(), class_table, iad_table);
+    MetricResultsMap metrics = calculateOutputMetrics(grid, params, dtm_ptr.get(), class_table, per_tree_iad, predominant_tree);
 
     // Pass the pre-calculated metrics to the writer functions.
     std::string base_name_stub = getFileNameStub(params.cloud_name);
+
+    // Per-tree inclination angle distributions sidecar. Written whenever tree_id is present in
+    // the input (per_tree_iad non-empty); --output_iad is not required. The CSV describes the
+    // cloud's trees, so it is written once for the base stub regardless of voxel filtering
+    // (_filled / _include_empty variants reuse the same per-tree data).
+    if (params.calc_inclination_dist && !per_tree_iad.empty()) {
+        bool has_stem_id = false;
+        uint16_t iad_extra_size = 0;
+        std::vector<uint8_t> iad_extra_vlr;
+        readLasExtraBytesVlr(params.cloud_name, iad_extra_size, iad_extra_vlr, nullptr, nullptr, nullptr, &has_stem_id);
+        writePerTreeIadCsv(base_name_stub, per_tree_iad, params, has_stem_id);
+    }
 
     // Create a copy of params for the primary output, as it might change write_filled_only_mode
     VoxelizationParameters primary_params = params;
@@ -1717,7 +1827,7 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
     if (primary_params.output_format == "text") {
         primary_success = writeTextFile(primary_name_stub, grid, metrics, padding, user_bounds, primary_params);
     } else if (primary_params.output_format == "netcdf") {
-        primary_success = writeNetcdfFile(primary_name_stub, grid, metrics, padding, user_bounds, primary_params, iad_table);
+        primary_success = writeNetcdfFile(primary_name_stub, grid, metrics, padding, user_bounds, primary_params);
     } else if (primary_params.output_format == "amapvox") {
         primary_success = writeAmapVoxFile(primary_name_stub, grid, metrics, padding, user_bounds, primary_params);
     } else {
@@ -1736,7 +1846,7 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
         if (filled_params.output_format == "text") {
             filled_success = writeTextFile(filled_name_stub, grid, metrics, padding, user_bounds, filled_params, true);
         } else if (filled_params.output_format == "netcdf") {
-            filled_success = writeNetcdfFile(filled_name_stub, grid, metrics, padding, user_bounds, filled_params, iad_table, true);
+            filled_success = writeNetcdfFile(filled_name_stub, grid, metrics, padding, user_bounds, filled_params, true);
         } else if (filled_params.output_format == "amapvox") {
             filled_success = writeAmapVoxFile(filled_name_stub, grid, metrics, padding, user_bounds, filled_params, true);
         }

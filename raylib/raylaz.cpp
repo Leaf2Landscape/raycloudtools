@@ -40,6 +40,108 @@
 
 namespace ray
 {
+#if RAYLIB_WITH_LAS
+namespace
+{
+static const uint16_t kExtraTypeSize[11] = { 0, 1, 1, 2, 2, 4, 4, 8, 8, 4, 8 };
+static const char *kRayCloudAttrs[] = { "sx", "sy", "sz", "alpha", "bound", "tree_id", "stem_id", "beam_id" };
+
+/// Populate @c out from an already-opened laszip header pointer.
+/// Shared by readLasHeader and readLas so the VLR parse logic lives in one place.
+static void parseLasHeaderFields(const laszip_header_struct *h, laszip_BOOL is_compressed, LasHeader &out)
+{
+  out.point_format = h->point_data_format & 0x0Fu;
+  out.has_rgb = (out.point_format == 2 || out.point_format == 3 || out.point_format == 5 ||
+                 out.point_format == 7 || out.point_format == 8 || out.point_format == 10);
+  out.is_compressed = (is_compressed != 0);
+  out.point_count = (h->version_minor >= 4 && h->extended_number_of_point_records > 0)
+                      ? static_cast<uint64_t>(h->extended_number_of_point_records)
+                      : static_cast<uint64_t>(h->number_of_point_records);
+  out.scale[0] = h->x_scale_factor; out.scale[1] = h->y_scale_factor; out.scale[2] = h->z_scale_factor;
+  out.offset_xyz[0] = h->x_offset;  out.offset_xyz[1] = h->y_offset;  out.offset_xyz[2] = h->z_offset;
+  out.point_record_length = h->point_data_record_length;
+  out.point_data_offset   = h->offset_to_point_data;
+
+  out.is_raycloud = false;
+  for (laszip_U32 v = 0; v < h->number_of_variable_length_records; v++)
+  {
+    if (strncmp(h->vlrs[v].user_id, "raycloudtools", 16) == 0 && h->vlrs[v].record_id == 1)
+    {
+      out.is_raycloud = true;
+      break;
+    }
+  }
+  if (!out.is_raycloud)  // fallback: detect by "sx" attribute name in older files
+  {
+    for (laszip_U32 v = 0; v < h->number_of_variable_length_records; v++)
+    {
+      const auto &vlr = h->vlrs[v];
+      if (strcmp(vlr.user_id, "LASF_Spec") != 0 || vlr.record_id != 4) continue;
+      const int num_attrs = vlr.record_length_after_header / 192;
+      for (int a = 0; a < num_attrs; a++)
+      {
+        char n[33] = {}; memcpy(n, vlr.data + a * 192 + 4, 32);
+        if (strcmp(n, "sx") == 0) { out.is_raycloud = true; break; }
+      }
+      break;
+    }
+  }
+
+  out.extras.clear();
+  out.by_name.clear();
+  uint16_t abs_offset = 0;
+  for (laszip_U32 v = 0; v < h->number_of_variable_length_records; v++)
+  {
+    const auto &vlr = h->vlrs[v];
+    if (strcmp(vlr.user_id, "LASF_Spec") != 0 || vlr.record_id != 4) continue;
+    const int num_attrs = vlr.record_length_after_header / 192;
+    for (int a = 0; a < num_attrs; a++)
+    {
+      const uint8_t *rec = vlr.data + a * 192;
+      const uint8_t dtype = rec[2];
+      const uint16_t attr_size = (dtype > 0 && dtype <= 10) ? kExtraTypeSize[dtype] : 0;
+      if (attr_size == 0) continue;
+      LasExtraField f;
+      memcpy(f.name, rec + 4, 32); f.name[32] = '\0';
+      f.offset = abs_offset; f.dtype = dtype; f.size = attr_size; f.is_own = false;
+      if (out.is_raycloud)
+        for (const char *own : kRayCloudAttrs)
+          if (strcmp(f.name, own) == 0) { f.is_own = true; break; }
+      memcpy(f.vlr_record, rec, 192);
+      out.by_name[f.name] = out.extras.size();
+      out.extras.push_back(f);
+      abs_offset += attr_size;
+    }
+    break;  // only one EXTRA_BYTES VLR
+  }
+}
+}  // namespace
+#endif  // RAYLIB_WITH_LAS
+
+bool readLasHeader(const std::string &file_name, LasHeader &header_out)
+{
+#if RAYLIB_WITH_LAS
+  laszip_POINTER reader;
+  if (laszip_create(&reader)) return false;
+  laszip_BOOL is_compressed = 0;
+  if (laszip_open_reader(reader, file_name.c_str(), &is_compressed))
+  {
+    laszip_destroy(reader);
+    return false;
+  }
+  laszip_header_struct *h;
+  laszip_get_header_pointer(reader, &h);
+  parseLasHeaderFields(h, is_compressed, header_out);
+  laszip_close_reader(reader);
+  laszip_destroy(reader);
+  return true;
+#else
+  RAYLIB_UNUSED(file_name);
+  RAYLIB_UNUSED(header_out);
+  return false;
+#endif
+}
+
 #if RAYLIB_WITH_LAZPERF
 namespace
 {
@@ -224,91 +326,49 @@ bool readLas(const std::string &file_name,
     }
   }
 
-  // LAS EXTRA_BYTES data_type → per-point byte size (types 0 and >10 are skipped)
-  static const uint16_t kExtraTypeSize[11] = { 0, 1, 1, 2, 2, 4, 4, 8, 8, 4, 8 };
-  // Names of raycloud-owned extra attributes (these are skipped when extracting original data)
-  static const char *kRayCloudAttrs[] = { "sx", "sy", "sz", "alpha", "bound", "tree_id", "stem_id", "beam_id" };
-
-  uint16_t local_skip_size = 0;   // bytes of our own extra attributes before original data
-  uint16_t local_orig_extra = 0;  // bytes of original sensor data per point
-  uint16_t own_offset      = 0;   // running byte cursor through our own attrs (in declared order)
-  uint16_t abs_offset      = 0;   // absolute byte cursor through all extra attrs (ours + foreign)
-  uint16_t tree_id_offset  = 0;   uint8_t tree_id_dtype = 0;  // 0 = absent
-  uint16_t stem_id_offset  = 0;   uint8_t stem_id_dtype = 0;  // 0 = absent
-  uint16_t beam_id_offset  = 0;   uint8_t beam_id_dtype = 0;  // 0 = absent
-  uint16_t sx_offset       = 0;   // default byte 0
-  uint16_t sy_offset       = 4;   // default byte 4
-  uint16_t sz_offset       = 8;   // default byte 8
-  uint16_t alpha_offset    = 12;  // default: sx+sy+sz only; overwritten when "alpha" VLR found
-  int32_t  bound_offset    = -1;  // -1 = absent (old file); set when "bound" VLR found
-  std::vector<uint8_t> local_orig_vlr;
-
-  for (laszip_U32 v = 0; v < header->number_of_variable_length_records; v++)
-  {
-    auto &vlr = header->vlrs[v];
-    if (strcmp(vlr.user_id, "LASF_Spec") != 0 || vlr.record_id != 4)
-      continue;
-    const int num_attrs = vlr.record_length_after_header / 192;
-    for (int a = 0; a < num_attrs; a++)
-    {
-      const uint8_t *rec = vlr.data + a * 192;
-      const uint8_t dtype = rec[2];
-      const uint16_t attr_size = (dtype > 0 && dtype <= 10) ? kExtraTypeSize[dtype] : 0;
-      if (attr_size == 0)
-        continue;
-      char attr_name[33] = {};
-      memcpy(attr_name, rec + 4, 32);
-      bool is_ours = false;
-      if (is_raycloud)
-      {
-        for (const char *own : kRayCloudAttrs)
-          if (strcmp(attr_name, own) == 0) { is_ours = true; break; }
-        if (strcmp(attr_name, "tree_id") == 0) { tree_id_offset = abs_offset; tree_id_dtype = dtype; }
-        if (strcmp(attr_name, "stem_id") == 0) { stem_id_offset = abs_offset; stem_id_dtype = dtype; }
-        if (strcmp(attr_name, "beam_id") == 0) { beam_id_offset = abs_offset; beam_id_dtype = dtype; }
-        if (strcmp(attr_name, "sx")      == 0) { sx_offset      = abs_offset; }
-        if (strcmp(attr_name, "sy")      == 0) { sy_offset      = abs_offset; }
-        if (strcmp(attr_name, "sz")      == 0) { sz_offset      = abs_offset; }
-        if (strcmp(attr_name, "alpha")   == 0) { alpha_offset   = abs_offset; }
-        if (strcmp(attr_name, "bound")   == 0) { bound_offset   = abs_offset; }
-      }
-      if (is_ours)
-      {
-        own_offset       += attr_size;
-        local_skip_size  += attr_size;
-      }
-      else
-      {
-        local_orig_extra += attr_size;
-        local_orig_vlr.insert(local_orig_vlr.end(), rec, rec + 192);
-      }
-      abs_offset += attr_size;
-    }
-    break; // only one EXTRA_BYTES VLR
-  }
+  // Build the generic field table from the already-open header; derive DecodeContext from it.
+  LasHeader hdr;
+  parseLasHeaderFields(header, is_compressed, hdr);
 
   if (orig_extra_size_out)
-    *orig_extra_size_out = local_orig_extra;
+    *orig_extra_size_out = hdr.sensorExtraSize();
   if (extra_bytes_vlr_out)
-    *extra_bytes_vlr_out = local_orig_vlr;
+    *extra_bytes_vlr_out = hdr.sensorExtraVlr();
 
-  // Gather the per-file decode parameters into a single context so the per-point decode is a pure
-  // function of (point record, context). Used by decodePointRecord below and by the parallel paths.
+  // Resolve named well-known offsets from the generic field table into a DecodeContext so the
+  // hot per-point decode is a pure function of (record, context) with no string lookups.
   DecodeContext ctx;
-  ctx.format = format;
+  ctx.format       = format;
   ctx.using_colour = using_colour;
-  ctx.is_raycloud = is_raycloud;
+  ctx.is_raycloud  = is_raycloud;
   ctx.max_intensity = max_intensity;
-  ctx.local_skip_size = local_skip_size;
+  ctx.sx_offset    = 0; ctx.sy_offset = 4; ctx.sz_offset = 8; ctx.alpha_offset = 12;
+  ctx.bound_offset = -1;
+  ctx.tree_id_offset = 0; ctx.tree_id_dtype = 0;
+  ctx.stem_id_offset = 0; ctx.stem_id_dtype = 0;
+  ctx.beam_id_offset = 0; ctx.beam_id_dtype = 0;
+  uint16_t local_skip_size = 0, local_orig_extra = 0;
+  for (const auto &f : hdr.extras)
+  {
+    if (f.is_own)
+    {
+      if (strcmp(f.name, "sx")      == 0) ctx.sx_offset      = f.offset;
+      if (strcmp(f.name, "sy")      == 0) ctx.sy_offset      = f.offset;
+      if (strcmp(f.name, "sz")      == 0) ctx.sz_offset      = f.offset;
+      if (strcmp(f.name, "alpha")   == 0) ctx.alpha_offset   = f.offset;
+      if (strcmp(f.name, "bound")   == 0) ctx.bound_offset   = static_cast<int32_t>(f.offset);
+      if (strcmp(f.name, "tree_id") == 0) { ctx.tree_id_offset = f.offset; ctx.tree_id_dtype = f.dtype; }
+      if (strcmp(f.name, "stem_id") == 0) { ctx.stem_id_offset = f.offset; ctx.stem_id_dtype = f.dtype; }
+      if (strcmp(f.name, "beam_id") == 0) { ctx.beam_id_offset = f.offset; ctx.beam_id_dtype = f.dtype; }
+      local_skip_size += f.size;
+    }
+    else
+    {
+      local_orig_extra += f.size;
+    }
+  }
+  ctx.local_skip_size  = local_skip_size;
   ctx.local_orig_extra = local_orig_extra;
-  ctx.tree_id_offset = tree_id_offset;  ctx.tree_id_dtype = tree_id_dtype;
-  ctx.stem_id_offset = stem_id_offset;  ctx.stem_id_dtype = stem_id_dtype;
-  ctx.beam_id_offset = beam_id_offset;  ctx.beam_id_dtype = beam_id_dtype;
-  ctx.sx_offset = sx_offset;
-  ctx.sy_offset = sy_offset;
-  ctx.sz_offset = sz_offset;
-  ctx.alpha_offset = alpha_offset;
-  ctx.bound_offset = bound_offset;
   ctx.scale[0] = header->x_scale_factor;
   ctx.scale[1] = header->y_scale_factor;
   ctx.scale[2] = header->z_scale_factor;
@@ -317,7 +377,6 @@ bool readLas(const std::string &file_name,
   ctx.offset[2] = header->z_offset;
   ctx.point_record_length = header->point_data_record_length;
   ctx.extra_bytes_total = static_cast<uint16_t>(local_skip_size + local_orig_extra);
-  // The extra-bytes block sits at the tail of each fixed record, immediately after the base fields.
   ctx.extra_bytes_offset = static_cast<uint16_t>(header->point_data_record_length - ctx.extra_bytes_total);
 
   ray::Progress progress;

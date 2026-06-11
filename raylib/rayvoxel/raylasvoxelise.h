@@ -198,13 +198,28 @@ namespace ray
   struct IadData {
     std::vector<double> bin_centres;       // radians, size n_iad_bins
     std::vector<double> liad, wiad, piad;  // normalized histograms, size n_iad_bins
+    // Bailey triangle-facet inclination histograms (Option A), populated only when a bailey
+    // attenuation method is active. Empirical (liad/wiad/piad) and bailey histograms coexist.
+    std::vector<double> liad_bailey, wiad_bailey, piad_bailey;
     double leaf_g = 0.0, wood_g = 0.0, plant_g = 0.0;
     double bailey_g_leaf = 0.0;   // Bailey eq.(4) area*sin(theta)-weighted mean G for leaf facets
     double bailey_g_wood = 0.0;   // Bailey eq.(4) area*sin(theta)-weighted mean G for wood facets
     float leaf_hits = 0.0f;
     float wood_hits = 0.0f;
+    std::string liad_dewit;  // de Wit distribution closest to liad (L2 distance)
+    std::string wiad_dewit;  // de Wit distribution closest to wiad
+    std::string piad_dewit;  // de Wit distribution closest to piad
   };
+  // IadTable: legacy per-voxel index. Retained as a type only; no longer populated per voxel.
   using IadTable = std::unordered_map<int64_t, IadData>;
+
+  // PerTreeIadMap: tree_id → aggregated inclination distributions for that whole tree
+  // (joined across all of its stems). Result of the IAD accumulation pass.
+  using PerTreeIadMap = std::unordered_map<int32_t, IadData>;
+
+  // PredominantTreeTable: flat voxel index → tree_id with the most point hits in that voxel.
+  // Absent entry / -1 means "no tree_id data for this voxel".
+  using PredominantTreeTable = std::unordered_map<int64_t, int32_t>;
 
   // --- Inline Voxel Operator Implementations ---
 

@@ -79,12 +79,10 @@ namespace ray
     double attenuation_ppl = 0.0;
     double exploration_rate = 0.0;
     uint64_t subvoxel_bitmap = 0;
-    double leaf_g  = 0.0;
-    double wood_g  = 0.0;
-    double plant_g = 0.0;
-    std::vector<double> liad;
-    std::vector<double> wiad;
-    std::vector<double> piad;
+    int32_t predominant_tree = -1;  // tree_id with the most hits in this voxel; -1 if no tree_id data
+    std::string liad_dewit;  // de Wit classification of the predominant tree's LIAD
+    std::string wiad_dewit;  // de Wit classification of the predominant tree's WIAD
+    std::string piad_dewit;  // de Wit classification of the predominant tree's PIAD
     std::unordered_map<std::string, double> pad_per_method;
     std::unordered_map<std::string, double> lad_per_method;
     std::unordered_map<std::string, double> wad_per_method;
@@ -103,7 +101,14 @@ namespace ray
   // required output metrics, populating a MetricResultsMap.
   MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const VoxelizationParameters& params,
                                            const HeightField* dtm, const ClassTable& class_table,
-                                           const IadTable& iad_table);
+                                           const PerTreeIadMap& per_tree_iad,
+                                           const PredominantTreeTable& predominant_tree);
+
+  /// @brief Writes the per-tree inclination angle distributions to a {stub}_iad.csv sidecar.
+  /// One row per tree_id (joined across stems). Columns are gated by has_leaf/has_wood and by
+  /// which attenuation methods are active (vicari liad/wiad/piad and/or bailey-suffixed sets).
+  bool writePerTreeIadCsv(const std::string& out_name_stub, const PerTreeIadMap& per_tree_iad,
+                          const VoxelizationParameters& params, bool has_stem_id);
 
   // MODIFIED: All writer function signatures are now refactored to be cleaner.
   // They take the pre-calculated MetricResultsMap and the params object,
@@ -121,7 +126,7 @@ namespace ray
   /// @brief Writes the grid to a NetCDF file. Requires RAYLIB_WITH_NETCDF.
   bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, const MetricResultsMap& metrics,
                        int padding, const Cuboid& user_bounds, const VoxelizationParameters& params,
-                       const IadTable& iad_table, bool filled_only = false);
+                       bool filled_only = false);
 
 } // namespace ray
 

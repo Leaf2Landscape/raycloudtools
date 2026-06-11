@@ -108,93 +108,6 @@ Trees::Trees(Cloud &cloud, const Eigen::Vector3d &offset, const Mesh &mesh, cons
   std::cout << "cloud's estimated mean taper ratio (diameter / length): " << 2.0 * forest_taper_ / forest_weight_ << std::endl;
 }
 
-/// Branch reconstruction loop factored out so both constructors can share it.
-void Trees::reconstructBranches(std::vector<std::vector<int>> &children)
-{
-  for (sec_ = 0; sec_ < (int)sections_.size(); sec_++)
-  {
-    const int par = sections_[sec_].parent;
-    if (par == -1)
-    {
-      // now add the single child for this particular tree node, assuming there are still ends
-      if (sections_[sec_].ends.size() > 0)
-      {
-        addChildSection();
-        for (const auto &i: sections_[sec_].roots)
-        {
-          sections_[sec_].tip[2] = std::min(sections_[sec_].tip[2], points_[i].pos[2]);
-        }
-      }
-      else
-      {
-        std::cout << "weird, a trunk without end points! " << sec_ << std::endl;
-      }
-      continue;
-    }
-    if (!(sec_ % 10000))
-    {
-      std::cout << "generating segment " << sec_ << std::endl;
-    }
-
-    // this branch can come to an end as it is now too small
-    if (sections_[sec_].max_distance_to_end < params_->crop_length)
-    {
-      setBranchTip();
-      continue;
-    }
-
-    std::vector<int> nodes;  // all the points in the section
-    bool extract_from_ends = sections_[sec_].ends.size() > 0;
-    // if the branch section has no end points recorded, then we need to examine this branch to
-    // find end points and potentially branch (bifurcate)
-    if (!extract_from_ends)
-    {
-      Eigen::Vector3d base = getRootPosition();
-      double span_rad = radius(sections_[sec_]); 
-      double thickness = params_->cylinder_length_to_width * span_rad;
-      extractNodesAndEndsFromRoots(nodes, base, children, 0.0, thickness);
-
-      bool points_removed = false;
-      double gap = params_->gap_ratio * sections_[sec_].max_distance_to_end; // gap threshold for splitting
-      double span = params_->span_ratio * span_rad; // span thershold for splitting
-      std::vector<std::vector<int>> clusters = findPointClusters(base, points_removed, thickness, span, gap);
-
-      if (clusters.size() > 1 || (points_removed && clusters.size() > 0))  // a bifurcation (or an alteration)
-      {
-        extract_from_ends = true; // don't trust the found nodes as it is now two separate tree nodes
-        bool add_offshoots = true; // par != -1 && sections_[par].parent != -1;  // when this is false it can lead to whole branches missing.
-        // if points have been removed then this only resets the current section's points
-        // otherwise it creates new branch sections_ for each cluster and adds to the end of the sections_ list
-        bifurcate(clusters, thickness, children, false, add_offshoots);
-      }
-    }
-
-    if (extract_from_ends) // we have split the ends, so we need to extract the set of nodes in a backwards manner
-    {
-      extractNodesFromEnds(nodes);
-    }
-    // estimate the section's tip (the centre of the cylinder of points)
-    sections_[sec_].tip = calculateTipFromVertices(nodes);
-    // get section's direction
-    Eigen::Vector3d dir = par >= 0 ? (sections_[sec_].tip - sections_[par].tip).normalized() : Eigen::Vector3d(0, 0, 1);
-    // shift to cylinder's centre
-    sections_[sec_].tip += vectorToCylinderCentre(nodes, dir);
-    // re-estimate direction
-    dir = par >= 0 ? (sections_[sec_].tip - sections_[par].tip).normalized() : Eigen::Vector3d(0, 0, 1);
-    // now find the segment radius
-    double accuracy = 0.0;
-    double rad = estimateCylinderRadius(nodes, dir, accuracy);
-    // and estimate taper
-    estimateCylinderTaper(rad / sections_[sec_].radius_scale, accuracy, extract_from_ends);
-
-    // now add the single child for this particular tree node, assuming there are still ends
-    if (sections_[sec_].ends.size() > 0)
-    {
-      addChildSection();
-    }
-  }  // end of loop. We now have created all of the BranchSections
-}
-
 /// Trunk estimation loop factored out so both constructors can share it.
 /// @c debug_cloud receives verbose diagnostic geometry when non-null.
 void Trees::estimateTrunkSections(std::vector<std::vector<int>> &children, Cloud *debug_cloud)
@@ -229,7 +142,7 @@ void Trees::estimateTrunkSections(std::vector<std::vector<int>> &children, Cloud
     double estimated_radius = 1e10;
     double best_dist = 0.0;
     Eigen::Vector3d best_tip;
-
+    
     std::vector<int> best_nodes;
     std::vector<int> best_ends;
     for (int j = 1; j<=3; j++)
@@ -290,8 +203,8 @@ void Trees::estimateTrunkSections(std::vector<std::vector<int>> &children, Cloud
       sections_[sec_].tip = base + Eigen::Vector3d(0,0,0.01);
       sections_[sec_].total_weight = 1e-10;
       sections_[sec_].ends.clear(); // so this trunk is not ever used
-      continue;
-    }
+      continue; 
+    }    
     sections_[sec_].tip = best_tip;
     sections_[sec_].ends = best_ends;
     nodes = best_nodes;
@@ -329,6 +242,93 @@ void Trees::estimateTrunkSections(std::vector<std::vector<int>> &children, Cloud
     extractNodesAndEndsFromRoots(nodes, base, children, 0.0, best_dist/2.0); // make it lower
     estimateCylinderTaper(estimated_radius, best_accuracy, false); // update the expected taper
   }
+}
+
+/// Branch reconstruction loop factored out so both constructors can share it.
+void Trees::reconstructBranches(std::vector<std::vector<int>> &children)
+{
+  for (sec_ = 0; sec_ < (int)sections_.size(); sec_++)
+  {
+    const int par = sections_[sec_].parent;
+    if (par == -1)
+    {
+      // now add the single child for this particular tree node, assuming there are still ends
+      if (sections_[sec_].ends.size() > 0)
+      {
+        addChildSection();
+        for (const auto &i: sections_[sec_].roots)
+        {
+          sections_[sec_].tip[2] = std::min(sections_[sec_].tip[2], points_[i].pos[2]);
+        }
+      }      
+      else
+      {
+        std::cout << "weird, a trunk without end points! " << sec_ << std::endl;
+      }
+      continue;
+    }
+    if (!(sec_ % 10000))
+    {
+      std::cout << "generating segment " << sec_ << std::endl;
+    }
+
+    // this branch can come to an end as it is now too small
+    if (sections_[sec_].max_distance_to_end < params_->crop_length)
+    {
+      setBranchTip();
+      continue;
+    }
+
+    std::vector<int> nodes;  // all the points in the section
+    bool extract_from_ends = sections_[sec_].ends.size() > 0;
+    // if the branch section has no end points recorded, then we need to examine this branch to
+    // find end points and potentially branch (bifurcate)
+    if (!extract_from_ends)
+    {
+      Eigen::Vector3d base = getRootPosition();
+      double span_rad = radius(sections_[sec_]); 
+      double thickness = params_->cylinder_length_to_width * span_rad;
+      extractNodesAndEndsFromRoots(nodes, base, children, 0.0, thickness);
+      
+      bool points_removed = false;
+      double gap = params_->gap_ratio * sections_[sec_].max_distance_to_end; // gap threshold for splitting
+      double span = params_->span_ratio * span_rad; // span thershold for splitting
+      std::vector<std::vector<int>> clusters = findPointClusters(base, points_removed, thickness, span, gap);
+
+      if (clusters.size() > 1 || (points_removed && clusters.size() > 0))  // a bifurcation (or an alteration)
+      {
+        extract_from_ends = true; // don't trust the found nodes as it is now two separate tree nodes
+        bool add_offshoots = true; // par != -1 && sections_[par].parent != -1;  // when this is false it can lead to whole branches missing.
+        // if points have been removed then this only resets the current section's points
+        // otherwise it creates new branch sections_ for each cluster and adds to the end of the sections_ list
+        bifurcate(clusters, thickness, children, false, add_offshoots);
+      }
+    }
+
+    if (extract_from_ends) // we have split the ends, so we need to extract the set of nodes in a backwards manner
+    {
+      extractNodesFromEnds(nodes);
+    }
+    // estimate the section's tip (the centre of the cylinder of points)
+    sections_[sec_].tip = calculateTipFromVertices(nodes);
+    // get section's direction
+    Eigen::Vector3d dir = par >= 0 ? (sections_[sec_].tip - sections_[par].tip).normalized() : Eigen::Vector3d(0, 0, 1);
+    // shift to cylinder's centre
+    sections_[sec_].tip += vectorToCylinderCentre(nodes, dir);
+    // re-estimate direction
+    dir = par >= 0 ? (sections_[sec_].tip - sections_[par].tip).normalized() : Eigen::Vector3d(0, 0, 1);
+    // now find the segment radius
+    double accuracy = 0.0;
+    double rad = estimateCylinderRadius(nodes, dir, accuracy);
+    // and estimate taper
+    estimateCylinderTaper(rad / sections_[sec_].radius_scale, accuracy, extract_from_ends);
+
+    // now add the single child for this particular tree node, assuming there are still ends
+    if (sections_[sec_].ends.size() > 0)
+    {
+      addChildSection();
+    }
+  }  // end of loop. We now have created all of the BranchSections
 }
 
 /// Build an id_map (contiguous_section_id -> (tree_id, stem_id)) for save().

@@ -104,6 +104,7 @@ void usage(int exit_code = 1)
     std::cout << "                            --stalks            - include stalks to closest branch." << std::endl;
     std::cout << "                            --rayvoxel file.vox - rayvoxel file providing per-voxel LAD and LIAD; enables bitmap-guided placement when subvoxel_bitmap is present" << std::endl;
     std::cout << "                            --rayvoxel_method m - LAD column method to use from vox file (default: fpl)" << std::endl;
+    std::cout << "                            --leaf_classes c1,c2 - alpha values to treat as leaf points (default: any non-zero alpha). Prefix field: not used for PLY." << std::endl;
   }
   if (extract_type == "grid" || none)
   {
@@ -174,6 +175,8 @@ int rayExtract(int argc, char *argv[])
   ray::OptionalKeyValueArgument leaf_angle_option("leaf_angle", 'la', &leaf_angle);
   ray::OptionalKeyValueArgument rayvoxel_option("rayvoxel", 'rv', &rayvox_file);
   ray::OptionalKeyValueArgument rayvoxel_method_option("rayvoxel_method", 'rm', &rayvoxel_method_file);
+  ray::StringArgument leaf_classes_val("");
+  ray::OptionalKeyValueArgument leaf_classes_option("leaf_classes", 'lc', &leaf_classes_val);
   ray::OptionalKeyValueArgument voxel_size_option("voxel_size", 'vs', &voxel_size);
   ray::OptionalKeyValueArgument grid_bounds_min_option("grid_bounds_min", 'bmin', &grid_bounds_min);
   ray::OptionalKeyValueArgument grid_bounds_max_option("grid_bounds_max", 'bmax', &grid_bounds_max);
@@ -198,7 +201,7 @@ int rayExtract(int argc, char *argv[])
   bool extract_leaves = ray::parseCommandLine(
     argc, argv, { &leaves, &cloud_file, &trees_file },
     { &leaf_option, &leaf_area_option, &leaf_droop_option, &leaf_angle_option, &leaf_density_option, &stalks,
-      &rayvoxel_option, &rayvoxel_method_option });
+      &rayvoxel_option, &rayvoxel_method_option, &leaf_classes_option });
   bool extract_grid = ray::parseCommandLine(
     argc, argv, { &grid, &cloud_file },
     { &voxel_size_option, &grid_bounds_min_option, &grid_bounds_max_option, &write_empty, &write_netcdf, &extended_output, &add_neighbour_priors, &intensity_weight, &verbose });
@@ -443,9 +446,9 @@ int rayExtract(int argc, char *argv[])
   {
     const std::string vox = rayvoxel_option.isSet() ? rayvox_file.name() : "";
     const std::string method = rayvoxel_method_option.isSet() ? rayvoxel_method_file.name() : "fpl";
-    ray::generateLeaves(cloud_file.nameStub(), trees_file.name(), leaf_file.name(), leaf_area.value(),
+    ray::generateLeaves(cloud_file.name(), trees_file.name(), leaf_file.name(), leaf_area.value(),
                         leaf_droop.value(), leaf_angle.value(), leaf_density.value(), stalks.isSet(),
-                        vox, method);
+                        vox, method, leaf_classes_val.text());
   }
   else if (extract_grid)
   {

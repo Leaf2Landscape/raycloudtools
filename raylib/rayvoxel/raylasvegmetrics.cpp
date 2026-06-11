@@ -207,6 +207,44 @@ LaserSpecManager::LaserSpecManager()
     specs_["UNITARY-BEAM-SECTION"] = {"Unitary beam section", 0.0, 0.0};
 }
 
+std::string classifyDeWit(const std::vector<double>& bin_centres,
+                           const std::vector<double>& hist)
+{
+  if (bin_centres.empty() || hist.size() != bin_centres.size()) return "";
+  double total = 0.0;
+  for (double v : hist) total += v;
+  if (total <= 0.0) return "";
+
+  const int n = static_cast<int>(bin_centres.size());
+
+  using PdfFn = double(*)(double);
+  const std::pair<const char*, PdfFn> candidates[] = {
+    {"planophile",   dplanophile},
+    {"erectophile",  derectophile},
+    {"plagiophile",  dplagiophile},
+    {"extremophile", dextremophile},
+    {"spherical",    dspherical},
+    {"uniform",      duniform},
+  };
+
+  std::string best_name;
+  double best_dist = std::numeric_limits<double>::max();
+
+  for (const auto& [name, pdf] : candidates) {
+    std::vector<double> ref(n);
+    double ref_sum = 0.0;
+    for (int b = 0; b < n; ++b) { ref[b] = pdf(bin_centres[b]); ref_sum += ref[b]; }
+    if (ref_sum <= 0.0) continue;
+    double d2 = 0.0;
+    for (int b = 0; b < n; ++b) {
+      double diff = hist[b] / total - ref[b] / ref_sum;
+      d2 += diff * diff;
+    }
+    if (d2 < best_dist) { best_dist = d2; best_name = name; }
+  }
+  return best_name;
+}
+
 bool LaserSpecManager::getSpec(const std::string& name, LaserSpecification& spec_out) const
 {
     // Create a case-insensitive version of the name for matching

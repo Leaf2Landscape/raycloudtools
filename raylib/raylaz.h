@@ -8,6 +8,9 @@
 
 #include "raylib/raylibconfig.h"
 #include "rayutils.h"
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 #if RAYLIB_WITH_LAS
 #include <laszip/laszip_api.h>
@@ -16,6 +19,71 @@
 
 namespace ray
 {
+
+/// A single extra-byte attribute declared in the LAS EXTRA_BYTES VLR.
+struct RAYLIB_EXPORT LasExtraField
+{
+  char     name[33] = {};     ///< null-terminated field name (32-byte VLR name field)
+  uint16_t offset   = 0;     ///< byte offset within the extra_bytes block per point
+  uint8_t  dtype    = 0;     ///< LAS data_type (1-10)
+  uint16_t size     = 0;     ///< per-point byte count derived from dtype
+  bool     is_own   = false; ///< true iff this field belongs to the raycloudtools schema
+  uint8_t  vlr_record[192] = {}; ///< raw 192-byte EXTRA_BYTES VLR record for this field
+};
+
+/// Complete summary of a LAS/LAZ file header, including a generic table of all extra-byte
+/// attributes discovered from the EXTRA_BYTES VLR. Callers query fields by name via has() or
+/// field() without hard-coding known attribute names in their own logic.
+struct RAYLIB_EXPORT LasHeader
+{
+  uint8_t  point_format        = 0;
+  bool     is_raycloud         = false;  ///< written by raycloudtools
+  bool     has_rgb             = false;  ///< point format carries native RGB fields
+  bool     is_compressed       = false;  ///< .laz file
+  uint64_t point_count         = 0;
+  double   scale[3]            = { 1.0, 1.0, 1.0 };
+  double   offset_xyz[3]       = { 0.0, 0.0, 0.0 };
+  uint16_t point_record_length = 0;
+  uint32_t point_data_offset   = 0;
+
+  std::vector<LasExtraField>                    extras;   ///< all extra fields, in VLR order
+  std::unordered_map<std::string, std::size_t>  by_name;  ///< name -> index into extras
+
+  /// Returns true iff an extra field with this name exists.
+  bool has(const std::string &name) const { return by_name.count(name) > 0; }
+
+  /// Returns a pointer to the field descriptor, or nullptr if absent.
+  const LasExtraField *field(const std::string &name) const
+  {
+    auto it = by_name.find(name);
+    return (it != by_name.end()) ? &extras[it->second] : nullptr;
+  }
+
+  /// Total per-point byte count of non-raycloudtools extra attributes.
+  uint16_t sensorExtraSize() const
+  {
+    uint16_t sz = 0;
+    for (const auto &f : extras) if (!f.is_own) sz += f.size;
+    return sz;
+  }
+
+  /// Raw 192-byte VLR records for non-raycloudtools extra attributes (for passthrough on write).
+  std::vector<uint8_t> sensorExtraVlr() const
+  {
+    std::vector<uint8_t> out;
+    for (const auto &f : extras)
+      if (!f.is_own)
+        out.insert(out.end(), f.vlr_record, f.vlr_record + 192);
+    return out;
+  }
+};
+
+/// Read the header (VLRs, point count, geometry, extra-byte table) of a LAS/LAZ file without
+/// reading any point data. Returns false if the file cannot be opened or LAS support is not
+/// compiled in. On success, @c header_out contains a complete field table for the file.
+bool RAYLIB_EXPORT readLasHeader(const std::string &file_name, LasHeader &header_out);
+
+
 /// Read a laz or las file, into the fields passed by reference.
 bool RAYLIB_EXPORT readLas(std::string file_name, std::vector<Eigen::Vector3d> &positions, std::vector<double> &times,
                            std::vector<RGBA> &colours, double max_intensity,
