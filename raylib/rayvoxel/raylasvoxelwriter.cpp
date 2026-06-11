@@ -335,22 +335,22 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
           }
 
           if (iad && v.path_length > 0) {
-            const double hit_total = std::max(1e-10, static_cast<double>(v.num_hits));
-            const double leaf_hits = static_cast<double>(iad->leaf_hits);
-            const double wood_hits = static_cast<double>(iad->wood_hits);
+            const double hit_total  = std::max(1e-10, static_cast<double>(v.num_hits));
+            const double vox_leaf   = static_cast<double>(data.num_hit_leaf);
+            const double vox_wood   = static_cast<double>(data.num_hit_wood);
             for (const auto& method : params.attenuation_methods) {
               if (method == "bailey") {
                 // Bailey (2017) eq.10: per-class G from triangle facets (Eq.4).
                 double pad_v = 0.0, lad_v = 0.0, wad_v = 0.0;
-                if (iad->bailey_g_leaf > 0 && leaf_hits > 0)
+                if (iad->bailey_g_leaf > 0 && vox_leaf > 0)
                   lad_v = solveBaileyPadEq10(v.path_length, v.num_beams_weighted,
-                                             v.num_hits * (leaf_hits / hit_total), iad->bailey_g_leaf);
-                if (iad->bailey_g_wood > 0 && wood_hits > 0)
+                                             vox_leaf, iad->bailey_g_leaf);
+                if (iad->bailey_g_wood > 0 && vox_wood > 0)
                   wad_v = solveBaileyPadEq10(v.path_length, v.num_beams_weighted,
-                                             v.num_hits * (wood_hits / hit_total), iad->bailey_g_wood);
-                if      (leaf_hits == 0 && wood_hits  > 0) pad_v = wad_v;
-                else if (leaf_hits  > 0 && wood_hits == 0) pad_v = lad_v;
-                else if (leaf_hits  > 0 && wood_hits  > 0 && iad->plant_g > 0)
+                                             vox_wood, iad->bailey_g_wood);
+                if      (vox_leaf == 0 && vox_wood  > 0) pad_v = wad_v;
+                else if (vox_leaf  > 0 && vox_wood == 0) pad_v = lad_v;
+                else if (vox_leaf  > 0 && vox_wood  > 0 && iad->plant_g > 0)
                   pad_v = solveBaileyPadEq10(v.path_length, v.num_beams_weighted,
                                              v.num_hits, iad->plant_g);
                 data.pad_per_method[method] = pad_v;
@@ -360,8 +360,8 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
                 // Vicari et al. (2019) path: angle-integrated G from the tree's empirical PIAD.
                 double lambda = computeLambda(v, method);
                 if (iad->plant_g > 0) data.pad_per_method[method] = lambda / iad->plant_g;
-                if (iad->leaf_g  > 0) data.lad_per_method[method] = lambda * (leaf_hits / hit_total) / iad->leaf_g;
-                if (iad->wood_g  > 0) data.wad_per_method[method] = lambda * (wood_hits / hit_total) / iad->wood_g;
+                if (iad->leaf_g  > 0) data.lad_per_method[method] = lambda * (vox_leaf / hit_total) / iad->leaf_g;
+                if (iad->wood_g  > 0) data.wad_per_method[method] = lambda * (vox_wood / hit_total) / iad->wood_g;
               }
             }
           } else if (v.path_length > 0) {
@@ -551,11 +551,14 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
       v_data.variables.push_back(std::to_string(data ? data->exploration_rate : 0.0));
       v_data.variables.push_back(std::to_string(data ? data->subvoxel_bitmap : uint64_t(0)));
     }
+    auto dewit_val = [](const std::string& s) -> std::string {
+      return s.empty() ? "NA" : s;
+    };
     if (params.calc_inclination_dist) {
       v_data.variables.push_back(std::to_string(data ? data->predominant_tree : -1));
-      v_data.variables.push_back(data ? data->piad_dewit : "");
-      if (params.has_leaf) v_data.variables.push_back(data ? data->liad_dewit : "");
-      if (params.has_wood) v_data.variables.push_back(data ? data->wiad_dewit : "");
+      v_data.variables.push_back(data ? dewit_val(data->piad_dewit) : "NA");
+      if (params.has_leaf) v_data.variables.push_back(data ? dewit_val(data->liad_dewit) : "NA");
+      if (params.has_wood) v_data.variables.push_back(data ? dewit_val(data->wiad_dewit) : "NA");
       v_data.variables.push_back(std::to_string(data ? data->g_plant : 0.0));
       if (params.has_leaf) v_data.variables.push_back(std::to_string(data ? data->g_leaf : 0.0));
       if (params.has_wood) v_data.variables.push_back(std::to_string(data ? data->g_wood : 0.0));
@@ -658,10 +661,14 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
     }
     if (params.calc_beam_metrics) outfile << " " << data.transmittance << " " << data.bs_entering << " " << data.bs_intercepted;
     if (params.subvoxel_split > 0) outfile << " " << data.exploration_rate << " " << data.subvoxel_bitmap;
+    auto dewit_str = [](const std::string& s) -> const std::string& {
+      static const std::string kNA = "NA";
+      return s.empty() ? kNA : s;
+    };
     if (params.calc_inclination_dist) {
-      outfile << " " << data.predominant_tree << " " << data.piad_dewit;
-      if (params.has_leaf) outfile << " " << data.liad_dewit;
-      if (params.has_wood) outfile << " " << data.wiad_dewit;
+      outfile << " " << data.predominant_tree << " " << dewit_str(data.piad_dewit);
+      if (params.has_leaf) outfile << " " << dewit_str(data.liad_dewit);
+      if (params.has_wood) outfile << " " << dewit_str(data.wiad_dewit);
       outfile << " " << data.g_plant;
       if (params.has_leaf) outfile << " " << data.g_leaf;
       if (params.has_wood) outfile << " " << data.g_wood;
