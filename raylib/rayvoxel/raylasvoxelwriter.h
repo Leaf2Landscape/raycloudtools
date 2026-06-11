@@ -36,13 +36,15 @@ namespace ray
     float num_beams_weighted = 0.0f;
     float path_length_raw = 0.0f;
     float path_length = 0.0f;
-    float num_rays_occluded = 0.0f;
+    float free_path_length = 0.0f;
+    float effective_free_path_length = 0.0f;
+    int32_t num_rays_occluded = 0;
     float path_length_occluded = 0.0f;
-    float num_unbound_rays = 0.0f;
+    int32_t num_unbound_rays = 0;
     float path_length_unbound = 0.0f;
     int32_t num_miss_rays = 0;
-    float num_hit_leaf = 0.0f;
-    float num_hit_wood = 0.0f;
+    int32_t num_hit_leaf = 0;
+    int32_t num_hit_wood = 0;
     std::array<float, 256> classification_hits{};
 
     // Calculated Metrics
@@ -80,9 +82,12 @@ namespace ray
     double exploration_rate = 0.0;
     uint64_t subvoxel_bitmap = 0;
     int32_t predominant_tree = -1;  // tree_id with the most hits in this voxel; -1 if no tree_id data
-    std::string liad_dewit;  // de Wit classification of the predominant tree's LIAD
-    std::string wiad_dewit;  // de Wit classification of the predominant tree's WIAD
-    std::string piad_dewit;  // de Wit classification of the predominant tree's PIAD
+    std::string liad_dewit;
+    std::string wiad_dewit;
+    std::string piad_dewit;
+    double g_leaf = 0.0;
+    double g_wood = 0.0;
+    double g_plant = 0.0;
     std::unordered_map<std::string, double> pad_per_method;
     std::unordered_map<std::string, double> lad_per_method;
     std::unordered_map<std::string, double> wad_per_method;

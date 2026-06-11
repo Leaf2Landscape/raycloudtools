@@ -99,7 +99,7 @@ namespace ray
       float path_length = 0.0f;  // Weighted path length sum: Σ (segment_length × beam_weight); used for PAD.
       float free_path_length = 0.0f;// Stage 1 free-path: Σ (seg_weight × free_path); free_path = entry→hit for hits, full chord for miss/unbound.
       float effective_free_path_length = 0.0f;  // Stage 3: Σ(seg_w × eff(free_path)), eff(z)=−ln(1−λ₁z)/λ₁
-      float num_rays_occluded = 0.0f;     // Sum of occluded rays passing through (unweighted).
+      int32_t num_rays_occluded = 0;       // Count of occluded rays passing through.
       float path_length_occluded = 0.0f;  // Sum of path lengths of occluded rays (unweighted).
       float sum_of_angles = 0.0f;         // Weighted sum of zenith angles of rays passing through.
       float sum_sin_azimuth = 0.0f;       // Weighted sum of sin(azimuth) of rays passing through.
@@ -112,7 +112,7 @@ namespace ray
       float bs_effective_free_path = 0.0f;  // Stage 3: Σ(π·r² × seg_w × eff(free_path))
       float sum_hit_delta  = 0.0f;        // PPL: unweighted full_chord for hit voxels (from hit-recording loop).
       float sum_miss_delta = 0.0f;        // PPL: unweighted full_chord for traversing (miss) voxels (mechanism 1).
-      float num_unbound_rays = 0.0f;    // weighted count of unbound (miss) rays traversing this voxel
+      int32_t num_unbound_rays = 0;      // count of unbound (miss) rays traversing this voxel
       float path_length_unbound = 0.0f; // weighted sum of clipped path lengths for unbound rays
       int32_t num_miss_rays = 0;        // count of bound rays that traverse this voxel without hitting it
       std::array<uint8_t, 64> subvoxel_counts = {}; // Per-subvoxel beam counts (up to 4x4x4 = 64 cells).
@@ -266,7 +266,7 @@ namespace ray
     v.path_length = static_cast<float>(path_length * scale);
     v.free_path_length = static_cast<float>(free_path_length * scale);
     v.effective_free_path_length = static_cast<float>(effective_free_path_length * scale);
-    v.num_rays_occluded = static_cast<float>(num_rays_occluded * scale);
+    v.num_rays_occluded = static_cast<int32_t>(num_rays_occluded * scale);
     v.path_length_occluded = static_cast<float>(path_length_occluded * scale);
     v.sum_of_angles = static_cast<float>(sum_of_angles * scale);
     v.sum_sin_azimuth = static_cast<float>(sum_sin_azimuth * scale);
@@ -279,7 +279,7 @@ namespace ray
     v.bs_effective_free_path = static_cast<float>(bs_effective_free_path * scale);
     v.sum_hit_delta = static_cast<float>(sum_hit_delta * scale);
     v.sum_miss_delta = static_cast<float>(sum_miss_delta * scale);
-    v.num_unbound_rays = static_cast<float>(num_unbound_rays * scale);
+    v.num_unbound_rays = static_cast<int32_t>(num_unbound_rays * scale);
     v.path_length_unbound = static_cast<float>(path_length_unbound * scale);
     v.num_miss_rays = static_cast<int32_t>(num_miss_rays * scale);
     v.subvoxel_counts = subvoxel_counts;

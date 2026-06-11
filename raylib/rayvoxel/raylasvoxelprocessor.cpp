@@ -405,12 +405,12 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                             }
                         }
                         if (current_ray_unbound_) {
-                            atomic_fadd(v.num_unbound_rays, static_cast<float>(weight));
+                            atomic_iadd(v.num_unbound_rays, 1);
                             atomic_fadd(v.path_length_unbound, static_cast<float>(length_in_voxel * weight));
                         }
                     }
                 } else {
-                    atomic_fadd(v.num_rays_occluded, static_cast<float>(weight));
+                    atomic_iadd(v.num_rays_occluded, 1);
                     atomic_fadd(v.path_length_occluded, static_cast<float>(length_in_voxel * weight));
                 }
             } else {
@@ -461,12 +461,12 @@ void VoxelProcessor::walkGrid(const Eigen::Vector3d &vox_start, const Eigen::Vec
                             }
                         }
                         if (current_ray_unbound_) {
-                            v.num_unbound_rays += static_cast<float>(weight);
+                            v.num_unbound_rays += 1;
                             v.path_length_unbound += static_cast<float>(length_in_voxel * weight);
                         }
                     }
                 } else {
-                    v.num_rays_occluded += static_cast<float>(weight);
+                    v.num_rays_occluded += 1;
                     v.path_length_occluded += static_cast<float>(length_in_voxel * weight);
                 }
             }

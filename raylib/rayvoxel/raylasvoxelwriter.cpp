@@ -246,6 +246,8 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
         data.num_beams_weighted = v.num_beams_weighted;
         data.path_length_raw = v.path_length_raw;
         data.path_length = v.path_length;
+        data.free_path_length = v.free_path_length;
+        data.effective_free_path_length = v.effective_free_path_length;
         data.num_rays_occluded = v.num_rays_occluded;
         data.path_length_occluded = v.path_length_occluded;
         data.num_unbound_rays = v.num_unbound_rays;
@@ -287,8 +289,8 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
             for (int code : wood_classes)
                 if (code >= 0 && code <= 255) wood_hits += data.classification_hits[code];
         }
-        data.num_hit_leaf = leaf_hits;
-        data.num_hit_wood = wood_hits;
+        data.num_hit_leaf = static_cast<int32_t>(leaf_hits);
+        data.num_hit_wood = static_cast<int32_t>(wood_hits);
 
         if (v.num_hits > 0) {
             const double hit_total = static_cast<double>(v.num_hits);
@@ -327,6 +329,9 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
             data.liad_dewit = iad->liad_dewit;
             data.wiad_dewit = iad->wiad_dewit;
             data.piad_dewit = iad->piad_dewit;
+            data.g_leaf  = iad->leaf_g;
+            data.g_wood  = iad->wood_g;
+            data.g_plant = iad->plant_g;
           }
 
           if (iad && v.path_length > 0) {
@@ -363,6 +368,7 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
             // Backward-compat fallback (no tree_id): G evaluated at the voxel's mean beam zenith
             // via the existing LAD model, so pad/lad/wad columns are still populated.
             const double g_theta = computeG(data.mean_zenith_angle_rad, params.lad, lad_param1, lad_param2);
+            data.g_plant = g_theta;
             if (g_theta > 0) {
               const double hit_total = std::max(1e-10, static_cast<double>(v.num_hits));
               for (const auto& method : params.attenuation_methods) {
@@ -475,25 +481,34 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
     space.header["subvoxel_min_beams"] = std::to_string(params.subvoxel_min_beams);
   }
 
-  std::string colnames = "i j k classification nbEchos nbSampling padG0.5 lgTotal lMeanTotal lMeanFreeTotal lMeanEffectiveFreeTotal sdLength"
-                         " zenithAngleMean azimuthAngleMean azimuthConcentration distLaser"
-                         " bsPotential bsEntering bsIntercepted transmittance"
-                         " attenuation_FPL_biasedMLE attenuation_FPL_biasCorrection attenuation_FPL_unbiasedMLE"
-                         " weightedEffectiveFreepathLength weightedFreepathLength attenuation_PPL_MLE";
+  std::string colnames = "i j k num_hits";
+  if (params.has_leaf) colnames += " num_hit_leaf";
+  if (params.has_wood) colnames += " num_hit_wood";
+  colnames += " num_beams num_miss_rays num_unbound_rays num_beams_occluded";
+  colnames += " path_length path_length_weight free_path_length effective_free_path_length"
+              " path_length_occluded path_length_unbound";
+  colnames += " voxel_size surface_area";
+  if (params.subvoxel_split > 0) colnames += " subvoxel_split";
+  colnames += " mean_zenith_angle mean_azimuth_angle_deg azimuth_concentration mean_laser_dist";
+  if (!params.dtm_file.empty() || params.dtm_from_class >= 0) colnames += " distance_from_ground";
+  if (params.calc_beam_metrics) colnames += " transmittance bs_entering bs_intercepted";
   if (params.subvoxel_split > 0) colnames += " exploration_rate subvoxel_bitmap";
-  if (params.has_leaf) colnames += " ladG0.5";
-  if (params.has_wood) colnames += " wadG0.5";
   if (params.calc_inclination_dist) {
-    colnames += " predominant_tree";
+    colnames += " predominant_tree piad_dewit";
     if (params.has_leaf) colnames += " liad_dewit";
     if (params.has_wood) colnames += " wiad_dewit";
-    colnames += " piad_dewit";
+    colnames += " g_plant";
+    if (params.has_leaf) colnames += " g_leaf";
+    if (params.has_wood) colnames += " g_wood";
     for (const auto& method : params.attenuation_methods) {
       colnames += " pad_" + method;
       if (params.has_leaf) colnames += " lad_" + method;
       if (params.has_wood) colnames += " wad_" + method;
     }
   }
+  if (params.has_leaf) colnames += " lad_g0.5";
+  if (params.has_wood) colnames += " wad_g0.5";
+  if (params.calc_veg_metrics) colnames += " pad_g_corrected pad_leaf pad_wood";
   space.header["colnames"] = colnames;
 
   auto process_voxel = [&](int64_t i, int64_t j, int64_t k, const VoxelOutputData* data) {
@@ -505,40 +520,48 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
     v_data.i = i - padding;
     v_data.j = j - padding;
     v_data.k = k - padding;
-    v_data.variables.push_back(std::to_string(static_cast<int>(state)));
     v_data.variables.push_back(std::to_string(data ? data->num_hits : 0));
+    if (params.has_leaf) v_data.variables.push_back(std::to_string(data ? data->num_hit_leaf : 0));
+    if (params.has_wood) v_data.variables.push_back(std::to_string(data ? data->num_hit_wood : 0));
     v_data.variables.push_back(std::to_string(data ? data->num_beams : 0));
-    v_data.variables.push_back(std::to_string(data ? data->pad_g0_5 : 0.0));
+    v_data.variables.push_back(std::to_string(data ? data->num_miss_rays : 0));
+    v_data.variables.push_back(std::to_string(data ? data->num_unbound_rays : 0));
+    v_data.variables.push_back(std::to_string(data ? data->num_rays_occluded : 0));
     v_data.variables.push_back(std::to_string(data ? data->path_length_raw : 0.0f));
-    v_data.variables.push_back(std::to_string(data ? data->lMeanTotal : 0.0));
-    v_data.variables.push_back(std::to_string(data ? data->lMeanFreeTotal : 0.0));
-    v_data.variables.push_back(std::to_string(data ? data->lMeanEffectiveFreeTotal : 0.0));
-    v_data.variables.push_back(std::to_string(data ? data->sd_length : 0.0));
+    v_data.variables.push_back(std::to_string(data ? data->path_length : 0.0f));
+    v_data.variables.push_back(std::to_string(data ? data->free_path_length : 0.0f));
+    v_data.variables.push_back(std::to_string(data ? data->effective_free_path_length : 0.0f));
+    v_data.variables.push_back(std::to_string(data ? data->path_length_occluded : 0.0f));
+    v_data.variables.push_back(std::to_string(data ? data->path_length_unbound : 0.0f));
+    v_data.variables.push_back(std::to_string(grid.getVoxelWidth()));
+    v_data.variables.push_back(std::to_string(data ? data->surface_area : 0.0));
+    if (params.subvoxel_split > 0) v_data.variables.push_back(std::to_string(params.subvoxel_split));
     v_data.variables.push_back(std::to_string(data ? data->mean_zenith_angle_rad * 180.0 / kPi : 0.0));
     v_data.variables.push_back(std::to_string(data ? data->mean_azimuth_rad * 180.0 / kPi : 0.0));
     v_data.variables.push_back(std::to_string(data ? data->azimuth_concentration : 0.0));
     v_data.variables.push_back(std::to_string(data ? data->mean_laser_dist : 0.0));
-    v_data.variables.push_back(std::to_string(data ? data->bs_potential : 0.0));
-    v_data.variables.push_back(std::to_string(data ? data->bs_entering : 0.0f));
-    v_data.variables.push_back(std::to_string(data ? data->bs_intercepted : 0.0f));
-    v_data.variables.push_back(std::to_string(data ? data->transmittance : 1.0));
-    v_data.variables.push_back(std::to_string(data ? data->attenuation_fpl_biased : 0.0));
-    v_data.variables.push_back(std::to_string(data ? data->attenuation_fpl_correction : 0.0));
-    v_data.variables.push_back(std::to_string(data ? data->attenuation_fpl_unbiased : 0.0));
-    v_data.variables.push_back(std::to_string(data ? data->weighted_effective_fpl : 0.0f));
-    v_data.variables.push_back(std::to_string(data ? data->weighted_fpl : 0.0f));
-    v_data.variables.push_back(std::to_string(data ? data->attenuation_ppl : 0.0));
+    if (!params.dtm_file.empty() || params.dtm_from_class >= 0) {
+      v_data.variables.push_back(
+        (data && data->distance_from_ground != std::numeric_limits<double>::lowest())
+          ? std::to_string(data->distance_from_ground) : "nan");
+    }
+    if (params.calc_beam_metrics) {
+      v_data.variables.push_back(std::to_string(data ? data->transmittance : 1.0));
+      v_data.variables.push_back(std::to_string(data ? data->bs_entering : 0.0f));
+      v_data.variables.push_back(std::to_string(data ? data->bs_intercepted : 0.0f));
+    }
     if (params.subvoxel_split > 0) {
       v_data.variables.push_back(std::to_string(data ? data->exploration_rate : 0.0));
       v_data.variables.push_back(std::to_string(data ? data->subvoxel_bitmap : uint64_t(0)));
     }
-    if (params.has_leaf) v_data.variables.push_back(std::to_string(data ? data->lad_g0_5 : 0.0));
-    if (params.has_wood) v_data.variables.push_back(std::to_string(data ? data->wad_g0_5 : 0.0));
     if (params.calc_inclination_dist) {
       v_data.variables.push_back(std::to_string(data ? data->predominant_tree : -1));
+      v_data.variables.push_back(data ? data->piad_dewit : "");
       if (params.has_leaf) v_data.variables.push_back(data ? data->liad_dewit : "");
       if (params.has_wood) v_data.variables.push_back(data ? data->wiad_dewit : "");
-      v_data.variables.push_back(data ? data->piad_dewit : "");
+      v_data.variables.push_back(std::to_string(data ? data->g_plant : 0.0));
+      if (params.has_leaf) v_data.variables.push_back(std::to_string(data ? data->g_leaf : 0.0));
+      if (params.has_wood) v_data.variables.push_back(std::to_string(data ? data->g_wood : 0.0));
       for (const auto& method : params.attenuation_methods) {
         auto lookup = [&](const std::unordered_map<std::string, double>& m) -> double {
           auto it = m.find(method); return it != m.end() ? it->second : 0.0;
@@ -547,6 +570,13 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
         if (params.has_leaf) v_data.variables.push_back(std::to_string(data ? lookup(data->lad_per_method) : 0.0));
         if (params.has_wood) v_data.variables.push_back(std::to_string(data ? lookup(data->wad_per_method) : 0.0));
       }
+    }
+    if (params.has_leaf) v_data.variables.push_back(std::to_string(data ? data->lad_g0_5 : 0.0));
+    if (params.has_wood) v_data.variables.push_back(std::to_string(data ? data->wad_g0_5 : 0.0));
+    if (params.calc_veg_metrics) {
+      v_data.variables.push_back(std::to_string(data ? data->pad_g_corrected : 0.0));
+      v_data.variables.push_back(std::to_string(data ? data->pad_leaf : 0.0));
+      v_data.variables.push_back(std::to_string(data ? data->pad_wood : 0.0));
     }
     space.voxels.push_back(v_data);
   };
@@ -584,31 +614,35 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
     return false;
   }
   outfile << std::fixed << std::setprecision(6);
-  std::string header = "i j k x y z voxel_state pointclass absolute_pointclass num_hits num_beams num_beams_weighted path_length_raw path_length "
-                       "num_rays_occluded path_length_occluded pad_g0.5 surface_area voxel_size";
-  if (params.subvoxel_split > 0) header += " subvoxel_split";
-  header += " mean_zenith_angle_rad mean_azimuth_rad azimuth_concentration mean_laser_dist"
-                       " num_unbound_rays path_length_unbound num_miss_rays";
-  if (params.has_leaf) header += " lad_g0.5";
+  std::string header = "i j k x y z num_hits";
   if (params.has_leaf) header += " num_hit_leaf";
   if (params.has_wood) header += " num_hit_wood";
-  if (params.has_wood) header += " wad_g0.5";
-  if (!params.dtm_file.empty() || params.dtm_from_class >= 0) { header += " distance_from_ground"; }
-  if (params.calc_veg_metrics) header += " pad_g_corrected pad_leaf pad_wood";
+  header += " num_beams num_miss_rays num_unbound_rays num_beams_occluded";
+  header += " path_length path_length_weight free_path_length effective_free_path_length"
+            " path_length_occluded path_length_unbound";
+  header += " voxel_size surface_area";
+  if (params.subvoxel_split > 0) header += " subvoxel_split";
+  header += " mean_zenith_angle mean_azimuth_angle_deg azimuth_concentration mean_laser_dist";
+  if (!params.dtm_file.empty() || params.dtm_from_class >= 0) header += " distance_from_ground";
   if (params.calc_beam_metrics) header += " transmittance bs_entering bs_intercepted";
   if (params.subvoxel_split > 0) header += " exploration_rate subvoxel_bitmap";
   if (params.calc_inclination_dist) {
-    header += " predominant_tree";
+    header += " predominant_tree piad_dewit";
     if (params.has_leaf) header += " liad_dewit";
     if (params.has_wood) header += " wiad_dewit";
-    header += " piad_dewit";
+    header += " g_plant";
+    if (params.has_leaf) header += " g_leaf";
+    if (params.has_wood) header += " g_wood";
     for (const auto& method : params.attenuation_methods) {
       header += " pad_" + method;
       if (params.has_leaf) header += " lad_" + method;
       if (params.has_wood) header += " wad_" + method;
     }
   }
-  header += " classification_hits\n";
+  if (params.has_leaf) header += " lad_g0.5";
+  if (params.has_wood) header += " wad_g0.5";
+  if (params.calc_veg_metrics) header += " pad_g_corrected pad_leaf pad_wood";
+  header += "\n";
   outfile << header;
 
   long long point_count = 0;
@@ -616,32 +650,34 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
   auto write_line = [&](const VoxelOutputData& data) {
     outfile << (data.i - padding) << " " << (data.j - padding) << " " << (data.k - padding) << " "
             << data.x << " " << data.y << " " << data.z << " "
-            << static_cast<int>(data.state) << " " << data.dominant_class << " " << data.absolute_class << " "
-            << data.num_hits << " " << data.num_beams << " " << data.num_beams_weighted << " " << data.path_length_raw << " " << data.path_length << " "
-            << data.num_rays_occluded << " " << data.path_length_occluded << " "
-            << data.pad_g0_5 << " " << data.surface_area << " " << grid.getVoxelWidth();
-    if (params.subvoxel_split > 0) outfile << " " << params.subvoxel_split;
-    outfile << " " << data.mean_zenith_angle_rad << " " << data.mean_azimuth_rad << " " << data.azimuth_concentration << " " << data.mean_laser_dist
-            << " " << data.num_unbound_rays << " " << data.path_length_unbound << " " << data.num_miss_rays;
-    if (params.has_leaf) outfile << " " << data.lad_g0_5;
+            << data.num_hits;
     if (params.has_leaf) outfile << " " << data.num_hit_leaf;
     if (params.has_wood) outfile << " " << data.num_hit_wood;
-    if (params.has_wood) outfile << " " << data.wad_g0_5;
+    outfile << " " << data.num_beams << " " << data.num_miss_rays
+            << " " << data.num_unbound_rays << " " << data.num_rays_occluded;
+    outfile << " " << data.path_length_raw << " " << data.path_length
+            << " " << data.free_path_length << " " << data.effective_free_path_length
+            << " " << data.path_length_occluded << " " << data.path_length_unbound;
+    outfile << " " << grid.getVoxelWidth() << " " << data.surface_area;
+    if (params.subvoxel_split > 0) outfile << " " << params.subvoxel_split;
+    outfile << " " << (data.mean_zenith_angle_rad * 180.0 / kPi)
+            << " " << (data.mean_azimuth_rad * 180.0 / kPi)
+            << " " << data.azimuth_concentration << " " << data.mean_laser_dist;
     if (!params.dtm_file.empty() || params.dtm_from_class >= 0) {
-        if (data.distance_from_ground != std::numeric_limits<double>::lowest()) {
-            outfile << " " << data.distance_from_ground;
-        } else {
-            outfile << " " << "nan"; // Use 'nan' for no-data values
-        }
+      if (data.distance_from_ground != std::numeric_limits<double>::lowest())
+        outfile << " " << data.distance_from_ground;
+      else
+        outfile << " nan";
     }
-    if (params.calc_veg_metrics) outfile << " " << data.pad_g_corrected << " " << data.pad_leaf << " " << data.pad_wood;
     if (params.calc_beam_metrics) outfile << " " << data.transmittance << " " << data.bs_entering << " " << data.bs_intercepted;
     if (params.subvoxel_split > 0) outfile << " " << data.exploration_rate << " " << data.subvoxel_bitmap;
     if (params.calc_inclination_dist) {
-      outfile << " " << data.predominant_tree;
+      outfile << " " << data.predominant_tree << " " << data.piad_dewit;
       if (params.has_leaf) outfile << " " << data.liad_dewit;
       if (params.has_wood) outfile << " " << data.wiad_dewit;
-      outfile << " " << data.piad_dewit;
+      outfile << " " << data.g_plant;
+      if (params.has_leaf) outfile << " " << data.g_leaf;
+      if (params.has_wood) outfile << " " << data.g_wood;
       for (const auto& method : params.attenuation_methods) {
         auto lookup = [&](const std::unordered_map<std::string, double>& m) -> double {
           auto it = m.find(method); return it != m.end() ? it->second : 0.0;
@@ -651,7 +687,10 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
         if (params.has_wood) outfile << " " << lookup(data.wad_per_method);
       }
     }
-    outfile << " " << formatClassificationHits(data.classification_hits) << "\n";
+    if (params.has_leaf) outfile << " " << data.lad_g0_5;
+    if (params.has_wood) outfile << " " << data.wad_g0_5;
+    if (params.calc_veg_metrics) outfile << " " << data.pad_g_corrected << " " << data.pad_leaf << " " << data.pad_wood;
+    outfile << "\n";
     point_count++;
   };
 

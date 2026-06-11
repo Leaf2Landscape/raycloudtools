@@ -30,7 +30,7 @@ namespace ray
   }
 
   static constexpr uint32_t kShardMagic   = 0x564F584C; // "VOXL"
-  static constexpr uint16_t kShardVersion = 9;          // v9: subvoxel_bitmap -> subvoxel_counts (64×uint8)
+  static constexpr uint16_t kShardVersion = 10;         // v10: num_rays_occluded, num_unbound_rays -> int32_t (unweighted)
 
   /// @brief Writes shard-file header. Call once at the start of each shard.
   inline bool writeShardHeader(std::ofstream& out) {
