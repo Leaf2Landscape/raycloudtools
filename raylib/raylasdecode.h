@@ -39,6 +39,7 @@ struct DecodeContext
   uint16_t sz_offset = 8;       ///< byte offset of "sz" within extra_bytes (default: 8)
   uint16_t alpha_offset = 12;     ///< default: sx+sy+sz only; overwritten when "alpha" VLR found
   int32_t bound_offset = -1;      ///< -1 = absent (old file); byte offset of the "bound" extra attribute
+  uint8_t bound_dtype  = 0;       ///< LAS data_type of the "bound" attribute (1=uint8 is canonical; others are cast)
 
   // Fields below are only required by the raw-record decode (mmap / laz-perf paths). They mirror
   // the LAS header scaling and record geometry so a fixed-layout point record can be decoded
@@ -161,6 +162,26 @@ inline bool fillPointFromRecord(const uint8_t *rec, const DecodeContext &ctx, la
   if (ctx.extra_bytes_total > 0)
     memcpy(extra_scratch, rec + ctx.extra_bytes_offset, ctx.extra_bytes_total);
   return true;
+}
+
+// Read the "bound" extra-byte field of any LAS data_type and return 1 (bound) or 0 (unbound).
+// Handles files where "bound" was written with an incorrect wider type: any non-zero value → 1.
+inline uint8_t decodeBoundField(const uint8_t *extra, int32_t off, uint8_t dtype)
+{
+  switch (dtype)
+  {
+    case 1:  { uint8_t  v; memcpy(&v, extra + off, 1); return v ? 1u : 0u; }
+    case 2:  { int8_t   v; memcpy(&v, extra + off, 1); return v ? 1u : 0u; }
+    case 3:  { uint16_t v; memcpy(&v, extra + off, 2); return v ? 1u : 0u; }
+    case 4:  { int16_t  v; memcpy(&v, extra + off, 2); return v ? 1u : 0u; }
+    case 5:  { uint32_t v; memcpy(&v, extra + off, 4); return v ? 1u : 0u; }
+    case 6:  { int32_t  v; memcpy(&v, extra + off, 4); return v ? 1u : 0u; }
+    case 7:  { uint64_t v; memcpy(&v, extra + off, 8); return v ? 1u : 0u; }
+    case 8:  { int64_t  v; memcpy(&v, extra + off, 8); return v ? 1u : 0u; }
+    case 9:  { float    v; memcpy(&v, extra + off, 4); return v != 0.0f ? 1u : 0u; }
+    case 10: { double   v; memcpy(&v, extra + off, 8); return v != 0.0  ? 1u : 0u; }
+    default: return extra[off] ? 1u : 0u;  // dtype=0 or unknown: read single byte
+  }
 }
 
 // Read a tree/stem ID extra-byte field of the given LAS data_type and normalise its
@@ -315,14 +336,19 @@ inline void decodePointRecord(const laszip_point_struct *point, const DecodeCont
                   : static_cast<uint8_t>(point->intensity);  // fallback for old files
     // When the explicit bound field is present (new-format files), treat it as authoritative.
     // Old files (bound_offset == -1) fall through to the alpha > 0 sentinel unchanged.
-    if (ctx.bound_offset >= 0 &&
-        point->num_extra_bytes > static_cast<uint16_t>(ctx.bound_offset))
+    // Read via decodeBoundField to handle files where bound was stored with a non-uint8 dtype.
+    if (ctx.bound_offset >= 0)
     {
-      const uint8_t b = point->extra_bytes[ctx.bound_offset];
-      if (b == 0 && intensity > 0)
-        intensity = 0;  // file says unbound; suppress stray alpha
-      else if (b != 0 && intensity == 0)
-        intensity = 1;  // file says bound but alpha was zero; mark as bounded
+      const uint16_t bsz = (ctx.bound_dtype >= 1 && ctx.bound_dtype <= 10)
+                               ? kDecodeExtraTypeSize[ctx.bound_dtype] : 1u;
+      if (point->num_extra_bytes >= static_cast<uint16_t>(ctx.bound_offset) + bsz)
+      {
+        const uint8_t b = decodeBoundField(point->extra_bytes, ctx.bound_offset, ctx.bound_dtype);
+        if (b == 0 && intensity > 0)
+          intensity = 0;  // file says unbound; suppress stray alpha
+        else if (b != 0 && intensity == 0)
+          intensity = 1;  // file says bound but alpha was zero; mark as bounded
+      }
     }
   }
   else
@@ -454,14 +480,18 @@ inline void decodePointRecordIndexed(const laszip_point_struct *point, const Dec
     intensity = (point->num_extra_bytes > alpha_pos)
                   ? point->extra_bytes[alpha_pos]
                   : static_cast<uint8_t>(point->intensity);
-    if (ctx.bound_offset >= 0 &&
-        point->num_extra_bytes > static_cast<uint16_t>(ctx.bound_offset))
+    if (ctx.bound_offset >= 0)
     {
-      const uint8_t b = point->extra_bytes[ctx.bound_offset];
-      if (b == 0 && intensity > 0)
-        intensity = 0;
-      else if (b != 0 && intensity == 0)
-        intensity = 1;
+      const uint16_t bsz = (ctx.bound_dtype >= 1 && ctx.bound_dtype <= 10)
+                               ? kDecodeExtraTypeSize[ctx.bound_dtype] : 1u;
+      if (point->num_extra_bytes >= static_cast<uint16_t>(ctx.bound_offset) + bsz)
+      {
+        const uint8_t b = decodeBoundField(point->extra_bytes, ctx.bound_offset, ctx.bound_dtype);
+        if (b == 0 && intensity > 0)
+          intensity = 0;
+        else if (b != 0 && intensity == 0)
+          intensity = 1;
+      }
     }
   }
   else

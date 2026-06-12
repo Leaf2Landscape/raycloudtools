@@ -318,7 +318,7 @@ bool readLas(const std::string &file_name,
   ctx.is_raycloud  = hdr.is_raycloud;
   ctx.max_intensity = max_intensity;
   ctx.sx_offset    = 0; ctx.sy_offset = 4; ctx.sz_offset = 8; ctx.alpha_offset = 12;
-  ctx.bound_offset = -1;
+  ctx.bound_offset = -1; ctx.bound_dtype = 0;
   ctx.tree_id_offset = 0; ctx.tree_id_dtype = 0;
   ctx.stem_id_offset = 0; ctx.stem_id_dtype = 0;
   ctx.beam_id_offset = 0; ctx.beam_id_dtype = 0;
@@ -331,7 +331,7 @@ bool readLas(const std::string &file_name,
       if (strcmp(f.name, "sy")      == 0) ctx.sy_offset      = f.offset;
       if (strcmp(f.name, "sz")      == 0) ctx.sz_offset      = f.offset;
       if (strcmp(f.name, "alpha")   == 0) ctx.alpha_offset   = f.offset;
-      if (strcmp(f.name, "bound")   == 0) ctx.bound_offset   = static_cast<int32_t>(f.offset);
+      if (strcmp(f.name, "bound")   == 0) { ctx.bound_offset = static_cast<int32_t>(f.offset); ctx.bound_dtype = f.dtype; }
       if (strcmp(f.name, "tree_id") == 0) { ctx.tree_id_offset = f.offset; ctx.tree_id_dtype = f.dtype; }
       if (strcmp(f.name, "stem_id") == 0) { ctx.stem_id_offset = f.offset; ctx.stem_id_dtype = f.dtype; }
       if (strcmp(f.name, "beam_id") == 0) { ctx.beam_id_offset = f.offset; ctx.beam_id_dtype = f.dtype; }
