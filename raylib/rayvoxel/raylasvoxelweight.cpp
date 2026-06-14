@@ -25,8 +25,6 @@ WeightMethod parseWeightMethod(const std::string& s)
                               "'. Must be equal, full, first, relative, or strongest.");
 }
 
-static inline int effectiveNumReturns(uint8_t n) { return n <= 1 ? 1 : static_cast<int>(n); }
-
 void computeEchoWeights(WeightMethod method,
                         const PointData* const* sorted, int N,
                         float* echo_w)
@@ -37,8 +35,12 @@ void computeEchoWeights(WeightMethod method,
   {
     case WeightMethod::kEqual:
     {
+      // Equal share per echo, weighted by the returns ACTUALLY present in this beam (N), matching
+      // AMAPVox's EqualEchoWeight = 1/getEchoesNumber(). Using N (not the LAS number_of_returns
+      // field) is robust to denoised/dropped returns: a surviving 1-of-2 return then carries the
+      // full beam (1/1) rather than half (1/2). For complete pulses N == number_of_returns (no-op).
       for (int k = 0; k < N; ++k)
-        echo_w[k] = 1.0f / static_cast<float>(effectiveNumReturns(sorted[k]->number_of_returns));
+        echo_w[k] = 1.0f / static_cast<float>(N);
       break;
     }
     case WeightMethod::kFull:
@@ -59,9 +61,9 @@ void computeEchoWeights(WeightMethod method,
       for (int k = 0; k < N; ++k) sum += static_cast<float>(sorted[k]->intensity);
       if (sum == 0.0f)
       {
-        // Fallback to kEqual when the intensity sum is degenerate.
+        // Fallback to kEqual (present-return count) when the intensity sum is degenerate.
         for (int k = 0; k < N; ++k)
-          echo_w[k] = 1.0f / static_cast<float>(effectiveNumReturns(sorted[k]->number_of_returns));
+          echo_w[k] = 1.0f / static_cast<float>(N);
       }
       else
       {

@@ -30,7 +30,7 @@ namespace ray
   }
 
   static constexpr uint32_t kShardMagic   = 0x564F584C; // "VOXL"
-  static constexpr uint16_t kShardVersion = 10;         // v10: num_rays_occluded, num_unbound_rays -> int32_t (unweighted)
+  static constexpr uint16_t kShardVersion = 14;         // v14: add ppl_miss_wL (exact-PPL miss term; ppl_lambda is transient, not serialized)
 
   /// @brief Writes shard-file header. Call once at the start of each shard.
   inline bool writeShardHeader(std::ofstream& out) {
@@ -47,12 +47,8 @@ namespace ray
     return in.good() && magic == kShardMagic && version == kShardVersion;
   }
 
-  // NOTE: the free-path family of accumulators — free_path_length, bs_free_path, and the
-  // Stage 3 effective variants effective_free_path_length / bs_effective_free_path — are
-  // intentionally omitted from shard (de)serialization. They are only used for in-memory
-  // metric output and are not reconstructable from per-shard partial sums, so in OOC mode
-  // they read back as 0. Adding them would require bumping kShardVersion.
   /// @brief Serializes a Voxel and its VoxelCoord to a binary output stream.
+  // Field order mirrors VoxelGrid::Voxel::operator+= so every additive accumulator is round-tripped.
   inline bool writeVoxelData(std::ofstream& out, const VoxelCoord& coord, const VoxelGrid::Voxel& voxel)
   {
     writeBinary(out, coord.x);
@@ -61,9 +57,13 @@ namespace ray
     writeBinary(out, voxel.num_hits);
     writeBinary(out, voxel.num_beams);
     writeBinary(out, voxel.num_beams_weighted);
-    writeBinary(out, voxel.path_length_raw);
-    writeBinary(out, voxel.path_length_sq_raw);
     writeBinary(out, voxel.path_length);
+    writeBinary(out, voxel.path_length_sq_raw);
+    writeBinary(out, voxel.free_path_length);
+    writeBinary(out, voxel.free_path_length_plant);
+    writeBinary(out, voxel.free_path_length_leaf);
+    writeBinary(out, voxel.free_path_length_wood);
+    writeBinary(out, voxel.effective_free_path_length);
     writeBinary(out, voxel.num_rays_occluded);
     writeBinary(out, voxel.path_length_occluded);
     writeBinary(out, voxel.sum_of_angles);
@@ -73,10 +73,15 @@ namespace ray
     writeBinary(out, voxel.bs_entering);
     writeBinary(out, voxel.bs_intercepted);
     writeBinary(out, voxel.bs_potential);
+    writeBinary(out, voxel.bs_free_path);
+    writeBinary(out, voxel.bs_effective_free_path);
+    writeBinary(out, voxel.bs_eff_free_path_hits);
+    writeBinary(out, voxel.ppl_miss_wL);
     writeBinary(out, voxel.sum_hit_delta);
     writeBinary(out, voxel.sum_miss_delta);
     writeBinary(out, voxel.num_unbound_rays);
     writeBinary(out, voxel.path_length_unbound);
+    writeBinary(out, voxel.num_miss_rays);
     writeBinary(out, voxel.subvoxel_counts);
     return out.good();
   }
@@ -92,9 +97,13 @@ namespace ray
     readBinary(in, voxel.num_hits);
     readBinary(in, voxel.num_beams);
     readBinary(in, voxel.num_beams_weighted);
-    readBinary(in, voxel.path_length_raw);
-    readBinary(in, voxel.path_length_sq_raw);
     readBinary(in, voxel.path_length);
+    readBinary(in, voxel.path_length_sq_raw);
+    readBinary(in, voxel.free_path_length);
+    readBinary(in, voxel.free_path_length_plant);
+    readBinary(in, voxel.free_path_length_leaf);
+    readBinary(in, voxel.free_path_length_wood);
+    readBinary(in, voxel.effective_free_path_length);
     readBinary(in, voxel.num_rays_occluded);
     readBinary(in, voxel.path_length_occluded);
     readBinary(in, voxel.sum_of_angles);
@@ -104,10 +113,15 @@ namespace ray
     readBinary(in, voxel.bs_entering);
     readBinary(in, voxel.bs_intercepted);
     readBinary(in, voxel.bs_potential);
+    readBinary(in, voxel.bs_free_path);
+    readBinary(in, voxel.bs_effective_free_path);
+    readBinary(in, voxel.bs_eff_free_path_hits);
+    readBinary(in, voxel.ppl_miss_wL);
     readBinary(in, voxel.sum_hit_delta);
     readBinary(in, voxel.sum_miss_delta);
     readBinary(in, voxel.num_unbound_rays);
     readBinary(in, voxel.path_length_unbound);
+    readBinary(in, voxel.num_miss_rays);
     readBinary(in, voxel.subvoxel_counts);
     return in.good();
   }

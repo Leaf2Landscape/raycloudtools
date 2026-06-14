@@ -33,6 +33,7 @@
 #include <nabo/nabo.h>
 
 #include <algorithm>
+#include <cassert>
 #include <iostream>
 #include <iomanip>
 #include <cstring>
@@ -241,30 +242,66 @@ PointData makePointData(const Eigen::Vector3d& start, const Eigen::Vector3d& end
   return pd;
 }
 
-// Decide whether the incoming point pd starts a new beam relative to the pending return group.
-// has_beam_ids selects the authoritative beam-id grouping; otherwise points are grouped by GPS
-// time, number-of-returns consistency, and monotonically increasing distance-to-sensor.
-static bool isNewBeam(const PointData& pd,
-                      double pending_gps_time,
-                      int32_t pending_beam_id,
-                      const std::vector<PointData>& pending_returns,
-                      bool has_beam_ids)
-{
-    if (pending_returns.empty()) return true;
-    if (has_beam_ids)
-        return pd.beam_id != pending_beam_id
-            || pd.number_of_returns != pending_returns.front().number_of_returns
-            || pd.distance_to_sensor <= pending_returns.back().distance_to_sensor;
+// Groups a cloud's returns into pulses (beams) independent of point ordering, by hashing on the
+// pulse key (beam_id when present, else gps_time). A pulse is emitted as soon as all its returns
+// have arrived (collected count reaches number_of_returns); single-return pulses emit immediately;
+// stragglers (incomplete pulses, e.g. filtered/missing returns) are emitted at flush().
+//
+// Replaces the previous file-adjacency grouping, which split multi-return pulses into per-return
+// beams on raycloud .laz files whose points are NOT pulse-ordered (returns sharing a gps_time are
+// scattered across the file). That split each return into its own beam, re-walking the shared
+// origin→hit path — inflating per-voxel beam-crossing counts (nbSampling) and the PPL miss term,
+// and giving split returns full weight instead of the correct decreasing per-segment weight.
+class PulseGrouper {
+public:
+    // Add one return. If its pulse is now complete, invokes emit(BeamData&&).
+    template <class Emit>
+    void add(const PointData& pd, Emit&& emit) {
+        const uint8_t nor = (pd.number_of_returns < 1) ? 1 : pd.number_of_returns;
+        if (nor <= 1) {  // single-return pulse → emit immediately, never buffered
+            BeamData b;
+            b.beam_origin = pd.beam_origin;
+            b.gps_time    = pd.gps_time;
+            b.num_returns = 1;
+            b.returns[0]  = pd;
+            emit(std::move(b));
+            return;
+        }
+        // beam_id (when present, >= 0) is the authoritative key; otherwise gps_time (bit-exact per
+        // pulse). A cloud uses one regime consistently, so the two never collide.
+        const double key = (pd.beam_id >= 0) ? static_cast<double>(pd.beam_id) : pd.gps_time;
+        Partial& p = pending_[key];
+        if (p.returns.empty()) { p.origin = pd.beam_origin; p.gps_time = pd.gps_time; p.target = nor; }
+        p.returns.push_back(pd);
+        if (p.returns.size() >= p.target) { emitPulse(p, emit); pending_.erase(key); }
+    }
 
-    // nor <= 1: each point is its own beam by definition
-    if (pd.number_of_returns <= 1) return true;
-    if (pending_returns.front().number_of_returns <= 1) return true;
+    // Emit any pulses still incomplete at end-of-stream (missing/filtered returns).
+    template <class Emit>
+    void flush(Emit&& emit) {
+        for (auto& kv : pending_)
+            if (!kv.second.returns.empty()) emitPulse(kv.second, emit);
+        pending_.clear();
+    }
 
-    // nor > 1: group by GPS time + nor consistency + monotonic distance
-    return pd.gps_time != pending_gps_time
-        || pd.number_of_returns != pending_returns.front().number_of_returns
-        || pd.distance_to_sensor <= pending_returns.back().distance_to_sensor;
-}
+private:
+    struct Partial {
+        Eigen::Vector3d origin;
+        double gps_time = 0.0;
+        uint8_t target = 0;
+        std::vector<PointData> returns;
+    };
+    template <class Emit>
+    static void emitPulse(const Partial& p, Emit& emit) {
+        BeamData b;
+        b.beam_origin = p.origin;
+        b.gps_time    = p.gps_time;
+        b.num_returns = static_cast<uint8_t>(std::min(p.returns.size(), static_cast<size_t>(kMaxReturnsPerBeam)));
+        for (uint8_t r = 0; r < b.num_returns; ++r) b.returns[r] = p.returns[r];
+        emit(std::move(b));
+    }
+    std::unordered_map<double, Partial> pending_;
+};
 
 // Returns true if a point is a ground hit and should be excluded from PAD/LAD/WAD.
 // Two mutually exclusive modes: dtm_from_class >= 0 selects a class-match path; otherwise a
@@ -342,58 +379,6 @@ int readClassValue(const uint8_t* base, const ClassFieldSource& src)
 // Classification Post-Traversal Pass
 // ==================================================================================
 
-// Reads the cloud endpoints only (no ray walking) to build a flat-index→per-class
-// hit count table. O(N_points) I/O pass, much cheaper than the traversal pass.
-static ClassTable buildClassTable(const std::string& cloud_name, const VoxelGrid& grid,
-                                  int dtm_from_class, const HeightField* dtm, double dtm_filter_distance)
-{
-  ClassTable class_table;
-
-  ray::CloudReader reader;
-  reader.begin(cloud_name);
-  const ray::LasHeader &hdr = reader.header();
-  const std::vector<uint8_t> extra_bytes_vlr = hdr.sensorExtraVlr();
-  const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + hdr.sensorExtraSize());
-
-  const Cuboid& bounds    = grid.getBounds();
-  const double vox_width  = grid.getVoxelWidth();
-  const auto& dims        = grid.getDimensions();
-
-  size_t num_bounded = 0;
-  std::vector<uint8_t> passthrough;
-  // global_chunk_start tracks the running point offset across readLas chunk callbacks.
-  // The mmap fast path pre-allocates the passthrough for all points at global indices, while
-  // the sequential path appends per-chunk — both are correct when indexing with the global offset.
-  size_t global_chunk_start = 0;
-
-  reader.read(
-    [&](std::vector<Eigen::Vector3d>& /*starts*/, std::vector<Eigen::Vector3d>& ends,
-        std::vector<double>& /*times*/, std::vector<ray::RGBA>& colours) {
-      for (size_t i = 0; i < ends.size(); ++i) {
-        const size_t base = (global_chunk_start + i) * stride;
-        if (passthrough.size() < base + stride) continue;
-        // "bound" is encoded as bound==(alpha>0), so alpha==0 identifies an unbound ray for both
-        // new files (authoritative bound field) and old files (alpha-only fallback). Unbound rays
-        // are never counted as classified hits.
-        const uint8_t alpha = (i < colours.size()) ? colours[i].alpha : 1;
-        if (alpha == 0) continue;
-
-        const uint8_t classification = passthrough[base + 2];
-        if (isGroundHit(ends[i].x(), ends[i].y(), ends[i].z(), classification,
-                        dtm_from_class, dtm, dtm_filter_distance)) continue;
-        const Eigen::Vector3d vox = (ends[i] - bounds.min_bound_) / vox_width;
-        const int64_t ix = static_cast<int64_t>(std::floor(vox.x()));
-        const int64_t iy = static_cast<int64_t>(std::floor(vox.y()));
-        const int64_t iz = static_cast<int64_t>(std::floor(vox.z()));
-        if (ix < 0 || ix >= dims[0] || iy < 0 || iy >= dims[1] || iz < 0 || iz >= dims[2]) continue;
-        class_table[grid.flatIndex(ix, iy, iz)][classification] += 1.0f;
-      }
-      global_chunk_start += ends.size();
-    }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough);
-
-  return class_table;
-}
-
 // Per-tile accumulator for the tiled parallel KNN/IAD pass. Each worker thread owns one
 // TileResult; histograms are merged serially after the thread pool joins.
 struct TileResult {
@@ -420,9 +405,8 @@ struct TileResult {
 // leaf/wood point SEPARATION and is a distinct method.
 static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid& grid,
                                   const VoxelizationParameters& params, const HeightField* dtm,
-                                  ClassTable& class_table_out, PerTreeIadMap& per_tree_iad_out,
-                                  PredominantTreeTable& predominant_tree_out,
-                                  VoxelLeafWoodTable& voxel_lw_out)
+                                  PerTreeIadMap& per_tree_iad_out,
+                                  PredominantTreeTable& predominant_tree_out)
 {
   // Compact per-tile point record. Replaces the parallel global positions/leaf_vals/wood_vals/
   // flat_indices/beam_angles arrays: routing points into per-tile buckets during the readLas pass
@@ -436,10 +420,8 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
     int32_t tree_id;    // raycloud tree_id of the point; -1 when absent (excluded from per-tree IAD)
   };
 
-  ClassTable class_table;
   PerTreeIadMap per_tree_iad;
   PredominantTreeTable predominant_tree;
-  VoxelLeafWoodTable voxel_lw;
 
   ray::CloudReader reader;
   reader.begin(cloud_name);
@@ -535,18 +517,14 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
         const int64_t iz = static_cast<int64_t>(std::floor(vox.z()));
         if (ix < 0 || ix >= dims[0] || iy < 0 || iy >= dims[1] || iz < 0 || iz >= dims[2]) continue;
 
-        // ClassTable work (same as buildClassTable): per-voxel standard-classification counts.
         const uint8_t classification = passthrough[base + 2];
         if (isGroundHit(ends[i].x(), ends[i].y(), ends[i].z(), classification,
                         params.dtm_from_class, dtm, params.dtm_filter_distance)) continue;
         const int64_t flat_idx = grid.flatIndex(ix, iy, iz);
-        class_table[flat_idx][classification] += 1.0f;
 
         // IadTable collection (same as buildIadTable): leaf/wood field values + flat index.
         const int lv = readClassValue(&passthrough[base], leaf_src);
         const int wv = readClassValue(&passthrough[base], wood_src);
-        if (leaf_set.count(lv)) voxel_lw[flat_idx].first  += 1;
-        if (wood_set.count(wv)) voxel_lw[flat_idx].second += 1;
         const Eigen::Vector3d dir = ends[i] - starts[i];
         const double len2 = dir.squaredNorm();
         const double bz = (len2 > 1e-12) ? std::acos(std::min(1.0, std::abs(dir.z() / std::sqrt(len2)))) : 0.0;
@@ -569,10 +547,8 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
     }, num_bounded, 255.0, nullptr, 1000000, &tree_ids_all, &passthrough);
 
   if (total_points < 2) {
-    class_table_out = std::move(class_table);
     per_tree_iad_out = std::move(per_tree_iad);
     predominant_tree_out = std::move(predominant_tree);
-    voxel_lw_out = std::move(voxel_lw);
     return;
   }
 
@@ -966,67 +942,28 @@ static void buildClassAndIadTable(const std::string& cloud_name, const VoxelGrid
     }
   }
 
-  class_table_out = std::move(class_table);
   per_tree_iad_out = std::move(per_tree_iad);
   predominant_tree_out = std::move(predominant_tree);
-  voxel_lw_out = std::move(voxel_lw);
 }
 
 // ==================================================================================
-// Processing Strategy Implementations
+// Processing Implementations (file-local free functions)
 // ==================================================================================
 
-// Abstract base class for all processing strategies.
-class ProcessingStrategy {
-public:
-  virtual ~ProcessingStrategy() = default;
-  virtual bool execute(const std::string& cloud_name, VoxelGrid& grid,
-                       const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
-                       bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-                       const HeightField* dtm, int dtm_from_class, double dtm_filter_distance, double lambda1 = 0.0) = 0;
-};
+namespace {
 
-// --- In-Memory Strategy (Options 1 & 2) ---
-class InProcessStrategy : public ProcessingStrategy {
-public:
-  InProcessStrategy(size_t num_threads) : num_threads_(num_threads) {}
-  bool execute(const std::string& cloud_name, VoxelGrid& grid,
-               const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
-               bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-               const HeightField* dtm, int dtm_from_class, double dtm_filter_distance, double lambda1 = 0.0) override;
-private:
-  size_t num_threads_;
-};
-
-// --- Out-of-Core Strategy (Option 3) ---
-class OutOfCoreStrategy : public ProcessingStrategy {
-public:
-  OutOfCoreStrategy(size_t num_threads, size_t ram_budget_mb) : num_threads_(num_threads), ram_budget_mb_(ram_budget_mb) {}
-  bool execute(const std::string& cloud_name, VoxelGrid& grid,
-               const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
-               bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-               const HeightField* dtm, int dtm_from_class, double dtm_filter_distance, double lambda1 = 0.0) override;
-private:
-  bool createShards(const std::string& cloud_name, VoxelGrid& grid,
-                    const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
-                    bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-                    const HeightField* dtm, int dtm_from_class, double dtm_filter_distance,
-                    std::vector<std::string>& out_shard_paths, double lambda1 = 0.0);
-
-  bool mergeShards(const std::vector<std::string>& shard_paths, VoxelGrid& grid);
-
-  size_t num_threads_;
-  size_t ram_budget_mb_;
-};
-
-
-bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
-                                const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
-                                bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-                                const HeightField* dtm, int dtm_from_class, double dtm_filter_distance, double lambda1)
+// In-memory traversal (single-threaded or parallel producer-consumer).
+bool runInProcess(const std::string& cloud_name, VoxelGrid& grid, size_t num_threads,
+                  const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
+                  bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
+                  const HeightField* dtm, int dtm_from_class, double dtm_filter_distance,
+                  ClassTable& class_table_out, VoxelLeafWoodTable& voxel_lw_out,
+                  const std::string& leaf_classes_str, const std::string& wood_classes_str,
+                  double lambda1 = 0.0,
+                  bool ppl_enabled = false, std::vector<PplHit>* ppl_out = nullptr)
 {
   // Determine the final number of threads to use
-  size_t resolved_threads = num_threads_;
+  size_t resolved_threads = num_threads;
   if (resolved_threads == 0) { // Auto-detect
     resolved_threads = std::thread::hardware_concurrency();
     if (resolved_threads == 0) resolved_threads = 1; // Fallback
@@ -1043,11 +980,40 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
   const std::vector<uint8_t> extra_bytes_vlr = hdr.sensorExtraVlr();
   const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + hdr.sensorExtraSize());
 
+  // Resolve leaf/wood class field sources for foliage_class tagging
+  auto split_field_codes_ = [](const std::string& s, std::string& field, std::string& codes) {
+      auto colon = s.find(':');
+      if (colon != std::string::npos) { field = s.substr(0, colon); codes = s.substr(colon + 1); }
+      else { field.clear(); codes = s; }
+  };
+  std::string leaf_field_, leaf_codes_, wood_field_, wood_codes_;
+  split_field_codes_(leaf_classes_str, leaf_field_, leaf_codes_);
+  split_field_codes_(wood_classes_str, wood_field_, wood_codes_);
+  const ClassFieldSource leaf_src = resolveClassField(leaf_field_, hdr);
+  const ClassFieldSource wood_src = resolveClassField(wood_field_, hdr);
+  std::set<int> leaf_set, wood_set;
+  {
+      std::stringstream ss(leaf_codes_);
+      std::string item;
+      while (std::getline(ss, item, ',')) { try { leaf_set.insert(std::stoi(item)); } catch (...) {} }
+  }
+  {
+      std::stringstream ss(wood_codes_);
+      std::string item;
+      while (std::getline(ss, item, ',')) { try { wood_set.insert(std::stoi(item)); } catch (...) {} }
+  }
+  auto resolveFoliageClass = [&](const uint8_t* base, uint8_t cls) -> uint8_t {
+      if (cls < 3) return 0;
+      if (leaf_set.count(readClassValue(base, leaf_src))) return 2;
+      if (wood_set.count(readClassValue(base, wood_src))) return 3;
+      return 1;
+  };
+
   if (resolved_threads > 1) {
     // --- OPTION 2: Parallel Producer-Consumer Implementation ---
 
     // Scale queue depth to available RAM: use up to 1 GB, minimum 8 batches/thread.
-    // Apply a 75% margin to the queried figure so the queue, worker maps and grid share one budget.
+    // Apply a 75% margin to the queried figure so the queue and grid share one budget.
     const size_t avail_ram    = ray::queryAvailableMemoryBytes() * 3 / 4;
     const size_t queue_budget = std::min(avail_ram / 20, size_t(1) * 1024 * 1024 * 1024);
     const size_t queue_depth  = std::max(queue_budget / sizeof(BeamBatch),
@@ -1069,39 +1035,35 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
     ThreadSafeQueue<BeamBatch> beam_queue(queue_depth);
     std::vector<std::thread> threads;
 
-    const bool use_flat = grid.isFlat();
-    VoxelGrid::Voxel* flat_ptr = use_flat ? grid.flat_voxels_.data() : nullptr;
-    const int64_t flat_dimX  = use_flat ? grid.voxel_dims_[0] : 0;
-    const int64_t flat_dimXY = use_flat ? grid.voxel_dims_[0] * grid.voxel_dims_[1] : 0;
+    // RAM-fit selection (see generateVoxelGrid) guarantees a flat grid on the in-process path.
+    assert(grid.isFlat());
+    VoxelGrid::Voxel* flat_ptr = &grid.voxelAt(0);
+    const int64_t flat_dimX  = grid.getDimensions()[0];
+    const int64_t flat_dimXY = grid.getDimensions()[0] * grid.getDimensions()[1];
 
-    std::vector<VoxelProcessor::Map> worker_maps(use_flat ? 0 : resolved_threads);
-
-    // Sparse-path memory bound: cap each worker's map at avail_ram / (threads * 4) bytes, then
-    // progressively merge into the grid and clear once that many unique voxels accumulate. This
-    // keeps the in-flight per-thread maps small instead of holding N_threads × full_map at once.
-    const size_t voxel_pair_size_approx =
-        sizeof(VoxelCoord) + sizeof(VoxelGrid::Voxel) + sizeof(void*) * 2 + sizeof(std::pair<U8, float>) * 2;
-    const size_t budget_per_worker =
-        std::max<size_t>(1, (avail_ram / (resolved_threads * 4)) / voxel_pair_size_approx);
+    std::vector<ClassTable> worker_class_tables(resolved_threads);
+    std::vector<VoxelLeafWoodTable> worker_voxel_lw(resolved_threads);
+    std::mutex ppl_sink_mutex;
 
     auto worker_task = [&](size_t thread_idx) {
       VoxelProcessor processor(grid.getBounds(), grid.getVoxelWidth(), weighting_method, use_occlusion,
                                apply_flat_top, peaks_ptr, calc_beam_metrics, beam_diameter,
                                tan_half_divergence, subvoxel_split, dtm, lambda1);
-      if (use_flat)
-        processor.setFlatTarget(flat_ptr, flat_dimX, flat_dimXY);
+      processor.setFlatTarget(flat_ptr, flat_dimX, flat_dimXY);
+      if (ppl_enabled) processor.enablePpl();
       BeamBatch batch;
       while (beam_queue.pop(batch)) {
         for (size_t b = 0; b < batch.count; ++b) {
           processor.processBeam(batch.beams[b]);
-          if (!use_flat && processor.size() >= budget_per_worker) {
-            grid.merge(processor);  // thread-safe under the grid's merge_mutex_
-            processor.clear();
-          }
         }
       }
-      if (!use_flat)
-        worker_maps[thread_idx] = processor.takeMap();
+      worker_class_tables[thread_idx] = processor.extractClassTable();
+      worker_voxel_lw[thread_idx]     = processor.extractVoxelLW();
+      if (ppl_enabled && ppl_out) {
+        std::vector<PplHit> h = processor.extractPplHits();
+        std::lock_guard<std::mutex> lk(ppl_sink_mutex);
+        ppl_out->insert(ppl_out->end(), std::make_move_iterator(h.begin()), std::make_move_iterator(h.end()));
+      }
     };
 
     for (size_t i = 0; i < resolved_threads; ++i)
@@ -1111,26 +1073,14 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
     std::vector<uint8_t> passthrough;
     std::vector<int32_t> beam_ids_chunk;
     static bool not_raycloud_warned = false;
-    double pending_gps_time = std::numeric_limits<double>::quiet_NaN();
-    int32_t pending_beam_id = -1;
-    std::vector<PointData> pending_returns;
-    Eigen::Vector3d pending_beam_origin;
+    PulseGrouper grouper;
 
     // Current batch being filled by the producer.
     BeamBatch current_batch;
 
     // Commit a completed beam into the current batch; push when the batch is full.
-    auto flush_beam = [&]() {
-      if (pending_returns.empty()) return;
-      BeamData& bd = current_batch.beams[current_batch.count];
-      bd.beam_origin = pending_beam_origin;
-      bd.gps_time    = pending_gps_time;
-      bd.num_returns = static_cast<uint8_t>(std::min(pending_returns.size(),
-                                            static_cast<size_t>(kMaxReturnsPerBeam)));
-      for (uint8_t r = 0; r < bd.num_returns; ++r)
-        bd.returns[r] = pending_returns[r];
-      ++current_batch.count;
-      pending_returns.clear();
+    auto emit_beam = [&](BeamData&& bd) {
+      current_batch.beams[current_batch.count++] = std::move(bd);
       if (current_batch.count == kBeamBatchSize) {
         BeamBatch tmp = current_batch;  // copy before reset so workers get valid data
         current_batch.count = 0;
@@ -1155,31 +1105,31 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
           PointData pd = makePointData(starts[i], ends[i], times[i], bid, alpha, passthrough, i, stride);
           if (isGroundHit(pd.x, pd.y, pd.z, pd.classification, dtm_from_class, dtm, dtm_filter_distance))
             pd.bound = 0;
-          const bool new_beam = isNewBeam(pd, pending_gps_time, pending_beam_id,
-                                          pending_returns, !beam_ids_chunk.empty());
-          if (new_beam) {
-            flush_beam();
-            pending_gps_time    = pd.gps_time;
-            pending_beam_id     = pd.beam_id;
-            pending_beam_origin = starts[i];
-          }
-          pending_returns.push_back(pd);
+          const size_t base_i = i * stride;
+          if (passthrough.size() >= base_i + stride)
+            pd.foliage_class = resolveFoliageClass(&passthrough[base_i], pd.classification);
+          grouper.add(pd, emit_beam);
         }
         passthrough.clear();
         beam_ids_chunk.clear();
       }, num_bounded, 255.0, nullptr, las_chunk,
          nullptr, &passthrough, nullptr, &beam_ids_chunk);
 
-    flush_beam();  // commit the last beam
+    grouper.flush(emit_beam);  // emit any pulses still incomplete at end-of-stream
     if (current_batch.count > 0) {
       beam_queue.push(std::move(current_batch));
     }
     beam_queue.notify_done();
     for (auto& t : threads) { t.join(); }
 
-    if (!use_flat) {
-      for (size_t i = 0; i < resolved_threads; ++i)
-        grid.absorbMap(std::move(worker_maps[i]));
+    for (size_t i = 0; i < resolved_threads; ++i) {
+        for (auto& kv : worker_class_tables[i])
+            for (int c = 0; c < 256; ++c)
+                class_table_out[kv.first][c] += kv.second[c];
+        for (auto& kv : worker_voxel_lw[i]) {
+            voxel_lw_out[kv.first].first  += kv.second.first;
+            voxel_lw_out[kv.first].second += kv.second.second;
+        }
     }
     std::cout << "Parallel processing finished." << std::endl;
 
@@ -1189,34 +1139,19 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
     VoxelProcessor processor(grid.getBounds(), grid.getVoxelWidth(), weighting_method, use_occlusion,
                              apply_flat_top, peaks_ptr, calc_beam_metrics, beam_diameter,
                              tan_half_divergence, subvoxel_split, dtm, lambda1);
-    if (grid.isFlat())
-      processor.setFlatTarget(grid.flat_voxels_.data(),
-                              grid.voxel_dims_[0],
-                              grid.voxel_dims_[0] * grid.voxel_dims_[1]);
+    // RAM-fit selection (see generateVoxelGrid) guarantees a flat grid on the in-process path.
+    assert(grid.isFlat());
+    processor.setFlatTarget(&grid.voxelAt(0),
+                            grid.getDimensions()[0],
+                            grid.getDimensions()[0] * grid.getDimensions()[1]);
+    if (ppl_enabled) processor.enablePpl();
 
     size_t num_bounded = 0;
     std::vector<uint8_t> passthrough;
     std::vector<int32_t> beam_ids_chunk;
     static bool not_raycloud_warned = false;
-    // Beam accumulator state, persisting across readLas chunk calls.
-    double pending_gps_time = std::numeric_limits<double>::quiet_NaN();
-    int32_t pending_beam_id = -1;
-    std::vector<PointData> pending_returns;
-    Eigen::Vector3d pending_beam_origin;
-    auto flush_beam = [&]() {
-      if (!pending_returns.empty()) {
-        BeamData beam;
-        beam.beam_origin = pending_beam_origin;
-        beam.gps_time    = pending_gps_time;
-        beam.num_returns = static_cast<uint8_t>(std::min(pending_returns.size(),
-                             static_cast<size_t>(kMaxReturnsPerBeam)));
-        for (uint8_t r = 0; r < beam.num_returns; ++r) {
-          beam.returns[r] = pending_returns[r];
-        }
-        processor.processBeam(beam);
-        pending_returns.clear();
-      }
-    };
+    PulseGrouper grouper;
+    auto emit_beam = [&](BeamData&& beam) { processor.processBeam(beam); };
     reader.read(
       [&](std::vector<Eigen::Vector3d>& starts, std::vector<Eigen::Vector3d>& ends,
           std::vector<double>& times, std::vector<ray::RGBA>& colours) {
@@ -1234,29 +1169,29 @@ bool InProcessStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
           PointData pd = makePointData(starts[i], ends[i], times[i], bid, alpha, passthrough, i, stride);
           if (isGroundHit(pd.x, pd.y, pd.z, pd.classification, dtm_from_class, dtm, dtm_filter_distance))
             pd.bound = 0;
-          const bool new_beam = isNewBeam(pd, pending_gps_time, pending_beam_id,
-                                          pending_returns, !beam_ids_chunk.empty());
-          if (new_beam) {
-            flush_beam();
-            pending_gps_time    = pd.gps_time;
-            pending_beam_id     = pd.beam_id;
-            pending_beam_origin = starts[i];
-          }
-          pending_returns.push_back(pd);
+          const size_t base_i = i * stride;
+          if (passthrough.size() >= base_i + stride)
+            pd.foliage_class = resolveFoliageClass(&passthrough[base_i], pd.classification);
+          grouper.add(pd, emit_beam);
         }
         passthrough.clear();
         beam_ids_chunk.clear();
       }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, nullptr, &beam_ids_chunk);
 
-    flush_beam();
-    // Flat path: writes already landed in flat_voxels_ — nothing to move.
-    // Sparse path: move the processor's map into the grid.
-    if (!grid.isFlat())
-      grid.take(processor);
+    grouper.flush(emit_beam);
+    // Flat path: writes already landed in the grid's flat array — nothing to move.
+    class_table_out = processor.extractClassTable();
+    voxel_lw_out    = processor.extractVoxelLW();
+    if (ppl_enabled && ppl_out) {
+      std::vector<PplHit> h = processor.extractPplHits();
+      ppl_out->insert(ppl_out->end(), std::make_move_iterator(h.begin()), std::make_move_iterator(h.end()));
+    }
   }
 
   return true;
 }
+
+} // anonymous namespace
 
 // ==================================================================================
 // Out-of-Core Strategy Implementation
@@ -1361,16 +1296,34 @@ public:
 };
 
 
-bool OutOfCoreStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
-                                const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
-                                bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-                                const HeightField* dtm, int dtm_from_class, double dtm_filter_distance, double lambda1) {
+namespace {
+
+// File-local helpers for the out-of-core path (formerly OutOfCoreStrategy members).
+bool createShards(const std::string& cloud_name, VoxelGrid& grid, size_t num_threads, size_t ram_budget_mb,
+                  const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
+                  bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
+                  const HeightField* dtm, int dtm_from_class, double dtm_filter_distance,
+                  ClassTable& class_table_out, VoxelLeafWoodTable& voxel_lw_out,
+                  const std::string& leaf_classes_str, const std::string& wood_classes_str,
+                  std::vector<std::string>& out_shard_paths, double lambda1 = 0.0);
+
+bool mergeShards(const std::vector<std::string>& shard_paths, VoxelGrid& grid);
+
+// Out-of-core traversal: shard to disk, then k-way merge into the grid.
+bool runOutOfCore(const std::string& cloud_name, VoxelGrid& grid, size_t num_threads, size_t ram_budget_mb,
+                  const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
+                  bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
+                  const HeightField* dtm, int dtm_from_class, double dtm_filter_distance,
+                  ClassTable& class_table_out, VoxelLeafWoodTable& voxel_lw_out,
+                  const std::string& leaf_classes_str, const std::string& wood_classes_str,
+                  double lambda1 = 0.0) {
     std::vector<std::string> shard_paths;
     std::cout << "Starting out-of-core processing..." << std::endl;
 
-    if (!createShards(cloud_name, grid, weighting_method, use_occlusion, apply_flat_top,
+    if (!createShards(cloud_name, grid, num_threads, ram_budget_mb, weighting_method, use_occlusion, apply_flat_top,
                       calc_beam_metrics, beam_diameter, beam_divergence, subvoxel_split, dtm,
-                      dtm_from_class, dtm_filter_distance, shard_paths, lambda1)) {
+                      dtm_from_class, dtm_filter_distance, class_table_out, voxel_lw_out,
+                      leaf_classes_str, wood_classes_str, shard_paths, lambda1)) {
         std::cerr << "Error: Failed during sharding phase." << std::endl;
         return false;
     }
@@ -1401,22 +1354,24 @@ bool OutOfCoreStrategy::execute(const std::string& cloud_name, VoxelGrid& grid,
     return true;
 }
 
-bool OutOfCoreStrategy::createShards(const std::string& cloud_name, VoxelGrid& grid,
-                                     const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
-                                     bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
-                                     const HeightField* dtm, int dtm_from_class, double dtm_filter_distance,
-                                     std::vector<std::string>& out_shard_paths, double lambda1) {
+bool createShards(const std::string& cloud_name, VoxelGrid& grid, size_t num_threads, size_t ram_budget_mb,
+                  const std::string& weighting_method, bool use_occlusion, bool apply_flat_top,
+                  bool calc_beam_metrics, double beam_diameter, double beam_divergence, int subvoxel_split,
+                  const HeightField* dtm, int dtm_from_class, double dtm_filter_distance,
+                  ClassTable& class_table_out, VoxelLeafWoodTable& voxel_lw_out,
+                  const std::string& leaf_classes_str, const std::string& wood_classes_str,
+                  std::vector<std::string>& out_shard_paths, double lambda1) {
     std::cout << "Phase 1: Processing points and writing to temporary shards..." << std::endl;
 
-    size_t resolved_threads = num_threads_ == 0 ? std::thread::hardware_concurrency() : num_threads_;
+    size_t resolved_threads = num_threads == 0 ? std::thread::hardware_concurrency() : num_threads;
     if (resolved_threads == 0) resolved_threads = 1;
 
-    size_t ram_per_thread_bytes = ram_budget_mb_ * 1024 * 1024;
+    size_t ram_per_thread_bytes = ram_budget_mb * 1024 * 1024;
     // Estimate size of a map entry: Key + Value + overhead (approx 2 pointers) + map node.
     size_t voxel_pair_size_approx = sizeof(VoxelCoord) + sizeof(VoxelGrid::Voxel) + sizeof(void*)*2 + sizeof(std::pair<U8,float>)*2;
     size_t max_voxels_per_thread = (ram_per_thread_bytes / voxel_pair_size_approx);
 
-    std::cout << "Out-of-core settings: " << resolved_threads << " threads, " << ram_budget_mb_ << "MB RAM budget per thread." << std::endl;
+    std::cout << "Out-of-core settings: " << resolved_threads << " threads, " << ram_budget_mb << "MB RAM budget per thread." << std::endl;
     std::cout << "Each thread will flush to disk approx. every " << max_voxels_per_thread << " unique voxels." << std::endl;
 
     std::filesystem::path temp_dir = std::filesystem::temp_directory_path() / "raylasvoxel_shards";
@@ -1430,6 +1385,9 @@ bool OutOfCoreStrategy::createShards(const std::string& cloud_name, VoxelGrid& g
 
     double tan_half_divergence = calc_beam_metrics ? tan(0.5 * beam_divergence) : 0.0;
     const std::vector<double>* peaks_ptr = apply_flat_top ? &grid.getPeaks() : nullptr;
+
+    std::vector<ClassTable> worker_class_tables(resolved_threads);
+    std::vector<VoxelLeafWoodTable> worker_voxel_lw(resolved_threads);
 
     auto worker_task = [&](int thread_id) {
       VoxelProcessor processor(grid.getBounds(), grid.getVoxelWidth(), weighting_method, use_occlusion,
@@ -1462,6 +1420,10 @@ bool OutOfCoreStrategy::createShards(const std::string& cloud_name, VoxelGrid& g
           shard_paths_list.push_back(shard_path.string());
         }
       }
+
+      // NB: class tables are NOT cleared on flush — they persist the full run
+      worker_class_tables[thread_id] = processor.extractClassTable();
+      worker_voxel_lw[thread_id]     = processor.extractVoxelLW();
     };
 
     for (size_t i = 0; i < resolved_threads; ++i) {
@@ -1476,29 +1438,41 @@ bool OutOfCoreStrategy::createShards(const std::string& cloud_name, VoxelGrid& g
     const std::vector<uint8_t> extra_bytes_vlr = hdr.sensorExtraVlr();
     const uint16_t stride = static_cast<uint16_t>(kPassthroughStdBytes + hdr.sensorExtraSize());
 
+    // Resolve leaf/wood class field sources for foliage_class tagging
+    auto split_field_codes_ = [](const std::string& s, std::string& field, std::string& codes) {
+        auto colon = s.find(':');
+        if (colon != std::string::npos) { field = s.substr(0, colon); codes = s.substr(colon + 1); }
+        else { field.clear(); codes = s; }
+    };
+    std::string leaf_field_, leaf_codes_, wood_field_, wood_codes_;
+    split_field_codes_(leaf_classes_str, leaf_field_, leaf_codes_);
+    split_field_codes_(wood_classes_str, wood_field_, wood_codes_);
+    const ClassFieldSource leaf_src = resolveClassField(leaf_field_, hdr);
+    const ClassFieldSource wood_src = resolveClassField(wood_field_, hdr);
+    std::set<int> leaf_set, wood_set;
+    {
+        std::stringstream ss(leaf_codes_);
+        std::string item;
+        while (std::getline(ss, item, ',')) { try { leaf_set.insert(std::stoi(item)); } catch (...) {} }
+    }
+    {
+        std::stringstream ss(wood_codes_);
+        std::string item;
+        while (std::getline(ss, item, ',')) { try { wood_set.insert(std::stoi(item)); } catch (...) {} }
+    }
+    auto resolveFoliageClass = [&](const uint8_t* base, uint8_t cls) -> uint8_t {
+        if (cls < 3) return 0;
+        if (leaf_set.count(readClassValue(base, leaf_src))) return 2;
+        if (wood_set.count(readClassValue(base, wood_src))) return 3;
+        return 1;
+    };
+
     size_t num_bounded = 0;
     std::vector<uint8_t> passthrough;
     std::vector<int32_t> beam_ids_chunk;
     static bool not_raycloud_warned = false;
-    // Beam accumulator state, persisting across readLas chunk calls.
-    double pending_gps_time = std::numeric_limits<double>::quiet_NaN();
-    int32_t pending_beam_id = -1;
-    std::vector<PointData> pending_returns;
-    Eigen::Vector3d pending_beam_origin;
-    auto flush_beam = [&]() {
-      if (!pending_returns.empty()) {
-        BeamData beam;
-        beam.beam_origin = pending_beam_origin;
-        beam.gps_time    = pending_gps_time;
-        beam.num_returns = static_cast<uint8_t>(std::min(pending_returns.size(),
-                             static_cast<size_t>(kMaxReturnsPerBeam)));
-        for (uint8_t r = 0; r < beam.num_returns; ++r) {
-          beam.returns[r] = pending_returns[r];
-        }
-        beam_queue.push(std::move(beam));
-        pending_returns.clear();
-      }
-    };
+    PulseGrouper grouper;
+    auto emit_beam = [&](BeamData&& beam) { beam_queue.push(std::move(beam)); };
     reader.read(
       [&](std::vector<Eigen::Vector3d>& starts, std::vector<Eigen::Vector3d>& ends,
           std::vector<double>& times, std::vector<ray::RGBA>& colours) {
@@ -1516,32 +1490,77 @@ bool OutOfCoreStrategy::createShards(const std::string& cloud_name, VoxelGrid& g
           PointData pd = makePointData(starts[i], ends[i], times[i], bid, alpha, passthrough, i, stride);
           if (isGroundHit(pd.x, pd.y, pd.z, pd.classification, dtm_from_class, dtm, dtm_filter_distance))
             pd.bound = 0;
-          const bool new_beam = isNewBeam(pd, pending_gps_time, pending_beam_id,
-                                          pending_returns, !beam_ids_chunk.empty());
-          if (new_beam) {
-            flush_beam();
-            pending_gps_time    = pd.gps_time;
-            pending_beam_id     = pd.beam_id;
-            pending_beam_origin = starts[i];
-          }
-          pending_returns.push_back(pd);
+          const size_t base_i = i * stride;
+          if (passthrough.size() >= base_i + stride)
+            pd.foliage_class = resolveFoliageClass(&passthrough[base_i], pd.classification);
+          grouper.add(pd, emit_beam);
         }
         passthrough.clear();
         beam_ids_chunk.clear();
       }, num_bounded, 255.0, nullptr, 1000000, nullptr, &passthrough, nullptr, &beam_ids_chunk);
 
-    flush_beam(); // Flush the final beam.
+    grouper.flush(emit_beam); // emit any pulses still incomplete at end-of-stream
     beam_queue.notify_done();
     for (auto& t : threads) { t.join(); }
+
+    for (size_t i = 0; i < resolved_threads; ++i) {
+        for (auto& kv : worker_class_tables[i])
+            for (int c = 0; c < 256; ++c)
+                class_table_out[kv.first][c] += kv.second[c];
+        for (auto& kv : worker_voxel_lw[i]) {
+            voxel_lw_out[kv.first].first  += kv.second.first;
+            voxel_lw_out[kv.first].second += kv.second.second;
+        }
+    }
 
     out_shard_paths = std::move(shard_paths_list);
     return true;
 }
 
-bool OutOfCoreStrategy::mergeShards(const std::vector<std::string>& shard_paths, VoxelGrid& grid) {
+bool mergeShards(const std::vector<std::string>& shard_paths, VoxelGrid& grid) {
     ShardMerger merger(shard_paths, grid);
     return merger.merge();
 }
+
+// Exact potential-path-length (PPL) attenuation MLE, mirroring AMAPVox VoxelizationTask:
+// per voxel solve for k such that  Σ_hits bsIn·L·e^{-kL}/(1-e^{-kL}) = ppl_miss_wL.
+// The LHS is strictly decreasing in k (→∞ as k→0⁺, →0 as k→∞), so the root is unique; bisect on
+// [0, kMaxAtt] and cap at kMaxAtt. Records are grouped by flat voxel index; result → Voxel::ppl_lambda.
+void solvePplExact(VoxelGrid& grid, std::vector<PplHit>& hits)
+{
+  if (!grid.isFlat() || hits.empty()) return;
+  const double kMaxAtt = 20.0;   // AMAPVox maximal-attenuation cap
+  const double eps = 1e-12;
+  std::unordered_map<int64_t, std::vector<std::pair<float, float>>> by_voxel;  // flat → [(L, bsIn)]
+  by_voxel.reserve(hits.size() / 2 + 1);
+  for (const PplHit& h : hits) by_voxel[h.voxel_index].push_back({ h.L, h.bsIn });
+
+  for (auto& kv : by_voxel) {
+    const std::vector<std::pair<float, float>>& recs = kv.second;
+    if (recs.empty()) continue;
+    VoxelGrid::Voxel& v = grid.voxelAt(kv.first);
+    const double miss = static_cast<double>(v.ppl_miss_wL);
+    if (miss <= eps) { v.ppl_lambda = static_cast<float>(kMaxAtt); continue; }  // no exiting beam → max attenuation
+    auto f = [&](double k) -> double {
+      double s = 0.0;
+      for (const auto& r : recs) {
+        const double L = r.first, bs = r.second;
+        const double e = std::exp(k * L) - 1.0;
+        if (e > eps) s += bs * L / e;
+      }
+      return s;
+    };
+    if (f(kMaxAtt) >= miss) { v.ppl_lambda = static_cast<float>(kMaxAtt); continue; }  // root beyond cap
+    double lo = eps, hi = kMaxAtt;
+    for (int it = 0; it < 100; ++it) {
+      const double mid = 0.5 * (lo + hi);
+      if (f(mid) > miss) lo = mid; else hi = mid;   // f decreasing: too-large f ⇒ move right
+    }
+    v.ppl_lambda = static_cast<float>(0.5 * (lo + hi));
+  }
+}
+
+} // anonymous namespace
 
 // ==================================================================================
 // Main Orchestrator Function
@@ -1711,6 +1730,37 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
         processing_bounds.max_bound_ += padding_vec;
     }
 
+    // === RAM-FIT PATH SELECTION ===
+    // Single decision: does the flat (dense) voxel array fit in a safe fraction of available RAM?
+    // If not (or if the user forced --out_of_core), use the out-of-core path. The in-process path
+    // always operates on a flat grid; the in-RAM sparse fallback has been removed.
+    // Dimensions match the VoxelGrid ctor: ceil(extent / voxel_width) per axis.
+    const Eigen::Vector3d extent = processing_bounds.max_bound_ - processing_bounds.min_bound_;
+    const Eigen::Matrix<int64_t, 3, 1> dims = (extent / params.voxel_size).array().ceil().cast<int64_t>();
+
+    // rayvoxel keeps voxels perfectly cubic (no rescaling to bounds): the grid's true max corner is
+    // snapped UP to the next multiple of voxel_size so the last voxels fully enclose their points.
+    // Report that voxel-aligned extent so it matches the .vox header (which uses the actual res).
+    {
+      const Eigen::Vector3d ub_extent = user_bounds.max_bound_ - user_bounds.min_bound_;
+      const Eigen::Matrix<int64_t, 3, 1> ub_dims = (ub_extent / params.voxel_size).array().ceil().cast<int64_t>();
+      const Eigen::Vector3d aligned_max = user_bounds.min_bound_ + ub_dims.cast<double>() * params.voxel_size;
+      std::cout << "Voxel grid is cubic at " << params.voxel_size << " m; max corner aligned to voxel size: ("
+                << aligned_max.x() << ", " << aligned_max.y() << ", " << aligned_max.z()
+                << ")  (requested max (" << user_bounds.max_bound_.x() << ", "
+                << user_bounds.max_bound_.y() << ", " << user_bounds.max_bound_.z() << "))" << std::endl;
+    }
+
+    const int64_t flat_cells = dims[0] * dims[1] * dims[2];
+    const size_t flat_bytes = static_cast<size_t>(flat_cells) * sizeof(VoxelGrid::Voxel);
+    const size_t avail_ram_bytes = ray::queryAvailableMemoryBytes();
+    const bool fits_flat = (flat_bytes <= avail_ram_bytes * 3 / 4);
+    const bool use_ooc_effective = params.use_ooc || !fits_flat;
+    std::cout << "Path selection: " << (use_ooc_effective ? "out-of-core" : "flat (in-memory)")
+              << "; flat grid = " << flat_bytes / (1024 * 1024) << " MB, available RAM = "
+              << avail_ram_bytes / (1024 * 1024) << " MB"
+              << (params.use_ooc ? " (--out_of_core forced)" : "") << std::endl;
+
     // Handle auto-detection of reservation size here. The point count was already gathered
     // by the combined pre-scan pass above (need_reserve_count mirrors that pass's trigger).
     size_t final_reserve_size = params.reserve_size;
@@ -1718,11 +1768,16 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
         final_reserve_size += pre_scan.point_count;
     }
     // For OOC, we never reserve in the final grid, as it's populated at the end.
-    if (params.use_ooc) { final_reserve_size = 0; }
+    if (use_ooc_effective) { final_reserve_size = 0; }
 
     std::unique_ptr<VoxelGrid> grid_ptr;
     try {
-        const size_t ram_budget_bytes = static_cast<size_t>(params.ram_budget_mb) * 1024ULL * 1024;
+        // In-process path: force flat allocation by giving the ctor a budget >= the flat size.
+        // OOC path: keep the user's per-grid RAM budget (sparse fallback is acceptable there).
+        const size_t user_budget_bytes = static_cast<size_t>(params.ram_budget_mb) * 1024 * 1024;
+        const size_t ram_budget_bytes = use_ooc_effective
+            ? user_budget_bytes
+            : std::max(flat_bytes, user_budget_bytes);
         grid_ptr = std::make_unique<VoxelGrid>(processing_bounds, params.voxel_size,
                                                ram_budget_bytes, final_reserve_size,
                                                params.apply_flat_top);
@@ -1739,21 +1794,78 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
         calculatePeaks(grid, params.cloud_name);
     }
 
-    // === STRATEGY SELECTION ===
-    // This is where we choose which processing strategy to use.
-    std::unique_ptr<ProcessingStrategy> strategy;
-    if (params.use_ooc) {
-        strategy = std::make_unique<OutOfCoreStrategy>(params.num_threads, params.ram_budget_mb);
+    // === TRAVERSAL ===
+    // ClassTable and VoxelLeafWoodTable are accumulated during the traversal pass.
+    ClassTable class_table;
+    VoxelLeafWoodTable voxel_lw;
+    // Exact PPL is supported on the flat (in-memory) path only; OOC falls back to the
+    // closed-form mean-field estimator in computeLambda("ppl").
+    const bool ppl_exact = !use_ooc_effective &&
+        (std::find(params.attenuation_methods.begin(), params.attenuation_methods.end(),
+                   std::string("ppl")) != params.attenuation_methods.end());
+    std::vector<PplHit> ppl_hits;
+    bool processing_success;
+    if (use_ooc_effective) {
+        processing_success = runOutOfCore(params.cloud_name, grid, params.num_threads, params.ram_budget_mb,
+                                          params.weighting_method, params.use_occlusion, params.apply_flat_top,
+                                          params.calc_beam_metrics, beam_diameter, beam_divergence, params.subvoxel_split, dtm_ptr.get(),
+                                          params.dtm_from_class, params.dtm_filter_distance,
+                                          class_table, voxel_lw,
+                                          params.leaf_classes_str, params.wood_classes_str, lambda1);
     } else {
-        strategy = std::make_unique<InProcessStrategy>(params.num_threads);
+        processing_success = runInProcess(params.cloud_name, grid, params.num_threads,
+                                          params.weighting_method, params.use_occlusion, params.apply_flat_top,
+                                          params.calc_beam_metrics, beam_diameter, beam_divergence, params.subvoxel_split, dtm_ptr.get(),
+                                          params.dtm_from_class, params.dtm_filter_distance,
+                                          class_table, voxel_lw,
+                                          params.leaf_classes_str, params.wood_classes_str, lambda1,
+                                          ppl_exact, &ppl_hits);
     }
 
-    bool processing_success = strategy->execute(params.cloud_name, grid, params.weighting_method, params.use_occlusion, params.apply_flat_top,
-                                                 params.calc_beam_metrics, beam_diameter, beam_divergence, params.subvoxel_split, dtm_ptr.get(),
-                                                 params.dtm_from_class, params.dtm_filter_distance, lambda1);
-
     if (!processing_success) {
-      return false; // Strategy failed, exit early.
+      return false; // Traversal failed, exit early.
+    }
+
+    // === OPTIONAL UNBOUND-RAY PASS ===
+    // Traverse a second cloud of unbound (miss) rays into the same grid, before any post-processing.
+    // Grid bounds are NOT recomputed — unbound rays clip naturally at the grid boundary via the
+    // existing walkGrid bounds check. Unbound rays produce no hits, so num_hits / IAD / class
+    // outputs are unaffected; only num_beams / path_length (and free-path) accumulate.
+    if (!params.unbound_file.empty()) {
+        // The second pass must accumulate (+=) into the already-populated grid. Only the flat
+        // in-process path accumulates; the OOC merge writes by assignment and would clobber the
+        // primary results, so the unbound pass is supported on the flat grid only.
+        if (!grid.isFlat()) {
+            std::cerr << "Warning: --unbound_file is only supported on the flat (in-memory) path; "
+                         "skipping unbound traversal for: " << params.unbound_file << std::endl;
+        } else {
+            std::cout << "Traversing unbound-ray file: " << params.unbound_file << std::endl;
+            // Throwaway accumulators — unbound rays produce no hits; classification is bound-file-only.
+            ClassTable unbound_class_table;
+            VoxelLeafWoodTable unbound_voxel_lw;
+            bool unbound_ok = runInProcess(params.unbound_file, grid, params.num_threads,
+                                           params.weighting_method, params.use_occlusion, params.apply_flat_top,
+                                           params.calc_beam_metrics, beam_diameter, beam_divergence, params.subvoxel_split, dtm_ptr.get(),
+                                           params.dtm_from_class, params.dtm_filter_distance,
+                                           unbound_class_table, unbound_voxel_lw,
+                                           params.leaf_classes_str, params.wood_classes_str, lambda1,
+                                           ppl_exact, &ppl_hits);
+            if (!unbound_ok) {
+                std::cerr << "Warning: --unbound_file traversal failed for: " << params.unbound_file << std::endl;
+                // Non-fatal — primary output is still valid.
+            }
+        }
+    }
+
+    // === EXACT PPL SOLVE ===
+    // Solve the per-voxel potential-path-length MLE from the intercepted-beam records gathered
+    // during traversal (bound + unbound passes). Results land in Voxel::ppl_lambda; the writer
+    // prefers it over the closed-form fallback. Records are freed immediately after.
+    if (ppl_exact) {
+        std::cout << "Solving exact PPL attenuation (" << ppl_hits.size()
+                  << " intercepted records)..." << std::endl;
+        solvePplExact(grid, ppl_hits);
+        std::vector<PplHit>().swap(ppl_hits);
     }
 
     // === POST-PROCESSING AND OUTPUT (Same for all strategies) ===
@@ -1762,13 +1874,11 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
         applyNeighbourPriors(grid, params.neighbour_prior_min_rays);
     }
 
-    // Build the classification table in a separate O(N_points) pass (no ray walking).
-    // When inclination distributions are active, the class and IAD tables share an
-    // identical I/O scan, so build them together in a single readLas pass.
-    ClassTable class_table;
+    // The classification table and per-voxel leaf/wood counts are already populated by the
+    // strategy's traversal pass. Inclination angle distributions still require their own
+    // O(N_points) KNN pass when requested.
     PerTreeIadMap per_tree_iad;
     PredominantTreeTable predominant_tree;
-    VoxelLeafWoodTable voxel_lw;
     if (params.calc_inclination_dist) {
       {
         static bool empty_classes_warned = false;
@@ -1778,22 +1888,9 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
           empty_classes_warned = true;
         }
       }
-      std::cout << "Building classification table and inclination angle distributions..." << std::endl;
-      buildClassAndIadTable(params.cloud_name, grid, params, dtm_ptr.get(), class_table, per_tree_iad, predominant_tree, voxel_lw);
-    } else {
-      {
-        static bool field_no_iad_warned = false;
-        if (!field_no_iad_warned &&
-            (params.leaf_classes_str.find(':') != std::string::npos ||
-             params.wood_classes_str.find(':') != std::string::npos)) {
-          std::cerr << "Warning: a class field prefix ('field:codes') was given but --inclination_dist "
-                       "is off; the field-aware leaf/wood path is inactive, so leaf/wood counts use the "
-                       "standard Classification byte and may be wrong." << std::endl;
-          field_no_iad_warned = true;
-        }
-      }
-      std::cout << "Building classification table..." << std::endl;
-      class_table = buildClassTable(params.cloud_name, grid, params.dtm_from_class, dtm_ptr.get(), params.dtm_filter_distance);
+      std::cout << "Building inclination angle distributions..." << std::endl;
+      buildClassAndIadTable(params.cloud_name, grid, params, dtm_ptr.get(),
+                            per_tree_iad, predominant_tree);
     }
 
     std::cout << "Calculating output metrics..." << std::endl;

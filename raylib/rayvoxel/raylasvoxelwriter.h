@@ -34,8 +34,7 @@ namespace ray
     int32_t num_hits = 0;
     int32_t num_beams = 0;
     float num_beams_weighted = 0.0f;
-    float path_length_raw = 0.0f;
-    float path_length = 0.0f;
+    float path_length = 0.0f;  // potential path length: Σ full voxel chord (AMAPVox lgTotal)
     float free_path_length = 0.0f;
     float effective_free_path_length = 0.0f;
     int32_t num_rays_occluded = 0;
@@ -45,6 +44,10 @@ namespace ray
     int32_t num_miss_rays = 0;
     int32_t num_hit_leaf = 0;
     int32_t num_hit_wood = 0;
+    int32_t num_hit_plant = 0;
+    float free_path_length_plant = 0.0f;
+    float free_path_length_leaf  = 0.0f;
+    float free_path_length_wood  = 0.0f;
     std::array<float, 256> classification_hits{};
 
     // Calculated Metrics

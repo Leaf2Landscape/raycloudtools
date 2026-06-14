@@ -22,6 +22,8 @@ namespace ray
   {
     // --- Input/Grid Parameters ---
     std::string cloud_name;
+    // Optional second cloud of unbound (miss) rays, traversed after the primary file. Empty = none.
+    std::string unbound_file;
     double voxel_size = 0.1;
     Eigen::Vector3d grid_bounds_min = Eigen::Vector3d::Zero();
     Eigen::Vector3d grid_bounds_max = Eigen::Vector3d::Zero();

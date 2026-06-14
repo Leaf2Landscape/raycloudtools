@@ -35,6 +35,7 @@ namespace ray
     int32_t beam_id = -1;
     uint8_t bound = 1;  ///< 1 = bound (real return), 0 = unbound (miss / floating far end)
     uint8_t intensity = 0;  ///< per-point intensity (alpha channel); 0 for unbound rays
+    uint8_t foliage_class = 0; ///< 0=excluded, 1=plant (class≥3), 2=leaf, 3=wood
   };
 
   constexpr uint8_t kMaxReturnsPerBeam = 16;
@@ -84,6 +85,15 @@ namespace ray
     /// @brief Clears the internal map, ready for the next chunk of work.
     void clear() { sparse_voxels_.clear(); }
 
+    ClassTable    extractClassTable() { return std::move(thread_class_table_); }
+    VoxelLeafWoodTable extractVoxelLW()    { return std::move(thread_voxel_lw_); }
+
+    /// @brief Enable the exact-PPL pass: per echo, record (voxel, full_chord, echo_section)
+    ///        into a thread-local buffer; per voxel, accumulate the miss term into
+    ///        Voxel::ppl_miss_wL. Gated on "ppl" ∈ attenuation_methods. Flat-array path only.
+    void enablePpl() { ppl_enabled_ = true; }
+    std::vector<PplHit> extractPplHits() { return std::move(ppl_hits_); }
+
     /// @brief Enables direct flat-array write mode. When set, walkGrid and
     ///        hit-recording write directly into the shared flat array via
     ///        atomic adds instead of accumulating into the per-thread map.
@@ -107,6 +117,12 @@ namespace ray
     /// @brief Amanatides & Woo traversal over a local N*N*N subvoxel grid.
     void walkSubGrid(const Eigen::Vector3d& local_start, const Eigen::Vector3d& local_end, int split, uint64_t& bitmap);
 
+    /// @brief Exact-PPL accumulation for one beam: walks origin→farthest return, emitting an
+    ///        intercepted record per echo (potential path length = full voxel chord) and a
+    ///        per-voxel miss contribution (exiting beam fraction × beam section × full chord).
+    void accumulatePpl(const BeamData& beam, const std::vector<const PointData*>& sorted,
+                       const float* echo_w, int N);
+
     // --- Configuration ---
     const Cuboid& bounds_;
     double voxel_width_;
@@ -122,6 +138,11 @@ namespace ray
     int64_t row_stride_;
     const HeightField* dtm_; // Pointer to the DTM for ground clipping
     double lambda1_ = 0.0;   // Stage 3 effective free path coefficient: λ₁ = 0.25·avg_leaf_area / voxel_size³
+    uint8_t current_seg_foliage_class_ = 0;
+    ClassTable thread_class_table_;
+    VoxelLeafWoodTable thread_voxel_lw_;
+    bool ppl_enabled_ = false;
+    std::vector<PplHit> ppl_hits_;   // thread-local intercepted-beam records for the exact PPL solve
 
     // --- Per-ray state ---
     Eigen::Vector3d current_ray_vox_start_;

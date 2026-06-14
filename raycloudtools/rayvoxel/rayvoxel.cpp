@@ -29,7 +29,8 @@ void usage()
   std::cout << "Input must be a raycloudtools .las/.laz ray cloud (with sx,sy,sz ray-start extra bytes)." << std::endl;
   std::cout << "The distance_to_sensor used for beam metrics is computed as the ray length (end - start).norm()." << std::endl << std::endl;
   std::cout << "Required Arguments:" << std::endl;
-  std::cout << "  <cloud_file>                    Input ray cloud (.las, .laz)." << std::endl << std::endl;
+  std::cout << "  <cloud_file>                    Input ray cloud (.las, .laz)." << std::endl;
+  std::cout << "  --unbound_file <cloud>          Optional second ray cloud of unbound (miss) rays, traversed after the primary file (no hits added)." << std::endl << std::endl;
   std::cout << "Processing Strategy:" << std::endl;
   std::cout << "  --parallel, -p                  Enable parallel in-memory processing. (Default: on)" << std::endl;
   std::cout << "  --no_parallel                   Disable parallel processing and run single-threaded." << std::endl;
@@ -95,6 +96,8 @@ int main_function(int argc, char *argv[])
   OptionalKeyValueArgument reserve_size("reserve_size", '\0', &reserve_size_val);
 
   // General Options
+  FileArgument unbound_file_val;
+  OptionalKeyValueArgument unbound_file("unbound_file", '\0', &unbound_file_val);
   DoubleArgument voxel_size_val(0.001, 1000.0, 0.1);
   OptionalKeyValueArgument voxel_size("voxel_size", 's', &voxel_size_val);
   Vector3dArgument grid_bounds_min_val;
@@ -166,7 +169,7 @@ int main_function(int argc, char *argv[])
   std::vector<FixedArgument *> fixed_args = { &cloud_file };
   std::vector<OptionalArgument *> optional_args = {
       &parallel_flag, &no_parallel_flag, &num_threads, &out_of_core_flag, &ram_budget_mb, &reserve_size,
-      &voxel_size, &grid_bounds_min, &grid_bounds_max, &output_format, &weighting_method,
+      &unbound_file, &voxel_size, &grid_bounds_min, &grid_bounds_max, &output_format, &weighting_method,
       &occlusion, &write_amapvox_also, &write_empty, &write_filled,
       &dtm_file, &dtm_from_class, &dtm_cell_size, &dtm_filter_distance,
       &flat_top_compensation, &neighbour_priors,
@@ -241,6 +244,9 @@ int main_function(int argc, char *argv[])
   // library function and makes the code much cleaner.
   VoxelizationParameters params;
   params.cloud_name = cloud_file.name();
+  if (unbound_file.isSet()) {
+    params.unbound_file = unbound_file_val.name();
+  }
   params.voxel_size = voxel_size_val.value();
   if (grid_bounds_min.isSet()) {
     params.grid_bounds_min = grid_bounds_min_val.value();

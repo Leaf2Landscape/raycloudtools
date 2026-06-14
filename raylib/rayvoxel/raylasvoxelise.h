@@ -27,9 +27,7 @@ namespace ray
   // Forward declarations
   class VoxelProcessor;
   class VoxelGrid;
-  class ProcessingStrategy;
   class ShardMerger;       // Forward-declare for friendship
-  class OutOfCoreStrategy; // Forward-declare for friendship
   void calculatePeaks(VoxelGrid& grid, const std::string& file_name);
   void applyNeighbourPriors(VoxelGrid& grid, int min_rays_for_density);
 
@@ -63,14 +61,22 @@ namespace ray
     }
   };
 
+  // One intercepted-beam record for the exact PPL (potential-path-length) estimator.
+  // Emitted per echo during the PPL pass (gated on "ppl" ∈ attenuation_methods), collected
+  // per-thread and solved in a post-traversal pass. Misses are NOT stored here — their linear
+  // contribution accumulates into Voxel::ppl_miss_wL.
+  struct PplHit {
+    int64_t voxel_index;  // flat grid index i + j*dimX + k*dimX*dimY
+    float L;              // full voxel chord (potential path length) for this beam
+    float bsIn;           // entering beam section of the intercepted fraction (echo_w × π·r²)
+  };
+
   /// @class VoxelGrid
   /// @brief A data container for a sparse voxel grid.
   class RAYLIB_EXPORT VoxelGrid
   {
-    // Grant access to private members for strategies and post-processing.
-    friend class InProcessStrategy;
+    // Grant access to private members for the shard merger and post-processing.
     friend class ShardMerger;       // Grant friendship to the Shard Merger helper class.
-    friend class OutOfCoreStrategy; // Grant friendship to the OOC strategy.
     friend void calculatePeaks(VoxelGrid& grid, const std::string& file_name);
     friend void applyNeighbourPriors(VoxelGrid& grid, int min_rays_for_density);
 
@@ -94,10 +100,12 @@ namespace ray
       int32_t num_hits = 0;               // Count of echo returns landing in this voxel (nbEchos).
       int32_t num_beams = 0;     // Count of beams traversing this voxel (nbSampling).
       float num_beams_weighted = 0.0f;    // Weighted beam traversal sum: Σ beam_weight per traversal; used for attenuation.
-      float path_length_raw = 0.0f;  // Unweighted path length sum: Σ segment_length across all observed traversals.
-      float path_length_sq_raw = 0.0f;  // Unweighted sum of squared path lengths: Σ segment_length²; used for sdLength.
-      float path_length = 0.0f;  // Weighted path length sum: Σ (segment_length × beam_weight); used for PAD.
+      float path_length = 0.0f;  // Potential path length: Σ full voxel chord (entry→exit) across all observed traversals (AMAPVox lgTotal).
+      float path_length_sq_raw = 0.0f;  // Sum of squared full chords: Σ chord²; used for sdLength.
       float free_path_length = 0.0f;// Stage 1 free-path: Σ (seg_weight × free_path); free_path = entry→hit for hits, full chord for miss/unbound.
+      float free_path_length_plant = 0.0f;
+      float free_path_length_leaf  = 0.0f;
+      float free_path_length_wood  = 0.0f;
       float effective_free_path_length = 0.0f;  // Stage 3: Σ(seg_w × eff(free_path)), eff(z)=−ln(1−λ₁z)/λ₁
       int32_t num_rays_occluded = 0;       // Count of occluded rays passing through.
       float path_length_occluded = 0.0f;  // Sum of path lengths of occluded rays (unweighted).
@@ -110,6 +118,9 @@ namespace ray
       float bs_potential = 0.0f;          // Stage 2 (beam metrics): Σ (seg_weight × π·r²) for exiting (non-hit) traversals.
       float bs_free_path = 0.0f;          // Stage 2 (beam metrics): Σ (seg_weight × π·r² × free_path); beam-area-weighted free-path.
       float bs_effective_free_path = 0.0f;  // Stage 3: Σ(π·r² × seg_w × eff(free_path))
+      float bs_eff_free_path_hits = 0.0f;   // FPL bias-correction accumulator (AMAPVox attenuation_FPL_biasCorrection): Σ over hits of (π·r² × weight × eff(entry→hit)).
+      float ppl_miss_wL = 0.0f;             // PPL miss term: Σ over exiting beams of (beamSection × full_chord). RHS of the exact PPL MLE.
+      float ppl_lambda = -1.0f;             // PPL exact-MLE result, filled by the post-traversal solve. -1 = unsolved → writer falls back to computeLambda("ppl"). Transient: not merged, not serialized.
       float sum_hit_delta  = 0.0f;        // PPL: unweighted full_chord for hit voxels (from hit-recording loop).
       float sum_miss_delta = 0.0f;        // PPL: unweighted full_chord for traversing (miss) voxels (mechanism 1).
       int32_t num_unbound_rays = 0;      // count of unbound (miss) rays traversing this voxel
@@ -233,10 +244,12 @@ namespace ray
     num_hits += other.num_hits;
     num_beams += other.num_beams;
     num_beams_weighted += other.num_beams_weighted;
-    path_length_raw += other.path_length_raw;
-    path_length_sq_raw += other.path_length_sq_raw;
     path_length += other.path_length;
+    path_length_sq_raw += other.path_length_sq_raw;
     free_path_length += other.free_path_length;
+    free_path_length_plant += other.free_path_length_plant;
+    free_path_length_leaf  += other.free_path_length_leaf;
+    free_path_length_wood  += other.free_path_length_wood;
     effective_free_path_length += other.effective_free_path_length;
     num_rays_occluded += other.num_rays_occluded;
     path_length_occluded += other.path_length_occluded;
@@ -249,6 +262,8 @@ namespace ray
     bs_potential += other.bs_potential;
     bs_free_path += other.bs_free_path;
     bs_effective_free_path += other.bs_effective_free_path;
+    bs_eff_free_path_hits += other.bs_eff_free_path_hits;
+    ppl_miss_wL += other.ppl_miss_wL;   // ppl_lambda is a post-merge result, intentionally not summed
     sum_hit_delta += other.sum_hit_delta;
     sum_miss_delta += other.sum_miss_delta;
     num_unbound_rays += other.num_unbound_rays;
@@ -266,10 +281,12 @@ namespace ray
     v.num_hits = static_cast<int32_t>(num_hits * scale);
     v.num_beams = static_cast<int32_t>(num_beams * scale);
     v.num_beams_weighted = static_cast<float>(num_beams_weighted * scale);
-    v.path_length_raw = static_cast<float>(path_length_raw * scale);
-    v.path_length_sq_raw = static_cast<float>(path_length_sq_raw * scale);
     v.path_length = static_cast<float>(path_length * scale);
+    v.path_length_sq_raw = static_cast<float>(path_length_sq_raw * scale);
     v.free_path_length = static_cast<float>(free_path_length * scale);
+    v.free_path_length_plant = static_cast<float>(free_path_length_plant * scale);
+    v.free_path_length_leaf  = static_cast<float>(free_path_length_leaf  * scale);
+    v.free_path_length_wood  = static_cast<float>(free_path_length_wood  * scale);
     v.effective_free_path_length = static_cast<float>(effective_free_path_length * scale);
     v.num_rays_occluded = static_cast<int32_t>(num_rays_occluded * scale);
     v.path_length_occluded = static_cast<float>(path_length_occluded * scale);
@@ -282,6 +299,8 @@ namespace ray
     v.bs_potential = static_cast<float>(bs_potential * scale);
     v.bs_free_path = static_cast<float>(bs_free_path * scale);
     v.bs_effective_free_path = static_cast<float>(bs_effective_free_path * scale);
+    v.bs_eff_free_path_hits = static_cast<float>(bs_eff_free_path_hits * scale);
+    v.ppl_miss_wL = static_cast<float>(ppl_miss_wL * scale);
     v.sum_hit_delta = static_cast<float>(sum_hit_delta * scale);
     v.sum_miss_delta = static_cast<float>(sum_miss_delta * scale);
     v.num_unbound_rays = static_cast<int32_t>(num_unbound_rays * scale);
