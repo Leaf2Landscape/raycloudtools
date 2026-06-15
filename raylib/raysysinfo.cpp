@@ -12,6 +12,10 @@
 #include <string>
 #include <thread>
 
+#if defined(__linux__)
+#include <sched.h>  // sched_getaffinity / CPU_COUNT: cores this process may actually run on
+#endif
+
 namespace ray
 {
 size_t queryAvailableMemoryBytes()
@@ -112,6 +116,23 @@ size_t computeAvailableThreads()
   {
     try { size_t n = std::stoull(s); if (n > 0) return n; } catch (...) {}
   }
+#if defined(__linux__)
+  // Honour the CPU affinity mask actually imposed on this process. SLURM (via cgroup cpuset),
+  // containers, and taskset all restrict the runnable cores without setting any env var, and
+  // std::thread::hardware_concurrency() reports the whole node regardless — leading to severe
+  // oversubscription. sched_getaffinity() reflects the real binding (this is what `nproc` uses).
+  {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (sched_getaffinity(0, sizeof(set), &set) == 0)
+    {
+      const int n = CPU_COUNT(&set);
+      if (n > 0)
+        return static_cast<size_t>(n);
+    }
+    // EINVAL here means >CPU_SETSIZE (1024) cores; fall through to hardware_concurrency().
+  }
+#endif
   return static_cast<size_t>(std::thread::hardware_concurrency());
 }
 
