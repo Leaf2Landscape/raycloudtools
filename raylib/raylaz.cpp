@@ -5,6 +5,7 @@
 // Author: Thomas Lowe
 #include "raylaz.h"
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -610,66 +611,197 @@ bool readLas(const std::string &file_name,
         if (readLazChunkTable(file_name, laz_chunk_size, number_of_points, pt_offset, chunks))
         {
           const size_t num_laz_chunks = chunks.size();
-          // Read each chunk's compressed bytes sequentially. The compressed length of chunk c is the
-          // gap to the next chunk's offset; the last chunk runs to end-of-file.
-          std::vector<std::vector<char>> chunk_bufs(num_laz_chunks);
-          {
-            std::ifstream cf(file_name, std::ios::binary);
-            cf.seekg(0, std::ios::end);
-            const uint64_t file_size = static_cast<uint64_t>(cf.tellg());
-            for (size_t c = 0; c < num_laz_chunks; ++c)
-            {
-              const uint64_t next_offset =
-                (c + 1 < num_laz_chunks) ? chunks[c + 1].offset : file_size;
-              const size_t comp_len = static_cast<size_t>(next_offset - chunks[c].offset);
-              chunk_bufs[c].resize(comp_len);
-              cf.seekg(static_cast<std::streamoff>(chunks[c].offset));
-              cf.read(chunk_bufs[c].data(), static_cast<std::streamsize>(comp_len));
-            }
-          }
 
-          // Per-chunk starting point index into the index-addressed output buffers.
+          // Per-chunk starting point index (prefix sum of per-chunk point counts).
           std::vector<uint64_t> chunk_start(num_laz_chunks + 1, 0);
           for (size_t c = 0; c < num_laz_chunks; ++c)
             chunk_start[c + 1] = chunk_start[c] + chunks[c].count;
 
-          setup_indexed_buffers();
-          size_t bounded_count = 0;
+          // Which optional outputs are active for this file (same predicates as setup_indexed_buffers).
+          const bool tree_ok =
+            tree_ids_out && ctx.is_raycloud && ctx.tree_id_dtype != 0 &&
+            ctx.extra_bytes_total >= ctx.tree_id_offset + kExtraTypeSize[ctx.tree_id_dtype];
+          const bool stem_ok = stem_ids_out && ctx.is_raycloud && ctx.tree_id_dtype != 0;
+          const bool beam_ok =
+            beam_ids_out && ctx.is_raycloud && ctx.beam_id_dtype != 0 &&
+            ctx.extra_bytes_total >= ctx.beam_id_offset + kExtraTypeSize[ctx.beam_id_dtype];
+          const uint16_t pstride = static_cast<uint16_t>(10 + local_orig_extra);
 
-          // LAZ chunks are uniform size (50 k pts by default), so static scheduling minimises
-          // OMP overhead vs dynamic. Per-thread record/scratch buffers are allocated once outside
-          // the inner point loop to avoid repeated heap allocation per chunk.
-#pragma omp parallel reduction(+ : bounded_count)
+          // Wave size, in LAZ chunks. The previous fast path decoded the *entire* cloud into RAM and
+          // then drained it through apply() on a single thread, so peak memory was O(all points) and a
+          // long serial flush tail capped the speed-up. Instead, process the file in bounded "waves":
+          // a background decoder thread reads + parallel-decompresses wave N+1 while the main thread
+          // drains wave N through apply(). Peak memory is O(one wave); the serial drain overlaps the
+          // parallel decode.
+          //
+          // Wave size adapts to the core count. The per-wave OMP fork/join + per-thread scratch cost
+          // scales with the thread count T, but sizing each wave to ~kChunksPerThread*T chunks makes
+          // the wave count fall as 1/T, so that total overhead stays ~constant in T. Two clamps keep
+          // the extremes sane: a memory ceiling (kMaxWavePoints) bounds peak RAM no matter how large T
+          // or the file is, and capping at num_laz_chunks collapses a small file to a single wave
+          // (which is cheap anyway) rather than starving cores chasing overlap that doesn't pay off.
+          // Override: RAYLAS_WAVE_POINTS=N forces N points/wave; =0 forces a single wave (legacy shape).
+          const size_t threads = std::max<size_t>(1, computeAvailableThreads());
+          const bool variable_chunks = (laz_chunk_size == lazperf::VariableChunkSize || laz_chunk_size == 0);
+          const size_t eff_chunk = variable_chunks ? 50000u : laz_chunk_size;  // assumed pts/chunk for sizing
+          // These two constants govern the parallelism-vs-memory trade-off. They are fixed for now;
+          // if finer control is ever wanted they could be exposed as env overrides (alongside
+          // RAYLAS_WAVE_POINTS) or CLI/config options — e.g. a memory budget that derives kMaxWavePoints.
+          constexpr size_t kChunksPerThread = 4;     // chunks per core per wave: enough for load balance
+          constexpr size_t kMaxWavePoints = 8u * 1000u * 1000u;  // hard peak-memory ceiling per wave
+
+          bool have_override = false;
+          size_t override_points = 0;
+          if (const char *wp = getenv("RAYLAS_WAVE_POINTS"))
           {
-            std::vector<char> record(ctx.point_record_length);
-            std::vector<uint8_t> extra_scratch(ctx.extra_bytes_total ? ctx.extra_bytes_total : 1);
-            laszip_point_struct pt;
-            std::memset(&pt, 0, sizeof(pt));
-#pragma omp for schedule(static)
-            for (laszip_I64 c = 0; c < static_cast<laszip_I64>(num_laz_chunks); ++c)
-            {
-              const size_t cc = static_cast<size_t>(c);
-              lazperf::reader::chunk_decompressor decomp(laz_format, laz_eb_count,
-                                                         chunk_bufs[cc].data());
-              const size_t base_idx = static_cast<size_t>(chunk_start[cc]);
-              for (size_t j = 0; j < static_cast<size_t>(chunks[cc].count); ++j)
-              {
-                decomp.decompress(record.data());
-                fillPointFromRecord(reinterpret_cast<const uint8_t *>(record.data()), ctx, pt,
-                                    extra_scratch.data());
-                int32_t xi = pt.X, yi = pt.Y, zi = pt.Z;
-                Eigen::Vector3d position(xi * ctx.scale[0] + ctx.offset[0],
-                                         yi * ctx.scale[1] + ctx.offset[1],
-                                         zi * ctx.scale[2] + ctx.offset[2]);
-                uint8_t bounded;
-                decodePointRecordIndexed(&pt, ctx, position, base_idx + j, buf, bounded);
-                bounded_count += bounded;
-              }
-            }
+            char *endp = nullptr;
+            const unsigned long long v = std::strtoull(wp, &endp, 10);
+            if (endp != wp) { have_override = true; override_points = static_cast<size_t>(v); }
           }
 
-          num_bounded = bounded_count;
-          flush_indexed();
+          size_t chunks_per_wave;
+          if (have_override)
+            chunks_per_wave = (override_points == 0)
+                                ? (num_laz_chunks ? num_laz_chunks : 1)            // single wave
+                                : std::max<size_t>(1, (override_points + eff_chunk - 1) / eff_chunk);
+          else
+          {
+            const size_t target = std::max<size_t>(1, kChunksPerThread * threads);  // saturate cores
+            const size_t mem_cap = std::max<size_t>(1, kMaxWavePoints / eff_chunk);  // bound peak memory
+            chunks_per_wave = std::min(target, mem_cap);
+          }
+          chunks_per_wave = std::max<size_t>(1, std::min(chunks_per_wave, num_laz_chunks));
+          if (getenv("RAYLAS_WAVE_DEBUG"))
+            std::cerr << "[laz-wave] threads=" << threads << " chunks/wave=" << chunks_per_wave
+                      << " num_chunks=" << num_laz_chunks
+                      << " waves=" << ((num_laz_chunks + chunks_per_wave - 1) / chunks_per_wave) << std::endl;
+
+          // Full-length ID/passthrough results are appended one wave at a time, in file order.
+          if (tree_ok) tree_ids_out->clear();
+          if (stem_ok) stem_ids_out->clear();
+          if (beam_ok) beam_ids_out->clear();
+
+          // One wave's apply-ready output, handed from the decoder thread to the main thread. apply()
+          // and all external-state mutation run only on the main thread, as the callback contract requires.
+          struct WaveBuffer
+          {
+            std::vector<Eigen::Vector3d> starts, ends;
+            std::vector<double> times;
+            std::vector<RGBA> colours;
+            std::vector<int32_t> tree_ids, stem_ids, beam_ids;
+            std::vector<uint8_t> passthrough;
+            size_t bounded = 0;
+          };
+          ThreadSafeQueue<std::shared_ptr<WaveBuffer>> queue(2);  // decode wave N+1 while applying wave N
+
+          std::thread decoder([&]() {
+#ifdef _OPENMP
+            omp_set_num_threads(static_cast<int>(threads));
+#endif
+            std::ifstream cf(file_name, std::ios::binary);
+            cf.seekg(0, std::ios::end);
+            const uint64_t file_size = static_cast<uint64_t>(cf.tellg());
+
+            for (size_t c0 = 0; c0 < num_laz_chunks; c0 += chunks_per_wave)
+            {
+              const size_t c1 = std::min(c0 + chunks_per_wave, num_laz_chunks);
+              const size_t p0 = static_cast<size_t>(chunk_start[c0]);
+              const size_t n = static_cast<size_t>(chunk_start[c1]) - p0;
+
+              // Read this wave's compressed bytes (cheap sequential I/O), one buffer per chunk.
+              std::vector<std::vector<char>> comp(c1 - c0);
+              for (size_t c = c0; c < c1; ++c)
+              {
+                const uint64_t next_offset = (c + 1 < num_laz_chunks) ? chunks[c + 1].offset : file_size;
+                const size_t comp_len = static_cast<size_t>(next_offset - chunks[c].offset);
+                comp[c - c0].resize(comp_len);
+                cf.seekg(static_cast<std::streamoff>(chunks[c].offset));
+                cf.read(comp[c - c0].data(), static_cast<std::streamsize>(comp_len));
+              }
+
+              auto wb = std::make_shared<WaveBuffer>();
+              wb->starts.resize(n);
+              wb->ends.resize(n);
+              wb->times.resize(n);
+              wb->colours.resize(using_colour ? n : 0);
+              std::vector<uint8_t> intensities(n);
+              if (tree_ok) wb->tree_ids.resize(n);
+              if (stem_ok) wb->stem_ids.resize(n);
+              if (beam_ok) wb->beam_ids.resize(n);
+              if (passthrough_out) wb->passthrough.resize(static_cast<size_t>(pstride) * n);
+
+              // Wave-local index-addressed buffers: decode writes slot (global index - p0).
+              IndexedDecodeBuffers wbuf;
+              wbuf.starts = wb->starts.data();
+              wbuf.ends = wb->ends.data();
+              wbuf.times = wb->times.data();
+              wbuf.colours = using_colour ? wb->colours.data() : nullptr;
+              wbuf.intensities = intensities.data();
+              if (passthrough_out) { wbuf.passthrough = wb->passthrough.data(); wbuf.passthrough_stride = pstride; }
+              if (tree_ok) { wbuf.tree_ids = wb->tree_ids.data(); wbuf.tree_active = true; }
+              if (stem_ok) { wbuf.stem_ids = wb->stem_ids.data(); wbuf.stem_active = true; }
+              if (beam_ok) { wbuf.beam_ids = wb->beam_ids.data(); wbuf.beam_active = true; }
+
+              // Decode this wave's chunks in parallel — each LAZ chunk is independently decompressible.
+              // Per-thread record/scratch buffers are allocated once outside the inner point loop.
+              size_t bounded_count = 0;
+#pragma omp parallel reduction(+ : bounded_count)
+              {
+                std::vector<char> record(ctx.point_record_length);
+                std::vector<uint8_t> extra_scratch(ctx.extra_bytes_total ? ctx.extra_bytes_total : 1);
+                laszip_point_struct pt;
+                std::memset(&pt, 0, sizeof(pt));
+#pragma omp for schedule(static)
+                for (laszip_I64 c = static_cast<laszip_I64>(c0); c < static_cast<laszip_I64>(c1); ++c)
+                {
+                  const size_t cc = static_cast<size_t>(c);
+                  lazperf::reader::chunk_decompressor decomp(laz_format, laz_eb_count, comp[cc - c0].data());
+                  const size_t local_base = static_cast<size_t>(chunk_start[cc]) - p0;
+                  for (size_t j = 0; j < static_cast<size_t>(chunks[cc].count); ++j)
+                  {
+                    decomp.decompress(record.data());
+                    fillPointFromRecord(reinterpret_cast<const uint8_t *>(record.data()), ctx, pt,
+                                        extra_scratch.data());
+                    int32_t xi = pt.X, yi = pt.Y, zi = pt.Z;
+                    Eigen::Vector3d position(xi * ctx.scale[0] + ctx.offset[0],
+                                             yi * ctx.scale[1] + ctx.offset[1],
+                                             zi * ctx.scale[2] + ctx.offset[2]);
+                    uint8_t bounded;
+                    decodePointRecordIndexed(&pt, ctx, position, local_base + j, wbuf, bounded);
+                    bounded_count += bounded;
+                  }
+                }
+              }
+              wb->bounded = bounded_count;
+
+              // Colour assembly (identical to the sequential path): time-derived fallback when the
+              // file has no RGB, then alpha carries the per-point intensity.
+              if (!using_colour)
+                colourByTime(wb->times, wb->colours);
+              for (size_t j = 0; j < wb->colours.size(); ++j)
+                wb->colours[j].alpha = intensities[j];
+
+              queue.push(std::move(wb));
+            }
+            queue.notify_done();
+          });
+
+          // Main thread: drain waves in order, appending each wave's results before invoking apply().
+          num_bounded = 0;
+          std::shared_ptr<WaveBuffer> wb;
+          while (queue.pop(wb))
+          {
+            if (tree_ok) tree_ids_out->insert(tree_ids_out->end(), wb->tree_ids.begin(), wb->tree_ids.end());
+            if (stem_ok) stem_ids_out->insert(stem_ids_out->end(), wb->stem_ids.begin(), wb->stem_ids.end());
+            if (beam_ok) beam_ids_out->insert(beam_ids_out->end(), wb->beam_ids.begin(), wb->beam_ids.end());
+            if (passthrough_out)
+              passthrough_out->insert(passthrough_out->end(), wb->passthrough.begin(), wb->passthrough.end());
+            num_bounded += wb->bounded;
+            apply(wb->starts, wb->ends, wb->times, wb->colours);
+            progress.increment();
+            wb.reset();
+          }
+          decoder.join();
           fast_path_done = true;
         }
       }
