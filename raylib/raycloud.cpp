@@ -515,6 +515,8 @@ void Cloud::addRay(const Cloud &other_cloud, size_t index)
   colours.push_back(other_cloud.colours[index]);
   if (!other_cloud.tree_ids.empty())
     tree_ids.push_back(other_cloud.tree_ids[index]);
+  if (!other_cloud.stem_ids.empty())
+    stem_ids.push_back(other_cloud.stem_ids[index]);
   const uint16_t stride = other_cloud.extra_bytes_size;
   if (other_cloud.passthrough.size() >= (index + 1) * stride)
   {

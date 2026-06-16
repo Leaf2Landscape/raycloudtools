@@ -27,19 +27,23 @@ bool split(const std::string &file_name, const std::string &in_name, const std::
   if (!reader.begin(file_name))
     return false;
   std::vector<uint8_t> extra_bytes_vlr = reader.header().sensorExtraVlr();
+  const bool has_tree = reader.header().has("tree_id");
+  const bool has_stem = reader.header().has("stem_id");
 
   Cloud cloud_buffer;
   CloudWriter in_writer, out_writer;
-  if (!in_writer.begin(in_name, extra_bytes_vlr))
+  if (!in_writer.begin(in_name, extra_bytes_vlr, false, has_tree, has_stem))
     return false;
-  if (!out_writer.begin(out_name, extra_bytes_vlr))
+  if (!out_writer.begin(out_name, extra_bytes_vlr, false, has_tree, has_stem))
     return false;
   Cloud in_chunk, out_chunk;
 
   std::vector<uint8_t> passthrough_buf;
+  std::vector<int32_t> tree_ids_buf, stem_ids_buf;
 
   // Move each ray into either the in_chunk or out_chunk, depending on the condition is_outside.
-  // Passthrough (extra sensor bytes) is routed per-point via Cloud::addRay(const Cloud&, size_t).
+  // Passthrough (extra sensor bytes) and per-point tree_id/stem_id labels are routed per-point via
+  // Cloud::addRay(const Cloud&, size_t).
   auto per_chunk = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
                        std::vector<double> &times, std::vector<RGBA> &colours) {
     cloud_buffer.starts  = starts;
@@ -53,6 +57,8 @@ bool split(const std::string &file_name, const std::string &in_name, const std::
       cloud_buffer.extra_bytes_size = static_cast<uint16_t>(cloud_buffer.passthrough.size() / starts.size());
       cloud_buffer.extra_bytes_vlr  = extra_bytes_vlr;
     }
+    if (!tree_ids_buf.empty()) { cloud_buffer.tree_ids = std::move(tree_ids_buf); tree_ids_buf.clear(); }
+    if (!stem_ids_buf.empty()) { cloud_buffer.stem_ids = std::move(stem_ids_buf); stem_ids_buf.clear(); }
 
     for (int i = 0; i < (int)cloud_buffer.ends.size(); i++)
     {
@@ -64,10 +70,13 @@ bool split(const std::string &file_name, const std::string &in_name, const std::
     in_chunk.clear();
     out_chunk.clear();
     cloud_buffer.passthrough.clear();
+    cloud_buffer.tree_ids.clear();
+    cloud_buffer.stem_ids.clear();
   };
 
   size_t num_bounded;
-  bool res = reader.read(per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
+  bool res = reader.read(per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), &tree_ids_buf, &passthrough_buf,
+                         &stem_ids_buf);
   if (!res)
     return false;
   in_writer.end();
@@ -83,16 +92,21 @@ bool splitPlane(const std::string &file_name, const std::string &in_name, const 
   if (!reader.begin(file_name))
     return false;
   std::vector<uint8_t> extra_bytes_vlr = reader.header().sensorExtraVlr();
+  const bool has_tree = reader.header().has("tree_id");
+  const bool has_stem = reader.header().has("stem_id");
 
   CloudWriter inside_writer, outside_writer;
-  if (!inside_writer.begin(in_name, extra_bytes_vlr))
+  if (!inside_writer.begin(in_name, extra_bytes_vlr, false, has_tree, has_stem))
     return false;
-  if (!outside_writer.begin(out_name, extra_bytes_vlr))
+  if (!outside_writer.begin(out_name, extra_bytes_vlr, false, has_tree, has_stem))
     return false;
   Cloud in_chunk, out_chunk;
   Cloud cloud_buffer;
   std::vector<uint8_t> passthrough_buf;
+  std::vector<int32_t> tree_ids_buf, stem_ids_buf;
 
+  // Copy this source ray's passthrough bytes and tree_id/stem_id labels onto a sub-ray that was
+  // emitted via the (start, end, time, colour) addRay overload (which does not carry them).
   auto copy_pass = [&](Cloud &dst, size_t src_i) {
     const uint16_t stride = cloud_buffer.extra_bytes_size;
     if (stride > 0 && cloud_buffer.passthrough.size() >= (src_i + 1) * stride)
@@ -103,6 +117,10 @@ bool splitPlane(const std::string &file_name, const std::string &in_name, const 
       if (dst.extra_bytes_vlr.empty())
         dst.extra_bytes_vlr = extra_bytes_vlr;
     }
+    if (src_i < cloud_buffer.tree_ids.size())
+      dst.tree_ids.push_back(cloud_buffer.tree_ids[src_i]);
+    if (src_i < cloud_buffer.stem_ids.size())
+      dst.stem_ids.push_back(cloud_buffer.stem_ids[src_i]);
   };
 
   auto per_chunk = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
@@ -118,6 +136,8 @@ bool splitPlane(const std::string &file_name, const std::string &in_name, const 
       cloud_buffer.extra_bytes_size = static_cast<uint16_t>(cloud_buffer.passthrough.size() / starts.size());
       cloud_buffer.extra_bytes_vlr  = extra_bytes_vlr;
     }
+    if (!tree_ids_buf.empty()) { cloud_buffer.tree_ids = std::move(tree_ids_buf); tree_ids_buf.clear(); }
+    if (!stem_ids_buf.empty()) { cloud_buffer.stem_ids = std::move(stem_ids_buf); stem_ids_buf.clear(); }
     const Eigen::Vector3d plane_vec = plane / plane.dot(plane);
     for (size_t i = 0; i < ends.size(); i++)
     {
@@ -154,10 +174,13 @@ bool splitPlane(const std::string &file_name, const std::string &in_name, const 
     in_chunk.clear();
     out_chunk.clear();
     cloud_buffer.passthrough.clear();
+    cloud_buffer.tree_ids.clear();
+    cloud_buffer.stem_ids.clear();
   };
 
   size_t num_bounded;
-  bool res = reader.read(per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
+  bool res = reader.read(per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), &tree_ids_buf, &passthrough_buf,
+                         &stem_ids_buf);
   if (!res)
     return false;
   inside_writer.end();
@@ -173,15 +196,18 @@ bool splitCapsule(const std::string &file_name, const std::string &in_name, cons
   if (!reader.begin(file_name))
     return false;
   std::vector<uint8_t> extra_bytes_vlr = reader.header().sensorExtraVlr();
+  const bool has_tree = reader.header().has("tree_id");
+  const bool has_stem = reader.header().has("stem_id");
 
   CloudWriter inside_writer, outside_writer;
-  if (!inside_writer.begin(in_name, extra_bytes_vlr))
+  if (!inside_writer.begin(in_name, extra_bytes_vlr, false, has_tree, has_stem))
     return false;
-  if (!outside_writer.begin(out_name, extra_bytes_vlr))
+  if (!outside_writer.begin(out_name, extra_bytes_vlr, false, has_tree, has_stem))
     return false;
   Cloud in_chunk, out_chunk;
   Cloud cloud_buffer;
   std::vector<uint8_t> passthrough_buf;
+  std::vector<int32_t> tree_ids_buf, stem_ids_buf;
 
   Eigen::Vector3d dir = end2 - end1;
   double length = dir.norm();
@@ -190,6 +216,8 @@ bool splitCapsule(const std::string &file_name, const std::string &in_name, cons
     dir /= length;
   }
 
+  // Copy this source ray's passthrough bytes and tree_id/stem_id labels onto a sub-ray that was
+  // emitted via the (start, end, time, colour) addRay overload (which does not carry them).
   auto copy_pass = [&](Cloud &dst, size_t src_i) {
     const uint16_t stride = cloud_buffer.extra_bytes_size;
     if (stride > 0 && cloud_buffer.passthrough.size() >= (src_i + 1) * stride)
@@ -200,6 +228,10 @@ bool splitCapsule(const std::string &file_name, const std::string &in_name, cons
       if (dst.extra_bytes_vlr.empty())
         dst.extra_bytes_vlr = extra_bytes_vlr;
     }
+    if (src_i < cloud_buffer.tree_ids.size())
+      dst.tree_ids.push_back(cloud_buffer.tree_ids[src_i]);
+    if (src_i < cloud_buffer.stem_ids.size())
+      dst.stem_ids.push_back(cloud_buffer.stem_ids[src_i]);
   };
 
   // splitting per chunk
@@ -216,6 +248,8 @@ bool splitCapsule(const std::string &file_name, const std::string &in_name, cons
       cloud_buffer.extra_bytes_size = static_cast<uint16_t>(cloud_buffer.passthrough.size() / starts.size());
       cloud_buffer.extra_bytes_vlr  = extra_bytes_vlr;
     }
+    if (!tree_ids_buf.empty()) { cloud_buffer.tree_ids = std::move(tree_ids_buf); tree_ids_buf.clear(); }
+    if (!stem_ids_buf.empty()) { cloud_buffer.stem_ids = std::move(stem_ids_buf); stem_ids_buf.clear(); }
     for (size_t i = 0; i < ends.size(); i++)
     {
       Eigen::Vector3d start = starts[i];
@@ -319,10 +353,13 @@ bool splitCapsule(const std::string &file_name, const std::string &in_name, cons
     in_chunk.clear();
     out_chunk.clear();
     cloud_buffer.passthrough.clear();
+    cloud_buffer.tree_ids.clear();
+    cloud_buffer.stem_ids.clear();
   };
 
   size_t num_bounded;
-  bool res = reader.read(per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
+  bool res = reader.read(per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), &tree_ids_buf, &passthrough_buf,
+                         &stem_ids_buf);
   if (!res)
     return false;
   inside_writer.end();
@@ -339,16 +376,21 @@ bool splitBox(const std::string &file_name, const std::string &in_name, const st
   if (!reader.begin(file_name))
     return false;
   std::vector<uint8_t> extra_bytes_vlr = reader.header().sensorExtraVlr();
+  const bool has_tree = reader.header().has("tree_id");
+  const bool has_stem = reader.header().has("stem_id");
 
   CloudWriter inside_writer, outside_writer;
-  if (!inside_writer.begin(in_name, extra_bytes_vlr))
+  if (!inside_writer.begin(in_name, extra_bytes_vlr, false, has_tree, has_stem))
     return false;
-  if (!outside_writer.begin(out_name, extra_bytes_vlr))
+  if (!outside_writer.begin(out_name, extra_bytes_vlr, false, has_tree, has_stem))
     return false;
   Cloud in_chunk, out_chunk;
   Cloud cloud_buffer;
   std::vector<uint8_t> passthrough_buf;
+  std::vector<int32_t> tree_ids_buf, stem_ids_buf;
 
+  // Copy this source ray's passthrough bytes and tree_id/stem_id labels onto a sub-ray that was
+  // emitted via the (start, end, time, colour) addRay overload (which does not carry them).
   auto copy_pass = [&](Cloud &dst, size_t src_i) {
     const uint16_t stride = cloud_buffer.extra_bytes_size;
     if (stride > 0 && cloud_buffer.passthrough.size() >= (src_i + 1) * stride)
@@ -359,6 +401,10 @@ bool splitBox(const std::string &file_name, const std::string &in_name, const st
       if (dst.extra_bytes_vlr.empty())
         dst.extra_bytes_vlr = extra_bytes_vlr;
     }
+    if (src_i < cloud_buffer.tree_ids.size())
+      dst.tree_ids.push_back(cloud_buffer.tree_ids[src_i]);
+    if (src_i < cloud_buffer.stem_ids.size())
+      dst.stem_ids.push_back(cloud_buffer.stem_ids[src_i]);
   };
 
   // splitting per chunk
@@ -375,6 +421,8 @@ bool splitBox(const std::string &file_name, const std::string &in_name, const st
       cloud_buffer.extra_bytes_size = static_cast<uint16_t>(cloud_buffer.passthrough.size() / starts.size());
       cloud_buffer.extra_bytes_vlr  = extra_bytes_vlr;
     }
+    if (!tree_ids_buf.empty()) { cloud_buffer.tree_ids = std::move(tree_ids_buf); tree_ids_buf.clear(); }
+    if (!stem_ids_buf.empty()) { cloud_buffer.stem_ids = std::move(stem_ids_buf); stem_ids_buf.clear(); }
     const Cuboid cuboid(centre - extents, centre + extents);
     for (size_t i = 0; i < ends.size(); i++)
     {
@@ -412,10 +460,13 @@ bool splitBox(const std::string &file_name, const std::string &in_name, const st
     in_chunk.clear();
     out_chunk.clear();
     cloud_buffer.passthrough.clear();
+    cloud_buffer.tree_ids.clear();
+    cloud_buffer.stem_ids.clear();
   };
 
   size_t num_bounded;
-  bool res = reader.read(per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
+  bool res = reader.read(per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), &tree_ids_buf, &passthrough_buf,
+                         &stem_ids_buf);
   if (!res)
     return false;
   inside_writer.end();
@@ -439,6 +490,8 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
   if (!reader.begin(file_name))
     return false;
   std::vector<uint8_t> extra_bytes_vlr = reader.header().sensorExtraVlr();
+  const bool has_tree = reader.header().has("tree_id");
+  const bool has_stem = reader.header().has("stem_id");
 
   overlap /= 2.0;  // it now means overlap relative to grid edge
   Cloud::Info info;
@@ -494,6 +547,7 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
     std::vector<Cloud> chunks(max_open_files);
     Cloud cloud_buffer;
     std::vector<uint8_t> passthrough_buf;
+    std::vector<int32_t> tree_ids_buf, stem_ids_buf;
 
     // splitting performed per chunk
     auto per_chunk = [&](std::vector<Eigen::Vector3d> &starts,
@@ -510,6 +564,8 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
         cloud_buffer.extra_bytes_size = static_cast<uint16_t>(cloud_buffer.passthrough.size() / starts.size());
         cloud_buffer.extra_bytes_vlr  = extra_bytes_vlr;
       }
+      if (!tree_ids_buf.empty()) { cloud_buffer.tree_ids = std::move(tree_ids_buf); tree_ids_buf.clear(); }
+      if (!stem_ids_buf.empty()) { cloud_buffer.stem_ids = std::move(stem_ids_buf); stem_ids_buf.clear(); }
       for (size_t i = 0; i < ends.size(); i++)
       {
         // get set of cells that the ray may intersect
@@ -568,14 +624,14 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
                   if (cell_width[3] > 0.0)
                     name << "_" << t;
                   name << "." << grid_ext;
-                  cells[index].begin(name.str(), extra_bytes_vlr);
+                  cells[index].begin(name.str(), extra_bytes_vlr, false, has_tree, has_stem);
                 }
                 if (!cuboid.intersects(ends[i]))  // end point is outside, so mark an unbounded ray
                 {
                   col.red = col.green = col.blue = col.alpha = 0;
                 }
                 chunks[index].addRay(start, end, times[i], col);
-                // copy passthrough bytes from original ray
+                // copy passthrough bytes and tree_id/stem_id labels from original ray
                 const uint16_t stride = cloud_buffer.extra_bytes_size;
                 if (stride > 0 && cloud_buffer.passthrough.size() >= (i + 1) * stride)
                 {
@@ -585,6 +641,10 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
                   if (chunks[index].extra_bytes_vlr.empty())
                     chunks[index].extra_bytes_vlr = extra_bytes_vlr;
                 }
+                if (i < cloud_buffer.tree_ids.size())
+                  chunks[index].tree_ids.push_back(cloud_buffer.tree_ids[i]);
+                if (i < cloud_buffer.stem_ids.size())
+                  chunks[index].stem_ids.push_back(cloud_buffer.stem_ids[i]);
               }
             }
           }
@@ -599,10 +659,13 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
         }
       }
       cloud_buffer.passthrough.clear();
+      cloud_buffer.tree_ids.clear();
+      cloud_buffer.stem_ids.clear();
     };
 
     size_t num_bounded;
-    bool res = reader.read(per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
+    bool res = reader.read(per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), &tree_ids_buf, &passthrough_buf,
+                           &stem_ids_buf);
     if (!res)
       return false;
 
@@ -634,6 +697,8 @@ bool splitColour(const std::string &file_name, const std::string &cloud_name_stu
   if (!reader.begin(file_name))
     return false;
   std::vector<uint8_t> extra_bytes_vlr = reader.header().sensorExtraVlr();
+  const bool has_tree = reader.header().has("tree_id");
+  const bool has_stem = reader.header().has("stem_id");
 
   std::map<RGBA, int, RGBALess> vox_map;
   // firstly, find out how many different colours there are
@@ -677,6 +742,7 @@ bool splitColour(const std::string &file_name, const std::string &cloud_name_stu
     std::vector<Cloud> chunks(chunk_size);
     Cloud cloud_buffer;
     std::vector<uint8_t> passthrough_buf;
+    std::vector<int32_t> tree_ids_buf, stem_ids_buf;
 
     int batch_max = std::min(num_colours, batch + max_files_at_once);
     if (num_colours > max_files_at_once)
@@ -697,6 +763,8 @@ bool splitColour(const std::string &file_name, const std::string &cloud_name_stu
         cloud_buffer.extra_bytes_size = static_cast<uint16_t>(cloud_buffer.passthrough.size() / starts.size());
         cloud_buffer.extra_bytes_vlr  = extra_bytes_vlr;
       }
+      if (!tree_ids_buf.empty()) { cloud_buffer.tree_ids = std::move(tree_ids_buf); tree_ids_buf.clear(); }
+      if (!stem_ids_buf.empty()) { cloud_buffer.stem_ids = std::move(stem_ids_buf); stem_ids_buf.clear(); }
       for (size_t i = 0; i < ends.size(); i++)
       {
         RGBA colour = colours[i];
@@ -720,7 +788,7 @@ bool splitColour(const std::string &file_name, const std::string &cloud_name_stu
             {
               name << cloud_name_stub << "_" << (int)colour.red << "_" << (int)colour.green << "_" << (int)colour.blue << "." << colour_ext;
             }
-            cells[index].begin(name.str(), extra_bytes_vlr);
+            cells[index].begin(name.str(), extra_bytes_vlr, false, has_tree, has_stem);
           }
           chunks[index].addRay(cloud_buffer, i);
         }
@@ -734,10 +802,13 @@ bool splitColour(const std::string &file_name, const std::string &cloud_name_stu
         }
       }
       cloud_buffer.passthrough.clear();
+      cloud_buffer.tree_ids.clear();
+      cloud_buffer.stem_ids.clear();
     };
 
     size_t num_bounded;
-    bool res = reader.read(per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), nullptr, &passthrough_buf);
+    bool res = reader.read(per_chunk, num_bounded, 1.0, nullptr, computeReadChunkSize(), &tree_ids_buf, &passthrough_buf,
+                           &stem_ids_buf);
     if (!res)
       return false;
 

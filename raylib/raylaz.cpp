@@ -385,6 +385,12 @@ bool readLas(const std::string &file_name,
   // incrementally in flush_indexed so add_chunk's prev_pass_size tracking works correctly.
   std::vector<uint8_t> all_passthrough_internal;
   uint16_t passthrough_pstride = 0;  // per-point stride for all_passthrough_internal
+  // Private ID buffers for the indexed (parallel) path. Like passthrough, these are decoded
+  // index-addressed into a full-length private buffer, then drained as per-chunk slices into the
+  // caller's *_out vectors in flush_indexed so the optional-output contract matches the sequential
+  // and wave paths: each *_out grows by one chunk's worth immediately before that chunk's apply().
+  std::vector<int32_t> all_tree_ids_internal, all_stem_ids_internal, all_beam_ids_internal;
+  bool tree_active_out = false, stem_active_out = false, beam_active_out = false;
   IndexedDecodeBuffers buf;
 
   // Populate @c buf and pre-size every active output for an index-addressed decode of all points.
@@ -419,9 +425,30 @@ bool readLas(const std::string &file_name,
     const bool beam_ok =
       beam_ids_out && ctx.is_raycloud && ctx.beam_id_dtype != 0 &&
       ctx.extra_bytes_total >= ctx.beam_id_offset + kExtraTypeSize[ctx.beam_id_dtype];
-    if (tree_ok) { tree_ids_out->resize(number_of_points); buf.tree_ids = tree_ids_out->data(); buf.tree_active = true; }
-    if (stem_ok) { stem_ids_out->resize(number_of_points); buf.stem_ids = stem_ids_out->data(); buf.stem_active = true; }
-    if (beam_ok) { beam_ids_out->resize(number_of_points); buf.beam_ids = beam_ids_out->data(); buf.beam_active = true; }
+    if (tree_ok)
+    {
+      all_tree_ids_internal.resize(number_of_points);
+      buf.tree_ids = all_tree_ids_internal.data();
+      buf.tree_active = true;
+      tree_active_out = true;
+      tree_ids_out->clear();
+    }
+    if (stem_ok)
+    {
+      all_stem_ids_internal.resize(number_of_points);
+      buf.stem_ids = all_stem_ids_internal.data();
+      buf.stem_active = true;
+      stem_active_out = true;
+      stem_ids_out->clear();
+    }
+    if (beam_ok)
+    {
+      all_beam_ids_internal.resize(number_of_points);
+      buf.beam_ids = all_beam_ids_internal.data();
+      buf.beam_active = true;
+      beam_active_out = true;
+      beam_ids_out->clear();
+    }
   };
 
   // Drain the index-addressed buffers through @c apply in the same chunk windows (and with the same
@@ -467,17 +494,27 @@ bool readLas(const std::string &file_name,
     size_t pts_flushed = 0;
     while (queue.pop(cb))
     {
-      // Append this chunk's passthrough slice to passthrough_out before calling apply so that
-      // the callback's prev_pass_size tracking sees incremental growth, matching the sequential path.
+      // Append this chunk's passthrough and ID slices to their *_out vectors before calling apply so
+      // that each output grows by one chunk's worth in step with the apply windows, matching the
+      // sequential and wave paths (and the callback's prev_pass_size tracking for passthrough).
+      const size_t n = cb->ends.size();
       if (passthrough_out && passthrough_pstride > 0 && !all_passthrough_internal.empty())
       {
-        const size_t n = cb->ends.size();
         const size_t byte_off = pts_flushed * passthrough_pstride;
         passthrough_out->insert(passthrough_out->end(),
                                 all_passthrough_internal.begin() + byte_off,
                                 all_passthrough_internal.begin() + byte_off + n * passthrough_pstride);
-        pts_flushed += n;
       }
+      if (tree_active_out)
+        tree_ids_out->insert(tree_ids_out->end(), all_tree_ids_internal.begin() + pts_flushed,
+                             all_tree_ids_internal.begin() + pts_flushed + n);
+      if (stem_active_out)
+        stem_ids_out->insert(stem_ids_out->end(), all_stem_ids_internal.begin() + pts_flushed,
+                             all_stem_ids_internal.begin() + pts_flushed + n);
+      if (beam_active_out)
+        beam_ids_out->insert(beam_ids_out->end(), all_beam_ids_internal.begin() + pts_flushed,
+                             all_beam_ids_internal.begin() + pts_flushed + n);
+      pts_flushed += n;
       apply(cb->starts, cb->ends, cb->times, cb->colours);
       progress.increment();
       cb.reset();  // free the buffer back to the allocator before popping the next
