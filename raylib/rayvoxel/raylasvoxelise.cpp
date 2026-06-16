@@ -1941,8 +1941,9 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
                   << " voxels (tree-file total branch volume " << total_tree_volume << " m^3)." << std::endl;
     }
 
-    // Pass the pre-calculated metrics to the writer functions.
-    std::string base_name_stub = getFileNameStub(params.cloud_name);
+    // Pass the pre-calculated metrics to the writer functions. All rayvoxel outputs share a
+    // "_voxel" stub, e.g. {stub}_voxel.vox, {stub}_voxel_filled.vox, {stub}_voxel_iad.csv.
+    std::string base_name_stub = getFileNameStub(params.cloud_name) + "_voxel";
 
     // Per-tree inclination angle distributions sidecar. Written whenever tree_id is present in
     // the input (per_tree_iad non-empty); --output_iad is not required. The CSV describes the

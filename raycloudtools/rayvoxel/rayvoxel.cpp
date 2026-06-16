@@ -70,7 +70,7 @@ void usage()
   std::cout << "  --subvoxel_split <N>            Enable exploration rate calculation with an N x N x N grid (N=2,3,4). Default: 0 (off)." << std::endl;
   std::cout << "  --subvoxel_min_beams <N>        Min beams through a subvoxel cell to count it as explored. Default: 10." << std::endl;
   std::cout << "  --no_inclination_dist           Disable the inclination-distribution pass (skips KNN normal estimation) while keeping --veg_metrics." << std::endl;
-  std::cout << "  --output_iad                    Write a per-tree {stub}_iad.csv sidecar (LIAD/WIAD/PIAD per tree_id). Requires a tree_id extra-byte field in the input; otherwise no CSV is written. G scalars are no longer written per voxel." << std::endl;
+  std::cout << "  --output_iad                    Write a per-tree {stub}_voxel_iad.csv sidecar (LIAD/WIAD/PIAD per tree_id). Requires a tree_id extra-byte field in the input; otherwise no CSV is written. G scalars are no longer written per voxel." << std::endl;
   std::cout << "  --n_iad_bins <N>                Number of inclination-angle histogram bins over [0, pi/2]. Default: 18." << std::endl;
   std::cout << "  --attenuation_method <methods>  Comma-separated PAD/LAD/WAD estimators: fpl (default), ppl, transmittance, bailey." << std::endl;
   std::cout << "  --knn_normal <N>                Number of nearest neighbours used for per-point normal estimation. Default: 10." << std::endl;
