@@ -94,6 +94,11 @@ namespace ray
     std::unordered_map<std::string, double> pad_per_method;
     std::unordered_map<std::string, double> lad_per_method;
     std::unordered_map<std::string, double> wad_per_method;
+
+    // Woody material volume rasterised from a trees.txt ForestStructure (only populated when --trees
+    // is given). wood_volume in m^3; wood_volume_density = wood_volume / voxel_volume (m^3/m^3).
+    double wood_volume = 0.0;
+    double wood_volume_density = 0.0;
   };
 
   // MODIFIED: A type alias for a map that will store the pre-calculated output data,

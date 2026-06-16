@@ -19,6 +19,7 @@
 #include "rayvoxel/raylasvoxelprocessor.h"
 #include "raycuboid.h"
 #include "rayvoxel/raylasbailey.h"
+#include "rayvoxel/raylaswoodvolume.h"
 
 /// Raycloud testing framework. In each test, the statistics of the resulting clouds are compared to the statistics
 /// of the cloud when it was confirmed to be operating correctly. 
@@ -911,6 +912,35 @@ namespace raytest
     std::vector<int> class_labels = { 0, 0, 0 };  // all unknown
     auto result = ray::buildTriangleInclinationHistograms(positions, knn, flat_indices, class_labels, 4, 2.0);
     EXPECT_TRUE(result.empty()) << "unknown-class points must not produce any facets";
+  }
+
+  // Woody-volume rasterisation must conserve volume: the sum over voxels of a single branch cylinder
+  // (root radius 0 so it contributes no sphere) must equal the analytic cylinder volume pi*r^2*L.
+  TEST(RayVoxelWoodVolume, CylinderConservation)
+  {
+    const double R = 0.05, L = 2.0, voxel_size = 0.1;
+    ray::ForestStructure forest;
+    ray::TreeStructure tree;
+    auto &segs = tree.segments();
+    ray::TreeStructure::Segment root;   root.tip = Eigen::Vector3d(0, 0, 0);   root.radius = 0.0; root.parent_id = -1;
+    ray::TreeStructure::Segment branch; branch.tip = Eigen::Vector3d(0, 0, L); branch.radius = R;  branch.parent_id = 0;
+    segs.push_back(root);
+    segs.push_back(branch);
+    forest.trees.push_back(tree);
+
+    const Eigen::Vector3d min_b(-1.0, -1.0, -0.1), max_b(1.0, 1.0, L + 0.1);
+    ray::Cuboid bounds(min_b, max_b);
+    Eigen::Matrix<int64_t, 3, 1> dims;
+    for (int i = 0; i < 3; i++)
+      dims[i] = static_cast<int64_t>(std::ceil((max_b[i] - min_b[i]) / voxel_size));
+
+    auto wood = ray::computeWoodVolumePerVoxel(forest, bounds, voxel_size, dims);
+
+    double sum = 0.0;
+    for (const auto &kv : wood) sum += kv.second;
+    const double analytic = ray::kPi * R * R * L;  // pi r^2 L
+    EXPECT_NEAR(sum, analytic, 0.02 * analytic) << "rasterised wood volume must conserve pi*r^2*L";
+    EXPECT_GT(wood.size(), 1u) << "a 2 m cylinder at 0.1 m voxels must span multiple voxels";
   }
 
 } // raytest

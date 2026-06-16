@@ -306,7 +306,13 @@ MetricResultsMap calculateOutputMetrics(const VoxelGrid& grid, const Voxelizatio
         data.num_hit_leaf = static_cast<int32_t>(leaf_hits);
         data.num_hit_wood = static_cast<int32_t>(wood_hits);
         float plant_hits = 0.0f;
-        for (int c = 3; c < 256; ++c) plant_hits += data.classification_hits[c];
+        if (!params.has_leaf && !params.has_wood) {
+            // No leaf/wood classes: every bound hit is a non-ground plant return (ground hits are
+            // bound==0 and never counted), so the plant count is simply the voxel's total hits.
+            plant_hits = static_cast<float>(v.num_hits);
+        } else {
+            for (int c = 3; c < 256; ++c) plant_hits += data.classification_hits[c];
+        }
         data.num_hit_plant = static_cast<int32_t>(plant_hits);
 
         if (v.num_hits > 0) {
@@ -561,6 +567,9 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
   if (!params.dtm_file.empty() || params.dtm_from_class >= 0) colnames += " distance_from_ground";
   if (params.calc_beam_metrics) colnames += " transmittance bs_entering bs_intercepted";
   if (params.subvoxel_split > 0) colnames += " exploration_rate subvoxel_bitmap";
+  // Analytic-LAD plant PAD: emitted when vegetation metrics are on but the per-tree IAD pass is not
+  // (e.g. no leaf/wood classes). PAD = lambda / G(mean_zenith, --lad); see pad_g_corrected above.
+  if (params.calc_veg_metrics && !params.calc_inclination_dist) colnames += " pad_g_corrected";
   if (params.calc_inclination_dist) {
     colnames += " predominant_tree piad_dewit";
     if (params.has_leaf) colnames += " liad_dewit";
@@ -574,6 +583,7 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
       if (params.has_wood) colnames += " wad_" + method;
     }
   }
+  if (!params.trees_file.empty()) colnames += " wood_volume wood_volume_density";
   space.header["colnames"] = colnames;
 
   auto process_voxel = [&](int64_t i, int64_t j, int64_t k, const VoxelOutputData* data) {
@@ -624,6 +634,8 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
       v_data.variables.push_back(std::to_string(data ? data->exploration_rate : 0.0));
       v_data.variables.push_back(std::to_string(data ? data->subvoxel_bitmap : uint64_t(0)));
     }
+    if (params.calc_veg_metrics && !params.calc_inclination_dist)
+      v_data.variables.push_back(std::to_string(data ? data->pad_g_corrected : 0.0));
     auto dewit_val = [](const std::string& s) -> std::string {
       return s.empty() ? "NA" : s;
     };
@@ -643,6 +655,10 @@ bool writeAmapVoxFile(const std::string& out_name_stub, const VoxelGrid& grid, c
         if (params.has_leaf) v_data.variables.push_back(std::to_string(data ? lookup(data->lad_per_method) : 0.0));
         if (params.has_wood) v_data.variables.push_back(std::to_string(data ? lookup(data->wad_per_method) : 0.0));
       }
+    }
+    if (!params.trees_file.empty()) {
+      v_data.variables.push_back(std::to_string(data ? data->wood_volume : 0.0));
+      v_data.variables.push_back(std::to_string(data ? data->wood_volume_density : 0.0));
     }
     space.voxels.push_back(v_data);
   };
@@ -694,6 +710,9 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
   if (!params.dtm_file.empty() || params.dtm_from_class >= 0) header += " distance_from_ground";
   if (params.calc_beam_metrics) header += " transmittance bs_entering bs_intercepted";
   if (params.subvoxel_split > 0) header += " exploration_rate subvoxel_bitmap";
+  // Analytic-LAD plant PAD: emitted when vegetation metrics are on but the per-tree IAD pass is not
+  // (e.g. no leaf/wood classes). PAD = lambda / G(mean_zenith, --lad).
+  if (params.calc_veg_metrics && !params.calc_inclination_dist) header += " pad_g_corrected";
   if (params.calc_inclination_dist) {
     header += " predominant_tree piad_dewit";
     if (params.has_leaf) header += " liad_dewit";
@@ -707,6 +726,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
       if (params.has_wood) header += " wad_" + method;
     }
   }
+  if (!params.trees_file.empty()) header += " wood_volume wood_volume_density";
   header += "\n";
   outfile << header;
 
@@ -741,6 +761,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
     }
     if (params.calc_beam_metrics) outfile << " " << data.transmittance << " " << data.bs_entering << " " << data.bs_intercepted;
     if (params.subvoxel_split > 0) outfile << " " << data.exploration_rate << " " << data.subvoxel_bitmap;
+    if (params.calc_veg_metrics && !params.calc_inclination_dist) outfile << " " << data.pad_g_corrected;
     auto dewit_str = [](const std::string& s) -> const std::string& {
       static const std::string kNA = "NA";
       return s.empty() ? kNA : s;
@@ -761,6 +782,7 @@ bool writeTextFile(const std::string& out_name_stub, const VoxelGrid& grid, cons
         if (params.has_wood) outfile << " " << lookup(data.wad_per_method);
       }
     }
+    if (!params.trees_file.empty()) outfile << " " << data.wood_volume << " " << data.wood_volume_density;
     outfile << "\n";
     point_count++;
   };
@@ -864,6 +886,10 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
     if (params.has_leaf) vars["lad_g0_5"] = dataFile.addVar("lad_g0_5", netCDF::ncDouble, {nPoints});
     if (params.has_wood) vars["wad_g0_5"] = dataFile.addVar("wad_g0_5", netCDF::ncDouble, {nPoints});
     vars["surface_area"] = dataFile.addVar("surface_area", netCDF::ncDouble, {nPoints});
+    if (!params.trees_file.empty()) {
+      vars["wood_volume"] = dataFile.addVar("wood_volume", netCDF::ncDouble, {nPoints});
+      vars["wood_volume_density"] = dataFile.addVar("wood_volume_density", netCDF::ncDouble, {nPoints});
+    }
     vars["mean_zenith_angle_rad"] = dataFile.addVar("mean_zenith_angle_rad", netCDF::ncDouble, {nPoints});
     vars["mean_azimuth_rad"] = dataFile.addVar("mean_azimuth_rad", netCDF::ncDouble, {nPoints});
     vars["azimuth_concentration"] = dataFile.addVar("azimuth_concentration", netCDF::ncDouble, {nPoints});
@@ -900,6 +926,7 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
     std::vector<int32_t> plant_hits_data;
     std::vector<float> fpl_plant_data, fpl_leaf_data, fpl_wood_data;
     std::vector<double> pad_data, lad_g05_data, wad_g05_data, sa_data, angle_data, azimuth_data, concentration_data, dist_data, dfg_data, pad_g_data, pad_leaf_data, pad_wood_data, transm_data, explore_data;
+    std::vector<double> wood_volume_data, wood_volume_density_data;
     std::vector<uint64_t> bitmap_data;
     std::vector<int> voxel_id_data;
     std::vector<unsigned char> hit_class_code_data;
@@ -961,6 +988,10 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
         if (params.has_leaf) lad_g05_data.push_back(data.lad_g0_5);
         if (params.has_wood) wad_g05_data.push_back(data.wad_g0_5);
         sa_data.push_back(data.surface_area);
+        if (!params.trees_file.empty()) {
+          wood_volume_data.push_back(data.wood_volume);
+          wood_volume_density_data.push_back(data.wood_volume_density);
+        }
         angle_data.push_back(data.mean_zenith_angle_rad);
         azimuth_data.push_back(data.mean_azimuth_rad);
         concentration_data.push_back(data.azimuth_concentration);
@@ -1014,6 +1045,10 @@ bool writeNetcdfFile(const std::string& out_name_stub, const VoxelGrid& grid, co
     if (params.has_leaf) vars["lad_g0_5"].putVar(lad_g05_data.data());
     if (params.has_wood) vars["wad_g0_5"].putVar(wad_g05_data.data());
     vars["surface_area"].putVar(sa_data.data());
+    if (!params.trees_file.empty()) {
+      vars["wood_volume"].putVar(wood_volume_data.data());
+      vars["wood_volume_density"].putVar(wood_volume_density_data.data());
+    }
     vars["mean_zenith_angle_rad"].putVar(angle_data.data());
     vars["mean_azimuth_rad"].putVar(azimuth_data.data());
     vars["azimuth_concentration"].putVar(concentration_data.data());

@@ -30,7 +30,8 @@ void usage()
   std::cout << "The distance_to_sensor used for beam metrics is computed as the ray length (end - start).norm()." << std::endl << std::endl;
   std::cout << "Required Arguments:" << std::endl;
   std::cout << "  <cloud_file>                    Input ray cloud (.las, .laz)." << std::endl;
-  std::cout << "  --unbound_file <cloud>          Optional second ray cloud of unbound (miss) rays, traversed after the primary file (no hits added)." << std::endl << std::endl;
+  std::cout << "  --unbound_file <cloud>          Optional second ray cloud of unbound (miss) rays, traversed after the primary file (no hits added)." << std::endl;
+  std::cout << "  --trees <trees.txt>             Optional tree file (rayextract trees/reconstruct output). Rasterises branch cylinders into the grid to add per-voxel wood_volume (m3) and wood_volume_density (m3/m3) columns on observed voxels." << std::endl << std::endl;
   std::cout << "Processing Strategy:" << std::endl;
   std::cout << "  --parallel, -p                  Enable parallel in-memory processing. (Default: on)" << std::endl;
   std::cout << "  --no_parallel                   Disable parallel processing and run single-threaded." << std::endl;
@@ -98,6 +99,8 @@ int main_function(int argc, char *argv[])
   // General Options
   FileArgument unbound_file_val;
   OptionalKeyValueArgument unbound_file("unbound_file", '\0', &unbound_file_val);
+  FileArgument trees_file_val;
+  OptionalKeyValueArgument trees_file("trees", '\0', &trees_file_val);
   DoubleArgument voxel_size_val(0.001, 1000.0, 0.1);
   OptionalKeyValueArgument voxel_size("voxel_size", 's', &voxel_size_val);
   Vector3dArgument grid_bounds_min_val;
@@ -169,7 +172,7 @@ int main_function(int argc, char *argv[])
   std::vector<FixedArgument *> fixed_args = { &cloud_file };
   std::vector<OptionalArgument *> optional_args = {
       &parallel_flag, &no_parallel_flag, &num_threads, &out_of_core_flag, &ram_budget_mb, &reserve_size,
-      &unbound_file, &voxel_size, &grid_bounds_min, &grid_bounds_max, &output_format, &weighting_method,
+      &unbound_file, &trees_file, &voxel_size, &grid_bounds_min, &grid_bounds_max, &output_format, &weighting_method,
       &occlusion, &write_amapvox_also, &write_empty, &write_filled,
       &dtm_file, &dtm_from_class, &dtm_cell_size, &dtm_filter_distance,
       &flat_top_compensation, &neighbour_priors,
@@ -247,6 +250,9 @@ int main_function(int argc, char *argv[])
   if (unbound_file.isSet()) {
     params.unbound_file = unbound_file_val.name();
   }
+  if (trees_file.isSet()) {
+    params.trees_file = trees_file_val.name();
+  }
   params.voxel_size = voxel_size_val.value();
   if (grid_bounds_min.isSet()) {
     params.grid_bounds_min = grid_bounds_min_val.value();
@@ -274,7 +280,9 @@ int main_function(int argc, char *argv[])
     params.has_wood = !strip_prefix(wood_classes_val.text()).empty();
   }
   if (!params.has_leaf && !params.has_wood && (veg_metrics.isSet() || inclination_dist.isSet()))
-    std::cerr << "Info: no --leaf_classes or --wood_classes specified; only pad_* (plant) columns will be written.\n";
+    std::cerr << "Info: no --leaf_classes or --wood_classes specified; all non-ground returns are "
+                 "treated as plant and PAD is derived from the analytic --lad (" << lad_val.text()
+              << ") G-function. Only pad_* (plant) columns will be written.\n";
   else if (!params.has_leaf && params.has_wood)
     std::cerr << "Info: no --leaf_classes specified; lad_* columns will be omitted.\n";
   else if (params.has_leaf && !params.has_wood)
@@ -299,6 +307,13 @@ int main_function(int argc, char *argv[])
   params.iad_tile_size = iad_tile_size_val.value();
   params.average_leaf_area = average_leaf_area_val.value();
   if (any_bailey) params.calc_inclination_dist = true;  // ensures KNN matrix exists
+  // No leaf/wood classes: every non-ground return is treated as plant and PAD is derived from the
+  // analytic --lad G-function (computeG). The per-tree IAD/KNN inclination pass produces no G that
+  // is used in this mode, so skip it by default to save the KNN cost. An explicit --inclination_dist
+  // or --output_iad forces it back on for callers that still want the per-tree inclination outputs.
+  if (!params.has_leaf && !params.has_wood && !any_bailey
+      && !inclination_dist.isSet() && !output_iad.isSet())
+    params.calc_inclination_dist = false;
 
   // DTM parameters
   // The dtm_cell_size now applies to both DTM creation methods.

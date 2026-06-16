@@ -24,6 +24,9 @@ namespace ray
     std::string cloud_name;
     // Optional second cloud of unbound (miss) rays, traversed after the primary file. Empty = none.
     std::string unbound_file;
+    // Optional trees.txt (ForestStructure from rayextract trees/reconstruct). When set, the tree
+    // branch cylinders are rasterised into the grid to produce per-voxel woody volume. Empty = none.
+    std::string trees_file;
     double voxel_size = 0.1;
     Eigen::Vector3d grid_bounds_min = Eigen::Vector3d::Zero();
     Eigen::Vector3d grid_bounds_max = Eigen::Vector3d::Zero();

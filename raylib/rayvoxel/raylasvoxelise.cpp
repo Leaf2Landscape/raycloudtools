@@ -21,6 +21,7 @@
 #include "raylib/rayvoxel/rayvox.h"
 #include "raylib/rayvoxel/raylasvoxelise.h"
 #include "raylib/rayvoxel/raylasvoxelwriter.h"
+#include "raylib/rayvoxel/raylaswoodvolume.h"
 #include "raylib/rayvoxel/raylasvoxelrefine.h"
 #include "raylib/rayvoxel/raylasvegmetrics.h"
 #include "raylib/rayvoxel/raylasvoxelprocessor.h"
@@ -1002,7 +1003,14 @@ bool runInProcess(const std::string& cloud_name, VoxelGrid& grid, size_t num_thr
       std::string item;
       while (std::getline(ss, item, ',')) { try { wood_set.insert(std::stoi(item)); } catch (...) {} }
   }
-  auto resolveFoliageClass = [&](const uint8_t* base, uint8_t cls) -> uint8_t {
+  const bool no_foliage_classes = leaf_set.empty() && wood_set.empty();
+  auto resolveFoliageClass = [&](const uint8_t* base, uint8_t cls, bool is_ground) -> uint8_t {
+      if (no_foliage_classes) {
+          // No --leaf_classes/--wood_classes given: treat every non-ground return as plant,
+          // regardless of its class code. Ground is identified via the DTM (or --dtm_from_class)
+          // and excluded; PAD is then derived from the analytic --lad G-function downstream.
+          return is_ground ? 0 : 1;
+      }
       if (cls < 3) return 0;
       if (leaf_set.count(readClassValue(base, leaf_src))) return 2;
       if (wood_set.count(readClassValue(base, wood_src))) return 3;
@@ -1103,11 +1111,12 @@ bool runInProcess(const std::string& cloud_name, VoxelGrid& grid, size_t num_thr
           const int32_t bid = (i < beam_ids_chunk.size()) ? beam_ids_chunk[i] : -1;
           const uint8_t alpha = (i < colours.size()) ? colours[i].alpha : 1;
           PointData pd = makePointData(starts[i], ends[i], times[i], bid, alpha, passthrough, i, stride);
-          if (isGroundHit(pd.x, pd.y, pd.z, pd.classification, dtm_from_class, dtm, dtm_filter_distance))
+          const bool is_ground = isGroundHit(pd.x, pd.y, pd.z, pd.classification, dtm_from_class, dtm, dtm_filter_distance);
+          if (is_ground)
             pd.bound = 0;
           const size_t base_i = i * stride;
           if (passthrough.size() >= base_i + stride)
-            pd.foliage_class = resolveFoliageClass(&passthrough[base_i], pd.classification);
+            pd.foliage_class = resolveFoliageClass(&passthrough[base_i], pd.classification, is_ground);
           grouper.add(pd, emit_beam);
         }
         passthrough.clear();
@@ -1167,11 +1176,12 @@ bool runInProcess(const std::string& cloud_name, VoxelGrid& grid, size_t num_thr
           const int32_t bid = (i < beam_ids_chunk.size()) ? beam_ids_chunk[i] : -1;
           const uint8_t alpha = (i < colours.size()) ? colours[i].alpha : 1;
           PointData pd = makePointData(starts[i], ends[i], times[i], bid, alpha, passthrough, i, stride);
-          if (isGroundHit(pd.x, pd.y, pd.z, pd.classification, dtm_from_class, dtm, dtm_filter_distance))
+          const bool is_ground = isGroundHit(pd.x, pd.y, pd.z, pd.classification, dtm_from_class, dtm, dtm_filter_distance);
+          if (is_ground)
             pd.bound = 0;
           const size_t base_i = i * stride;
           if (passthrough.size() >= base_i + stride)
-            pd.foliage_class = resolveFoliageClass(&passthrough[base_i], pd.classification);
+            pd.foliage_class = resolveFoliageClass(&passthrough[base_i], pd.classification, is_ground);
           grouper.add(pd, emit_beam);
         }
         passthrough.clear();
@@ -1460,7 +1470,14 @@ bool createShards(const std::string& cloud_name, VoxelGrid& grid, size_t num_thr
         std::string item;
         while (std::getline(ss, item, ',')) { try { wood_set.insert(std::stoi(item)); } catch (...) {} }
     }
-    auto resolveFoliageClass = [&](const uint8_t* base, uint8_t cls) -> uint8_t {
+    const bool no_foliage_classes = leaf_set.empty() && wood_set.empty();
+    auto resolveFoliageClass = [&](const uint8_t* base, uint8_t cls, bool is_ground) -> uint8_t {
+        if (no_foliage_classes) {
+            // No --leaf_classes/--wood_classes given: treat every non-ground return as plant,
+            // regardless of its class code. Ground is identified via the DTM (or --dtm_from_class)
+            // and excluded; PAD is then derived from the analytic --lad G-function downstream.
+            return is_ground ? 0 : 1;
+        }
         if (cls < 3) return 0;
         if (leaf_set.count(readClassValue(base, leaf_src))) return 2;
         if (wood_set.count(readClassValue(base, wood_src))) return 3;
@@ -1488,11 +1505,12 @@ bool createShards(const std::string& cloud_name, VoxelGrid& grid, size_t num_thr
           const int32_t bid = (i < beam_ids_chunk.size()) ? beam_ids_chunk[i] : -1;
           const uint8_t alpha = (i < colours.size()) ? colours[i].alpha : 1;
           PointData pd = makePointData(starts[i], ends[i], times[i], bid, alpha, passthrough, i, stride);
-          if (isGroundHit(pd.x, pd.y, pd.z, pd.classification, dtm_from_class, dtm, dtm_filter_distance))
+          const bool is_ground = isGroundHit(pd.x, pd.y, pd.z, pd.classification, dtm_from_class, dtm, dtm_filter_distance);
+          if (is_ground)
             pd.bound = 0;
           const size_t base_i = i * stride;
           if (passthrough.size() >= base_i + stride)
-            pd.foliage_class = resolveFoliageClass(&passthrough[base_i], pd.classification);
+            pd.foliage_class = resolveFoliageClass(&passthrough[base_i], pd.classification, is_ground);
           grouper.add(pd, emit_beam);
         }
         passthrough.clear();
@@ -1895,6 +1913,33 @@ bool generateVoxelGrid(const VoxelizationParameters& params)
 
     std::cout << "Calculating output metrics..." << std::endl;
     MetricResultsMap metrics = calculateOutputMetrics(grid, params, dtm_ptr.get(), class_table, per_tree_iad, predominant_tree, voxel_lw);
+
+    // Optional woody-volume rasterisation: project the trees.txt branch cylinders into the grid and
+    // annotate the per-voxel output with wood_volume (m^3) and wood_volume_density (m^3/m^3). This is
+    // independent of ray traversal; it only annotates voxels already present in @c metrics (observed,
+    // or all with --write_empty), which covers scanned trees in practice.
+    if (!params.trees_file.empty()) {
+        ray::ForestStructure forest;
+        if (!forest.load(params.trees_file)) {
+            std::cerr << "Error: could not load --trees file: " << params.trees_file << std::endl;
+            return false;
+        }
+        const double voxel_volume = params.voxel_size * params.voxel_size * params.voxel_size;
+        auto wood_map = computeWoodVolumePerVoxel(forest, grid.getBounds(), grid.getVoxelWidth(),
+                                                  grid.getDimensions());
+        double total_voxel_wood = 0.0, total_tree_volume = 0.0;
+        for (const auto &tree : forest.trees) total_tree_volume += tree.volume();
+        for (const auto &kv : wood_map) {
+            total_voxel_wood += kv.second;
+            auto it = metrics.find(kv.first);
+            if (it != metrics.end()) {
+                it->second.wood_volume = kv.second;
+                it->second.wood_volume_density = voxel_volume > 0.0 ? kv.second / voxel_volume : 0.0;
+            }
+        }
+        std::cout << "Woody volume: rasterised " << total_voxel_wood << " m^3 across " << wood_map.size()
+                  << " voxels (tree-file total branch volume " << total_tree_volume << " m^3)." << std::endl;
+    }
 
     // Pass the pre-calculated metrics to the writer functions.
     std::string base_name_stub = getFileNameStub(params.cloud_name);
